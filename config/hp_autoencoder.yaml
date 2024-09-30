@@ -1,0 +1,58 @@
+learning_rate:
+  - 0.001
+
+min_encoder_layers: 1
+max_encoder_layers: 1
+
+min_encoder_units_1: 128
+max_encoder_units_1: 256
+step_encoder_units_1: 32
+
+encoder_activation_1:
+  - 'relu'
+  - 'gelu'
+
+encoder_regularizer_1:
+  - 0.0
+  - 0.01
+
+
+min_encoder_dropout_1: 0.0
+max_encoder_dropout_1: 0.5
+step_encoder_dropout_1: 0.1
+
+encoder_batch_norm_1: True
+
+latent_space_min: 2
+latent_space_max: 16
+latent_space_step: 2
+
+latent_activation:
+  - 'relu'
+
+min_decoder_layers: 1
+max_decoder_layers: 1
+
+min_decoder_units_1: 128
+max_decoder_units_1: 256
+step_decoder_units_1: 32
+
+decoder_activation_1:
+  - 'relu'
+
+decoder_regularizer_1:
+  - 0.0
+  - 0.1
+
+min_decoder_dropout_1: 0.0
+max_decoder_dropout_1: 0.5
+step_decoder_dropout_1: 0.1
+
+decoder_batch_norm_1: False
+
+test_size: 0.2
+max_trials: 3
+executions_per_trial: 1
+epochs: 1
+batch_size: 64
+run_name: first_experiment
