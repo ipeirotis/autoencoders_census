@@ -17,8 +17,8 @@ def save_model(model, output_path):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    filename = output_path + "autoencoder.h5"
-    model.save(filename)
+    filename = output_path + "autoencoder"
+    model.save(filename, save_format="tf")
 
 
 def load_model(model_path):

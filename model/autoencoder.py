@@ -64,6 +64,7 @@ class AutoencoderModel:
 
     def build_encoder_hp(self, hp, hp_limits):
         inputs = Input(shape=self.INPUT_SHAPE)
+        x = inputs
 
         for i in range(
             hp.Int(
@@ -87,7 +88,7 @@ class AutoencoderModel:
                         f"encoder_l2_{i+1}", hp_limits[f"encoder_regularizer_{i+1}"]
                     )
                 ),
-            )(inputs)
+            )(x)
             x = Dropout(
                 hp.Float(
                     f"encoder_dropout_{i+1}",
@@ -116,13 +117,14 @@ class AutoencoderModel:
 
     def build_encoder(self, config):
         inputs = Input(shape=self.INPUT_SHAPE)
+        x = inputs
 
         for i in range(config.get("encoder_layers", 2)):
             x = Dense(
                 units=config.get(f"encoder_units_{i+1}", 160),
                 activation=config.get(f"encoder_activation_{i+1}", "relu"),
                 kernel_regularizer=l2(config.get(f"encoder_l2_{i+1}", 0.001)),
-            )(inputs)
+            )(x)
             x = Dropout(config.get(f"encoder_dropout_{i+1}", 0.1))(x)
 
             if config.get(f"encoder_batch_norm_{i+1}", True):
@@ -146,6 +148,7 @@ class AutoencoderModel:
                 ),
             )
         )
+        x = decoder_inputs
 
         for i in range(
             hp.Int(
@@ -169,7 +172,7 @@ class AutoencoderModel:
                         f"decoder_l2_{i+1}", hp_limits[f"decoder_regularizer_{i+1}"]
                     )
                 ),
-            )(decoder_inputs)
+            )(x)
             x = Dropout(
                 hp.Float(
                     f"decoder_dropout_{i+1}",
@@ -195,13 +198,14 @@ class AutoencoderModel:
 
     def build_decoder(self, config):
         decoder_inputs = Input(shape=(config.get("latent_space_dim", 2),))
+        x = decoder_inputs
 
         for i in range(config.get("decoder_layers", 2)):
             x = Dense(
                 units=config.get(f"decoder_units_{i+1}", 160),
                 activation=config.get(f"decoder_activation_{i+1}", "relu"),
                 kernel_regularizer=l2(config.get(f"decoder_l2_{i+1}", 0.001)),
-            )(decoder_inputs)
+            )(x)
             x = Dropout(config.get(f"decoder_dropout_{i+1}", 0.1))(x)
 
             if config.get(f"decoder_batch_norm_{i+1}", True):
@@ -257,6 +261,6 @@ class AutoencoderModel:
             objective="val_loss",
             max_trials=hp_limits["max_trials"],
             executions_per_trial=hp_limits["executions_per_trial"],
-            project_name=hp_limits["run_name"]
+            project_name=hp_limits["run_name"],
         )
         return tuner

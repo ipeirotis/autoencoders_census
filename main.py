@@ -24,11 +24,11 @@ def cli():
 
 @cli.command("train")
 @click.option("--seed", help="seed for reproducibility", type=int, default=2)
-@click.option("--model", help="model to train between AE and VAE", type=str, default="AE")
+@click.option("--model_name", help="model to train between AE and VAE", type=str, default="AE")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option("--config", help="config file for training", type=str, default="config/simple_autoencoder.yaml")
 @click.option("--output", help="output path for saving the model", type=str, default="cache/simple_model/")
-def train(seed, model, data, config, output):
+def train(seed, model_name, data, config, output):
 
     set_seed(seed)
 
@@ -43,7 +43,7 @@ def train(seed, model, data, config, output):
     cardinalities = list(project_data.describe().T['unique'].values)
 
     logger.info(f"Looading model....")
-    model = get_model(model, cardinalities)
+    model = get_model(model_name, cardinalities)
 
     logger.info(f"Loading config from config file....")
     with open(config, 'r') as file:
@@ -66,11 +66,11 @@ def train(seed, model, data, config, output):
 
 @cli.command("search_hyperparameters")
 @click.option("--seed", help="seed for reproducibility", type=int, default=2)
-@click.option("--model", help="model to train between AE and VAE", type=str, default="AE")
+@click.option("--model_name", help="model to train between AE and VAE", type=str, default="AE")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option("--config", help="config file for training", type=str, default="config/hp_autoencoder.yaml")
 @click.option("--output", help="output path for saving the hyperparameters", type=str, default="cache/hp_model_1/")
-def search_hyperparameters(seed, model, data, config, output):
+def search_hyperparameters(seed, model_name, data, config, output):
 
     set_seed(seed)
 
@@ -85,7 +85,7 @@ def search_hyperparameters(seed, model, data, config, output):
     cardinalities = list(project_data.describe().T['unique'].values)
 
     logger.info(f"Looading model....")
-    model = get_model(model, cardinalities)
+    model = get_model(model_name, cardinalities)
 
     logger.info(f"Loading config from config file....")
     with open(config, 'r') as file:
@@ -104,7 +104,7 @@ def search_hyperparameters(seed, model, data, config, output):
 
 @cli.command("evaluate")
 @click.option("--seed", help="seed for reproducibility", type=int, default=2)
-@click.option("--model_path", help="model to evaluate", type=str, default="cache/simple_model/autoencoder.h5")
+@click.option("--model_path", help="model to evaluate", type=str, default="cache/simple_model/autoencoder")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option("--output", help="output path for saving the predictions", type=str, default="cache/predictions/")
 def evaluate(seed, model_path, data, output):
