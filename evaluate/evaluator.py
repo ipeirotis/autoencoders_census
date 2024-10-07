@@ -37,6 +37,9 @@ class Evaluator:
             # Run the data through the autoencoder, which will return a complete version of the data.
             predicted = self.model.predict(filled)
 
+            if isinstance(predicted, tuple):
+                predicted = predicted[0]
+
             # Replace the initially guessed values in the original data with the corresponding values from the autoencoder's output. But keep the observed values unchanged.
             mask = vectorized_df.isna()
             filled[mask] = np.where(mask, predicted, filled)
@@ -50,7 +53,12 @@ class Evaluator:
         :param df: Dataframe with features
         :return: Predictions
         """
-        predicted = pd.DataFrame(self.model.predict(data))
+        predictions = self.model.predict(data)
+
+        if isinstance(predictions, tuple):
+            predictions = predictions[0]
+
+        predicted = pd.DataFrame(predictions)
         predicted.columns = data.columns
         return predicted
 

@@ -61,7 +61,7 @@ def train(seed, model_name, data, config, output):
     save_history(history, output)
 
     logger.info("Saving plots....")
-    model_analysis(history, output)
+    model_analysis(history, output, model_name)
 
 
 @cli.command("search_hyperparameters")

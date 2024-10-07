@@ -1,0 +1,45 @@
+learning_rate: 0.0001
+encoder_layers: 1
+encoder_units_1: 128
+encoder_activation_1: 'relu'
+encoder_l2_1: 0.0
+encoder_dropout_1: 0.0
+encoder_batch_norm_1: False
+
+encoder_units_2: 64
+encoder_activation_2: 'relu'
+encoder_l2_2: 0.0
+encoder_dropout_2: 0.0
+encoder_batch_norm_2: True
+
+encoder_units_3: 32
+encoder_activation_3: 'relu'
+encoder_l2_3: 0.0
+encoder_dropout_3: 0.5
+encoder_batch_norm_3: True
+
+latent_space_dim: 2
+latent_activation: 'linear'
+
+decoder_layers: 1
+decoder_units_1: 64
+decoder_activation_1: 'relu'
+decoder_l2_1: 0.0
+decoder_dropout_1: 0.0
+decoder_batch_norm_1: False
+
+decoder_units_2: 128
+decoder_activation_2: 'relu'
+decoder_l2_2: 0.0
+decoder_dropout_2: 0.0
+decoder_batch_norm_2: False
+
+decoder_units_3: 256
+decoder_activation_3: 'relu'
+decoder_l2_3: 0.0
+decoder_dropout_3: 0.0
+decoder_batch_norm_3: False
+
+test_size: 0.2
+epochs: 5
+kl_loss_weight: 1
