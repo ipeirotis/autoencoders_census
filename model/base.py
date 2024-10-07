@@ -1,11 +1,14 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+
 tf.config.run_functions_eagerly(True)
 
 
 class VAE(keras.Model):
-    def __init__(self, encoder, decoder, attribute_cardinalities, kl_loss_weight, **kwargs):
+    def __init__(
+        self, encoder, decoder, attribute_cardinalities, kl_loss_weight, **kwargs
+    ):
         super().__init__(**kwargs)
         self.encoder = encoder
         self.decoder = decoder
@@ -68,12 +71,20 @@ class VAE(keras.Model):
 
         normalized_xent_losses = xent_losses / self.log_cardinalities_expanded
 
-        reconstruction_loss = tf.reduce_mean(tf.keras.backend.sum(normalized_xent_losses, axis=0))
+        reconstruction_loss = tf.reduce_mean(
+            tf.keras.backend.sum(normalized_xent_losses, axis=0)
+        )
 
         return reconstruction_loss
 
     def kl_loss(self, z_mean, z_log_var):
-        kl_loss = -0.5 * tf.keras.backend.sum(1 + z_log_var - tf.keras.backend.square(z_mean) - tf.keras.backend.exp(z_log_var), axis=1)
+        kl_loss = -0.5 * tf.keras.backend.sum(
+            1
+            + z_log_var
+            - tf.keras.backend.square(z_mean)
+            - tf.keras.backend.exp(z_log_var),
+            axis=1,
+        )
         return tf.reduce_mean(kl_loss)
 
     def call(self, inputs):
@@ -90,7 +101,7 @@ class VAE(keras.Model):
             reconstruction, z_mean, z_log_var = self(inputs=x)
 
             reconstruction_loss = self.reconstruction_loss(y, reconstruction)
-            kl_loss = self.kl_loss(z_mean, z_log_var)*self.kl_loss_weight
+            kl_loss = self.kl_loss(z_mean, z_log_var) * self.kl_loss_weight
 
             total_loss = reconstruction_loss + kl_loss
 
@@ -114,7 +125,7 @@ class VAE(keras.Model):
         reconstruction = self.decoder(z)
 
         reconstruction_loss = self.reconstruction_loss(y, reconstruction)
-        kl_loss = self.kl_loss(z_mean, z_log_var)*self.kl_loss_weight
+        kl_loss = self.kl_loss(z_mean, z_log_var) * self.kl_loss_weight
 
         total_loss = reconstruction_loss + kl_loss
 

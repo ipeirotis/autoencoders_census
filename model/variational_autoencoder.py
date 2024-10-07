@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow import keras
 
 from model.base import VAE
+
 tf.config.run_functions_eagerly(True)
 
 
@@ -222,12 +223,18 @@ class VariationalAutoencoderModel:
 
     def build_autoencoder_hp(self, hp, hp_limits):
         learning_rate = hp.Choice("learning_rate", values=hp_limits["learning_rate"])
-        kl_loss_weight = hp.Int("kl_loss_weight", min_value=hp_limits["kl_loss_weight_min"], max_value=hp_limits["kl_loss_weight_max"])
+        kl_loss_weight = hp.Int(
+            "kl_loss_weight",
+            min_value=hp_limits["kl_loss_weight_min"],
+            max_value=hp_limits["kl_loss_weight_max"],
+        )
 
         encoder = self.build_encoder_hp(hp, hp_limits)
         decoder = self.build_decoder_hp(hp, hp_limits)
 
-        autoencoder = VAE(encoder, decoder, self.attribute_cardinalities, kl_loss_weight)
+        autoencoder = VAE(
+            encoder, decoder, self.attribute_cardinalities, kl_loss_weight
+        )
 
         autoencoder.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
@@ -242,7 +249,9 @@ class VariationalAutoencoderModel:
         encoder = self.build_encoder(config)
         decoder = self.build_decoder(config)
 
-        autoencoder = VAE(encoder, decoder, self.attribute_cardinalities, kl_loss_weight)
+        autoencoder = VAE(
+            encoder, decoder, self.attribute_cardinalities, kl_loss_weight
+        )
 
         autoencoder.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate)

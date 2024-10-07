@@ -38,7 +38,7 @@ def save_hyperparameters(hyperparameters, output_path):
         os.makedirs(output_path)
 
     filename = output_path + "best_hyperparameters.yaml"
-    with open(filename, 'w') as file:
+    with open(filename, "w") as file:
         yaml.dump(hyperparameters, file)
 
 
