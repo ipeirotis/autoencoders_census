@@ -3,6 +3,7 @@ import os
 import sys
 
 import click
+import pandas as pd
 import yaml
 
 from dataset.loader import DataLoader
@@ -176,6 +177,14 @@ def evaluate(seed, model_path, data, output):
 
     logger.info("Saving metrics....")
     save_to_csv(predictions_df, output)
+
+    averages = predictions_df[
+        ["Accuracy", "Baseline Accuracy", "Lift", "OVA ROC AUC"]
+    ].mean()
+    average_df = pd.DataFrame(averages).transpose()
+
+    logger.info("Saving average metrics....")
+    save_to_csv(average_df, output, "averages")
 
 
 @cli.command("find_outliers")
