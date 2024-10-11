@@ -103,5 +103,5 @@ def model_analysis(history, output_path, model):
         plt.savefig(output_path + "kl_loss_plot.png")
 
 
-def save_to_csv(df: pd.DataFrame, output_path: str):
-    df.to_csv(output_path + "metrics.csv", index=False)
+def save_to_csv(df: pd.DataFrame, output_path: str, suffix: str = "metrics"):
+    df.to_csv(output_path + f"{suffix}.csv", index=False)

@@ -50,11 +50,18 @@ class VAE(keras.Model):
         epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
         return z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
-    def reconstruction_loss(self, y_true, y_pred):
-        y_true_splits = tf.split(y_true, self.attribute_cardinalities, axis=1)
-        y_pred_splits = tf.split(y_pred, self.attribute_cardinalities, axis=1)
+    @staticmethod
+    def reconstruction_loss(
+        attribute_cardinalities,
+        log_cardinalities_expanded,
+        y_true,
+        y_pred,
+        find_outliers=False,
+    ):
+        y_true_splits = tf.split(y_true, attribute_cardinalities, axis=1)
+        y_pred_splits = tf.split(y_pred, attribute_cardinalities, axis=1)
 
-        max_size = max(self.attribute_cardinalities)
+        max_size = max(attribute_cardinalities)
 
         y_true_splits = [
             tf.pad(split, [[0, 0], [0, max_size - tf.shape(split)[1]]])
@@ -69,7 +76,10 @@ class VAE(keras.Model):
             y_true_splits, y_pred_splits
         )
 
-        normalized_xent_losses = xent_losses / self.log_cardinalities_expanded
+        normalized_xent_losses = xent_losses / log_cardinalities_expanded
+
+        if find_outliers == True:
+            return tf.keras.backend.sum(normalized_xent_losses, axis=0)
 
         reconstruction_loss = tf.reduce_mean(
             tf.keras.backend.sum(normalized_xent_losses, axis=0)
@@ -77,7 +87,8 @@ class VAE(keras.Model):
 
         return reconstruction_loss
 
-    def kl_loss(self, z_mean, z_log_var):
+    @staticmethod
+    def kl_loss(z_mean, z_log_var, find_outliers=False):
         kl_loss = -0.5 * tf.keras.backend.sum(
             1
             + z_log_var
@@ -85,6 +96,10 @@ class VAE(keras.Model):
             - tf.keras.backend.exp(z_log_var),
             axis=1,
         )
+
+        if find_outliers == True:
+            return kl_loss
+
         return tf.reduce_mean(kl_loss)
 
     def call(self, inputs):
@@ -100,7 +115,12 @@ class VAE(keras.Model):
         with tf.GradientTape() as tape:
             reconstruction, z_mean, z_log_var = self(inputs=x)
 
-            reconstruction_loss = self.reconstruction_loss(y, reconstruction)
+            reconstruction_loss = self.reconstruction_loss(
+                self.attribute_cardinalities,
+                self.log_cardinalities_expanded,
+                y,
+                reconstruction,
+            )
             kl_loss = self.kl_loss(z_mean, z_log_var) * self.kl_loss_weight
 
             total_loss = reconstruction_loss + kl_loss
@@ -124,7 +144,12 @@ class VAE(keras.Model):
         z = self.sampling((z_mean, z_log_var))
         reconstruction = self.decoder(z)
 
-        reconstruction_loss = self.reconstruction_loss(y, reconstruction)
+        reconstruction_loss = self.reconstruction_loss(
+            self.attribute_cardinalities,
+            self.log_cardinalities_expanded,
+            y,
+            reconstruction,
+        )
         kl_loss = self.kl_loss(z_mean, z_log_var) * self.kl_loss_weight
 
         total_loss = reconstruction_loss + kl_loss

@@ -7,6 +7,7 @@ import yaml
 
 from dataset.loader import DataLoader
 from evaluate.evaluator import Evaluator
+from evaluate.outliers import get_outliers_list
 from features.transform import Table2Vector
 from model.factory import get_model
 from train.trainer import Trainer
@@ -175,6 +176,47 @@ def evaluate(seed, model_path, data, output):
 
     logger.info("Saving metrics....")
     save_to_csv(predictions_df, output)
+
+
+@cli.command("find_outliers")
+@click.option("--seed", help="seed for reproducibility", type=int, default=2)
+@click.option(
+    "--model_path",
+    help="model to evaluate",
+    type=str,
+    default="cache/simple_model/autoencoder",
+)
+@click.option("--data", help="data to train on", type=str, default="sadc_2017")
+@click.option("--k", help="k to rely on the kl_loss if VAE", type=float, default=1.0)
+@click.option(
+    "--output",
+    help="output path for saving the predictions",
+    type=str,
+    default="cache/predictions/",
+)
+def find_outliers(seed, model_path, data, k, output):
+
+    set_seed(seed)
+
+    logger.info(f"Looading model....")
+    model = load_model(model_path)
+
+    logger.info(f"Loading data....")
+    data_loader = DataLoader()
+    project_data, variable_types = data_loader.load_data(data)
+
+    logger.info(f"Transforming the data....")
+    vectorizer = Table2Vector(variable_types)
+    vectorized_df = vectorizer.vectorize_table(project_data)
+
+    attr_cardinalities = list(project_data.describe().T["unique"].values)
+
+    error_df = get_outliers_list(
+        vectorized_df, model, k, attr_cardinalities, vectorizer
+    )
+
+    logger.info("Saving outliers....")
+    save_to_csv(error_df, output, "errors")
 
 
 if __name__ == "__main__":
