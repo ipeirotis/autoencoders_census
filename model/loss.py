@@ -17,28 +17,24 @@ class CustomCategoricalCrossentropyAE(tf.keras.losses.Loss):
         )
 
     def call(self, y_true, y_pred):
-        # Your custom loss logic here
-        y_true_splits = tf.split(y_true, self.attribute_cardinalities, axis=1)
-        y_pred_splits = tf.split(y_pred, self.attribute_cardinalities, axis=1)
 
-        max_size = max(self.attribute_cardinalities)
+        xent_loss = 0
+        start_idx = 0
 
-        y_true_splits = [
-            tf.pad(split, [[0, 0], [0, max_size - tf.shape(split)[1]]])
-            for split in y_true_splits
-        ]
-        y_pred_splits = [
-            tf.pad(split, [[0, 0], [0, max_size - tf.shape(split)[1]]])
-            for split in y_pred_splits
-        ]
+        for categories in self.attribute_cardinalities:
+            x_attr = y_true[:, start_idx : start_idx + categories]
+            y_attr = y_pred[:, start_idx : start_idx + categories]
 
-        xent_losses = tf.keras.losses.categorical_crossentropy(
-            y_true_splits, y_pred_splits
-        )
+            x_attr = tf.keras.backend.cast(x_attr, "float32")
+            y_attr = tf.keras.backend.cast(y_attr, "float32")
 
-        normalized_xent_losses = xent_losses / self.log_cardinalities_expanded
+            xent_loss += tf.keras.backend.mean(
+                tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+            ) / np.log(categories)
 
-        return tf.reduce_mean(normalized_xent_losses, axis=0)
+            start_idx += categories
+
+        return xent_loss / len(self.attribute_cardinalities)
 
     def get_config(self):
         return {"attribute_cardinalities": self.attribute_cardinalities}

@@ -18,15 +18,10 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer):
     predictions = pd.DataFrame(predictions, columns=data.columns)
     errors = pd.DataFrame()
 
-    log_cardinalities = [np.log(cardinality) for cardinality in attr_cardinalities]
-    log_cardinalities_tensor = tf.constant(log_cardinalities, dtype=tf.float32)
-    log_cardinalities_expanded = tf.expand_dims(log_cardinalities_tensor, axis=-1)
-
     reconstruction_loss = VAE.reconstruction_loss(
         attr_cardinalities,
-        log_cardinalities_expanded,
-        data,
-        predictions,
+        data.to_numpy(),
+        predictions.to_numpy(),
         find_outliers=True,
     )
 

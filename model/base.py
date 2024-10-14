@@ -19,13 +19,6 @@ class VAE(keras.Model):
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
 
         self.attribute_cardinalities = attribute_cardinalities
-        log_cardinalities = [
-            np.log(cardinality) for cardinality in self.attribute_cardinalities
-        ]
-        log_cardinalities_tensor = tf.constant(log_cardinalities, dtype=tf.float32)
-        self.log_cardinalities_expanded = tf.expand_dims(
-            log_cardinalities_tensor, axis=-1
-        )
         self.kl_loss_weight = kl_loss_weight
 
     def summary(self):
@@ -53,39 +46,33 @@ class VAE(keras.Model):
     @staticmethod
     def reconstruction_loss(
         attribute_cardinalities,
-        log_cardinalities_expanded,
         y_true,
         y_pred,
         find_outliers=False,
     ):
-        y_true_splits = tf.split(y_true, attribute_cardinalities, axis=1)
-        y_pred_splits = tf.split(y_pred, attribute_cardinalities, axis=1)
+        xent_loss = []
+        start_idx = 0
 
-        max_size = max(attribute_cardinalities)
+        for categories in attribute_cardinalities:
+            x_attr = y_true[:, start_idx : start_idx + categories]
+            y_attr = y_pred[:, start_idx : start_idx + categories]
 
-        y_true_splits = [
-            tf.pad(split, [[0, 0], [0, max_size - tf.shape(split)[1]]])
-            for split in y_true_splits
-        ]
-        y_pred_splits = [
-            tf.pad(split, [[0, 0], [0, max_size - tf.shape(split)[1]]])
-            for split in y_pred_splits
-        ]
+            x_attr = tf.keras.backend.cast(x_attr, "float32")
+            y_attr = tf.keras.backend.cast(y_attr, "float32")
 
-        xent_losses = tf.keras.losses.categorical_crossentropy(
-            y_true_splits, y_pred_splits
-        )
+            xent_loss.append(
+                tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+                / np.log(categories)
+            )
 
-        normalized_xent_losses = xent_losses / log_cardinalities_expanded
+            start_idx += categories
+
+        xent_loss_tensor = tf.stack(xent_loss, axis=0)
 
         if find_outliers == True:
-            return tf.keras.backend.sum(normalized_xent_losses, axis=0)
+            return tf.reduce_mean(xent_loss_tensor, axis=0)
 
-        reconstruction_loss = tf.reduce_mean(
-            tf.keras.backend.sum(normalized_xent_losses, axis=0)
-        )
-
-        return reconstruction_loss
+        return tf.reduce_mean(xent_loss_tensor)
 
     @staticmethod
     def kl_loss(z_mean, z_log_var, find_outliers=False):
@@ -117,7 +104,6 @@ class VAE(keras.Model):
 
             reconstruction_loss = self.reconstruction_loss(
                 self.attribute_cardinalities,
-                self.log_cardinalities_expanded,
                 y,
                 reconstruction,
             )
@@ -146,7 +132,6 @@ class VAE(keras.Model):
 
         reconstruction_loss = self.reconstruction_loss(
             self.attribute_cardinalities,
-            self.log_cardinalities_expanded,
             y,
             reconstruction,
         )
