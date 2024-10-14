@@ -102,7 +102,7 @@ def train(seed, model_name, data, config, output):
     "--output",
     help="output path for saving the hyperparameters",
     type=str,
-    default="cache/hp_model_1/",
+    default="cache/simple_model/",
 )
 def search_hyperparameters(seed, model_name, data, config, output):
 

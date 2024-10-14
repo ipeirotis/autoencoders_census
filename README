@@ -1,9 +1,0 @@
-Step 1: data_loader, loads the dataset and returns back a processed dataframe that can then be encoded/decoded
-
-Step 2: autoencoder, sets up the architecture of the autoencoder
-
-Step 3: hyperparameter_tuning, finds the optimal parameters for the neural network for the autoencoder
-
-Step 4: measure_accuracy, measures how we well we can reconstruct each attribute of the dataset
-
-Step 5: fine_outliers, examines which rows of the dataset are the most difficult to reconstruct (and therefore are likely to come from inattentive/mischevious participants)
