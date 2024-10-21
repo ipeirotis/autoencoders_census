@@ -9,6 +9,9 @@ from sklearn.model_selection import train_test_split
 
 from model.loss import CustomCategoricalCrossentropyAE
 
+print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+print("Is model placed on GPU? ", tf.test.is_gpu_available())
+
 
 @keras.utils.register_keras_serializable()
 class AutoencoderModel:
