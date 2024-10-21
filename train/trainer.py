@@ -19,9 +19,9 @@ class Trainer:
         logger.info(model.summary())
 
         early_stopping = EarlyStopping(
-           monitor='val_loss',  # Monitor validation loss
-           patience=5,          # Stop training after 5 epochs with no improvement
-           restore_best_weights=True  # Restore model weights from the epoch with the best val_loss
+           monitor='val_loss',
+           patience=5,
+           restore_best_weights=True
         )
 
         history = model.fit(
@@ -42,33 +42,26 @@ class Trainer:
         tuner = self.model.define_tuner(self.config)
 
         early_stopping = EarlyStopping(
-           monitor='val_loss',  # Monitor validation loss
-           patience=5,          # Stop training after 5 epochs with no improvement
-           restore_best_weights=True  # Restore model weights from the epoch with the best val_loss
+           monitor='val_loss',
+           patience=5,
+           restore_best_weights=True
         )
 
         train_dataset = tf.data.Dataset.from_tensor_slices((X_train, X_train))
         test_dataset = tf.data.Dataset.from_tensor_slices((X_test, X_test))
 
-# Shuffle and batch the training dataset
         train_dataset = train_dataset.shuffle(buffer_size=len(X_train)).batch(self.config["batch_size"])
 
-# Batch the test dataset
         test_dataset = test_dataset.batch(self.config["batch_size"])
 
-# Optionally, add prefetching to optimize data loading
         train_dataset = train_dataset.prefetch(tf.data.experimental.AUTOTUNE)
         test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE)
 
         train_dataset = train_dataset.cache()
 
         tuner.search(
-            #X_train,
-            #X_train,
             train_dataset,
             epochs=self.config["epochs"],
-            #batch_size=self.config["batch_size"],
-            #validation_data=(X_test, X_test),
             validation_data=test_dataset,
             callbacks=[early_stopping],        
 )
