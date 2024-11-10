@@ -38,7 +38,7 @@ class VariationalAutoencoderModel:
         self.INPUT_SHAPE = X_train.shape[1:]
         return X_train.dropna(), X_test.dropna()
 
-    def build_encoder_hp(self, hp, hp_limits):
+    def build_encoder_hp(self, hp, hp_limits, prior, num_classes):
         inputs = Input(shape=self.INPUT_SHAPE)
         x = inputs
 
@@ -80,39 +80,80 @@ class VariationalAutoencoderModel:
             ):
                 x = BatchNormalization()(x)
 
-        z_mean = Dense(
-            units=hp.Int(
-                "latent_space_dim",
-                min_value=hp_limits["latent_space_min"],
-                max_value=hp_limits["latent_space_max"],
-                step=hp_limits["latent_space_step"],
-            ),
-            activation=hp.Choice("latent_activation", hp_limits["latent_activation"]),
-        )(x)
-
-        z_log_var = Dense(
-            units=hp.Int(
-                "latent_space_dim",
-                min_value=hp_limits["latent_space_min"],
-                max_value=hp_limits["latent_space_max"],
-                step=hp_limits["latent_space_step"],
-            ),
-            activation=hp.Choice("latent_activation", hp_limits["latent_activation"]),
-        )(x)
-
-        return Model(inputs, [z_mean, z_log_var])
-
-    def build_decoder_hp(self, hp, hp_limits):
-        decoder_inputs = Input(
-            shape=(
-                hp.Int(
+        if prior == "gaussian":
+            z_mean = Dense(
+                units=hp.Int(
                     "latent_space_dim",
                     min_value=hp_limits["latent_space_min"],
                     max_value=hp_limits["latent_space_max"],
                     step=hp_limits["latent_space_step"],
                 ),
+                activation=hp.Choice(
+                    "latent_activation", hp_limits["latent_activation"]
+                ),
+            )(x)
+
+            z_log_var = Dense(
+                units=hp.Int(
+                    "latent_space_dim",
+                    min_value=hp_limits["latent_space_min"],
+                    max_value=hp_limits["latent_space_max"],
+                    step=hp_limits["latent_space_step"],
+                ),
+                activation=hp.Choice(
+                    "latent_activation", hp_limits["latent_activation"]
+                ),
+            )(x)
+
+            return Model(inputs, [z_mean, z_log_var])
+
+        elif prior == "gumbel":
+            z = Dense(
+                units=hp.Int(
+                    "latent_space_dim",
+                    min_value=hp_limits["latent_space_min"],
+                    max_value=hp_limits["latent_space_max"],
+                    step=hp_limits["latent_space_step"],
+                )
+                * num_classes,
+                activation=hp.Choice(
+                    "latent_activation", hp_limits["latent_activation"]
+                ),
+            )(x)
+
+            return Model(inputs, z)
+
+        else:
+            raise ValueError("Invalid prior")
+
+    def build_decoder_hp(self, hp, hp_limits, prior, num_classes):
+
+        if prior == "gaussian":
+            decoder_inputs = Input(
+                shape=(
+                    hp.Int(
+                        "latent_space_dim",
+                        min_value=hp_limits["latent_space_min"],
+                        max_value=hp_limits["latent_space_max"],
+                        step=hp_limits["latent_space_step"],
+                    ),
+                )
             )
-        )
+        elif prior == "gumbel":
+            decoder_inputs = Input(
+                shape=(
+                    hp.Int(
+                        "latent_space_dim",
+                        min_value=hp_limits["latent_space_min"],
+                        max_value=hp_limits["latent_space_max"],
+                        step=hp_limits["latent_space_step"],
+                    )
+                    * num_classes,
+                )
+            )
+        else:
+            raise ValueError("Invalid prior")
+
         x = decoder_inputs
 
         for i in range(
@@ -170,7 +211,7 @@ class VariationalAutoencoderModel:
         epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
         return z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
-    def build_autoencoder_hp(self, hp, hp_limits):
+    def build_autoencoder_hp(self, hp, hp_limits, prior):
         learning_rate = hp.Choice("learning_rate", values=hp_limits["learning_rate"])
         kl_loss_weight = hp.Float(
             "kl_loss_weight",
@@ -178,11 +219,22 @@ class VariationalAutoencoderModel:
             max_value=hp_limits["kl_loss_weight_max"],
         )
 
-        encoder = self.build_encoder_hp(hp, hp_limits)
-        decoder = self.build_decoder_hp(hp, hp_limits)
+        encoder = self.build_encoder_hp(
+            hp, hp_limits, prior, len(self.attribute_cardinalities)
+        )
+        decoder = self.build_decoder_hp(
+            hp, hp_limits, prior, len(self.attribute_cardinalities)
+        )
 
         autoencoder = VAE(
-            encoder, decoder, self.attribute_cardinalities, kl_loss_weight
+            encoder,
+            decoder,
+            self.attribute_cardinalities,
+            kl_loss_weight,
+            hp_limits,
+            self.INPUT_SHAPE,
+            hp_limits.get("temperature", 1),
+            prior,
         )
 
         autoencoder.compile(
@@ -191,15 +243,29 @@ class VariationalAutoencoderModel:
 
         return autoencoder
 
-    def build_autoencoder(self, config):
+    def build_autoencoder(self, config, prior):
         learning_rate = config.get("learning_rate", 1e-3)
         kl_loss_weight = config.get("kl_loss_weight", 1)
 
-        encoder = build_encoder(self.INPUT_SHAPE, config, len(self.attribute_cardinalities))
-        decoder = build_decoder(self.attribute_cardinalities, config)
+        encoder = build_encoder(
+            self.INPUT_SHAPE, config, prior, len(self.attribute_cardinalities)
+        )
+        decoder = build_decoder(
+            self.attribute_cardinalities,
+            config,
+            prior,
+            len(self.attribute_cardinalities),
+        )
 
         autoencoder = VAE(
-            encoder, decoder, self.attribute_cardinalities, kl_loss_weight, config, self.INPUT_SHAPE
+            encoder,
+            decoder,
+            self.attribute_cardinalities,
+            kl_loss_weight,
+            config,
+            self.INPUT_SHAPE,
+            config.get("temperature", 1),
+            prior,
         )
 
         autoencoder.compile(
@@ -208,9 +274,9 @@ class VariationalAutoencoderModel:
 
         return autoencoder
 
-    def define_tuner(self, hp_limits):
+    def define_tuner(self, hp_limits, prior):
 
-        build_fn = lambda hp: self.build_autoencoder_hp(hp, hp_limits)
+        build_fn = lambda hp: self.build_autoencoder_hp(hp, hp_limits, prior)
 
         tuner = BayesianOptimization(
             build_fn,

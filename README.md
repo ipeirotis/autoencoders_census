@@ -22,6 +22,7 @@ python main.py train
 Parameters to set:
 - `--seed`: Seed for reproducibility. Default: `2`.
 - `--model_name`: Model to train. Choose between two available values: `AE` for the simple autoencoder and `VAE` for a variational autoencoder.
+- `--prior`: Prior to use for the variational autoencoder. Choose between two available values: `gaussian` for a Gaussian prior and `gumbel` for applying the gumbel softmax.
 - `--data`: Dataset to train the model on. Default: `sadc_2017`.
 - `--config`: Configuration file for the model training. This should contain the hyperparameters for the model. You can find an example of the configuration file in the `config` folder and the files that have `simple` as a prefix.
 - `--output`: Output folder to save the outputs. Default: `cache/simple_model/`.
@@ -39,6 +40,7 @@ python main.py search_hyperparameters
 Parameters to set:
 - `--seed`: Seed for reproducibility. Default: `2`.
 - `--model_name`: Model to search hyperparameters for. Choose between two available values: `AE` for the simple autoencoder and `VAE` for a variational autoencoder.
+- `--prior`: Prior to use for the variational autoencoder. Choose between two available values: `gaussian` for a Gaussian prior and `gumbel` for applying the gumbel softmax.
 - `--data`: Dataset to train the model on and search for hyperparameters. Default: `sadc_2017`.
 - `--config`: Configuration file for the model hyperparameters searching. This should contain the hyperparameters for the model. You can find an example of the configuration file in the `config` folder and the files that have `hp` as a prefix.
 - `--output`: Output folder to save the outputs. Default: `cache/simple_model/`.
@@ -69,6 +71,7 @@ python main.py find_outliers
 Parameters to set:
 - `--seed`: Seed for reproducibility. Default: `2`.
 - `--model_path`: Path to the trained model you have stored. It should be a folder as the one that is created during `train` command. Default: `cache/simple_model/autoencoder`.
+- `--prior`: Prior to use for the variational autoencoder. Choose between two available values: `gaussian` for a Gaussian prior and `gumbel` for applying the gumbel softmax.
 - `--data`: Dataset to evaluate the model on. Default: `sadc_2017`.
 - `--k`: Weight of the kl loss in the total loss if the model is `VAE`. Default: `1`.
 - `--output`: Output folder to save the outputs. Default: `cache/predictions/`.

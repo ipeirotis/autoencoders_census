@@ -37,6 +37,7 @@ def cli():
 @click.option(
     "--model_name", help="model to train between AE and VAE", type=str, default="AE"
 )
+@click.option("--prior", help="prior to use for VAE", type=str, default="gaussian")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option(
     "--config",
@@ -50,7 +51,7 @@ def cli():
     type=str,
     default="cache/simple_model/",
 )
-def train(seed, model_name, data, config, output):
+def train(seed, model_name, prior, data, config, output):
 
     set_seed(seed)
 
@@ -74,7 +75,7 @@ def train(seed, model_name, data, config, output):
     trainer = Trainer(model, config)
 
     logger.info(f"Training model....")
-    model, history = trainer.train(vectorized_df)
+    model, history = trainer.train(vectorized_df, prior)
 
     logger.info("Saving model....")
     save_model(model, output)
@@ -91,6 +92,7 @@ def train(seed, model_name, data, config, output):
 @click.option(
     "--model_name", help="model to train between AE and VAE", type=str, default="AE"
 )
+@click.option("--prior", help="prior to use for VAE", type=str, default="gaussian")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option(
     "--config",
@@ -104,7 +106,7 @@ def train(seed, model_name, data, config, output):
     type=str,
     default="cache/simple_model/",
 )
-def search_hyperparameters(seed, model_name, data, config, output):
+def search_hyperparameters(seed, model_name, prior, data, config, output):
 
     set_seed(seed)
 
@@ -128,7 +130,7 @@ def search_hyperparameters(seed, model_name, data, config, output):
     trainer = Trainer(model, config)
 
     logger.info(f"Searching hyperparameters....")
-    best_hps = trainer.search_hyperparameters(vectorized_df)
+    best_hps = trainer.search_hyperparameters(vectorized_df, prior)
 
     logger.info(f"Best hyperparameters found: {best_hps}")
 
@@ -195,6 +197,7 @@ def evaluate(seed, model_path, data, output):
     type=str,
     default="cache/simple_model/autoencoder",
 )
+@click.option("--prior", help="prior to use for VAE", type=str, default="gaussian")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option("--k", help="k to rely on the kl_loss if VAE", type=float, default=1.0)
 @click.option(
@@ -203,7 +206,7 @@ def evaluate(seed, model_path, data, output):
     type=str,
     default="cache/predictions/",
 )
-def find_outliers(seed, model_path, data, k, output):
+def find_outliers(seed, model_path, prior, data, k, output):
 
     set_seed(seed)
 
@@ -221,7 +224,7 @@ def find_outliers(seed, model_path, data, k, output):
     attr_cardinalities = list(project_data.describe().T["unique"].values)
 
     error_df = get_outliers_list(
-        vectorized_df, model, k, attr_cardinalities, vectorizer
+        vectorized_df, model, k, attr_cardinalities, vectorizer, prior
     )
 
     logger.info("Saving outliers....")

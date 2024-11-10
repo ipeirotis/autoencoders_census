@@ -1,14 +1,14 @@
-learning_rate: 0.0001
-encoder_layers: 1
+learning_rate: 0.001
+encoder_layers: 3
 encoder_units_1: 128
 encoder_activation_1: 'relu'
-encoder_l2_1: 0.0
+encoder_l2_1: 0.001
 encoder_dropout_1: 0.0
 encoder_batch_norm_1: False
 
 encoder_units_2: 64
 encoder_activation_2: 'relu'
-encoder_l2_2: 0.0
+encoder_l2_2: 0.001
 encoder_dropout_2: 0.0
 encoder_batch_norm_2: True
 
@@ -24,9 +24,9 @@ latent_activation: 'linear'
 decoder_layers: 1
 decoder_units_1: 64
 decoder_activation_1: 'relu'
-decoder_l2_1: 0.0
-decoder_dropout_1: 0.0
-decoder_batch_norm_1: False
+decoder_l2_1: 0.001
+decoder_dropout_1: 0.2
+decoder_batch_norm_1: True
 
 decoder_units_2: 128
 decoder_activation_2: 'relu'
@@ -36,10 +36,16 @@ decoder_batch_norm_2: False
 
 decoder_units_3: 256
 decoder_activation_3: 'relu'
-decoder_l2_3: 0.0
+decoder_l2_3: 0.001
 decoder_dropout_3: 0.0
 decoder_batch_norm_3: False
 
 test_size: 0.2
-epochs: 5
+epochs: 1
 kl_loss_weight: 1
+batch_size: 256
+anneal_period: 20000
+cycles: 4
+min_temperature: 0.2
+temperature_decay: 0.0005
+warmup_period: 500

@@ -58,3 +58,8 @@ batch_size: 64
 run_name: vae
 kl_loss_weight_min: 1
 kl_loss_weight_max: 10
+anneal_period: 20000
+cycles: 4
+min_temperature: 0.2
+temperature_decay: 0.0005
+warmup_period: 500

@@ -1,19 +1,17 @@
-import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 from model.base import VAE
 
 
-def get_outliers_list(data, model, k, attr_cardinalities, vectorizer):
+def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
 
     predictions = model.predict(data)
 
-    z_mean = None
-    z_log_var = None
+    z1 = None
+    z2 = None
 
     if isinstance(predictions, tuple):
-        predictions, z_mean, z_log_var = predictions
+        predictions, z1, z2 = predictions
 
     predictions = pd.DataFrame(predictions, columns=data.columns)
     errors = pd.DataFrame()
@@ -22,14 +20,19 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer):
         attr_cardinalities,
         data.to_numpy(),
         predictions.to_numpy(),
-        find_outliers=True,
     )
 
-    if z_mean is None:
+    if z1 is None:
         errors["error"] = reconstruction_loss.numpy()
 
     else:
-        kl_loss = VAE.kl_loss(z_mean, z_log_var, find_outliers=True)
+        if prior == "gaussian":
+            kl_loss = VAE.kl_loss_gaussian(z1, z2)
+
+        elif prior == "gumbel":
+            kl_loss = VAE.kl_loss_gumbel(
+                z1, model.get_config()["temperature"], len(attr_cardinalities)
+            )
 
         custom_loss = reconstruction_loss + k * kl_loss
         errors["error"] = custom_loss.numpy()
