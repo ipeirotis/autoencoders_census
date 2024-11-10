@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow import keras
 
 from model.base import VAE
+from model.layers import build_encoder, build_decoder
 
 tf.config.run_functions_eagerly(True)
 
@@ -36,33 +37,6 @@ class VariationalAutoencoderModel:
         X_train, X_test = train_test_split(df.copy(), test_size=test_size)
         self.INPUT_SHAPE = X_train.shape[1:]
         return X_train.dropna(), X_test.dropna()
-
-    def build_encoder(self, config):
-        inputs = Input(shape=self.INPUT_SHAPE)
-        x = inputs
-
-        for i in range(config.get("encoder_layers", 2)):
-            x = Dense(
-                units=config.get(f"encoder_units_{i+1}", 160),
-                activation=config.get(f"encoder_activation_{i+1}", "relu"),
-                kernel_regularizer=l2(config.get(f"encoder_l2_{i+1}", 0.001)),
-            )(x)
-            x = Dropout(config.get(f"encoder_dropout_{i+1}", 0.1))(x)
-
-            if config.get(f"encoder_batch_norm_{i+1}", True):
-                x = BatchNormalization()(x)
-
-        z_mean = Dense(
-            units=config.get("latent_space_dim", 2),
-            activation=config.get("latent_activation", "linear"),
-        )(x)
-
-        z_log_var = Dense(
-            units=config.get("latent_space_dim", 2),
-            activation=config.get("latent_activation", "linear"),
-        )(x)
-
-        return Model(inputs, [z_mean, z_log_var])
 
     def build_encoder_hp(self, hp, hp_limits):
         inputs = Input(shape=self.INPUT_SHAPE)
@@ -127,31 +101,6 @@ class VariationalAutoencoderModel:
         )(x)
 
         return Model(inputs, [z_mean, z_log_var])
-
-    def build_decoder(self, config):
-
-        decoder_inputs = Input(shape=(config.get("latent_space_dim", 2),))
-        x = decoder_inputs
-
-        for i in range(config.get("decoder_layers", 2)):
-            x = Dense(
-                units=config.get(f"decoder_units_{i + 1}", 160),
-                activation=config.get(f"decoder_activation_{i + 1}", "relu"),
-                kernel_regularizer=l2(config.get(f"decoder_l2_{i + 1}", 0.001)),
-            )(x)
-            x = Dropout(config.get(f"decoder_dropout_{i + 1}", 0.1))(x)
-
-            if config.get(f"decoder_batch_norm_{i + 1}", True):
-                x = BatchNormalization()(x)
-
-        decoded_attrs = []
-        for categories in self.attribute_cardinalities:
-            decoder_softmax = Dense(categories, activation="softmax")(x)
-            decoded_attrs.append(decoder_softmax)
-
-        outputs = Concatenate()(decoded_attrs)
-
-        return Model(decoder_inputs, outputs)
 
     def build_decoder_hp(self, hp, hp_limits):
         decoder_inputs = Input(
@@ -223,7 +172,7 @@ class VariationalAutoencoderModel:
 
     def build_autoencoder_hp(self, hp, hp_limits):
         learning_rate = hp.Choice("learning_rate", values=hp_limits["learning_rate"])
-        kl_loss_weight = hp.Int(
+        kl_loss_weight = hp.Float(
             "kl_loss_weight",
             min_value=hp_limits["kl_loss_weight_min"],
             max_value=hp_limits["kl_loss_weight_max"],
@@ -246,11 +195,11 @@ class VariationalAutoencoderModel:
         learning_rate = config.get("learning_rate", 1e-3)
         kl_loss_weight = config.get("kl_loss_weight", 1)
 
-        encoder = self.build_encoder(config)
-        decoder = self.build_decoder(config)
+        encoder = build_encoder(self.INPUT_SHAPE, config, len(self.attribute_cardinalities))
+        decoder = build_decoder(self.attribute_cardinalities, config)
 
         autoencoder = VAE(
-            encoder, decoder, self.attribute_cardinalities, kl_loss_weight
+            encoder, decoder, self.attribute_cardinalities, kl_loss_weight, config, self.INPUT_SHAPE
         )
 
         autoencoder.compile(
