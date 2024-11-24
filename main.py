@@ -324,6 +324,15 @@ def train(
 @click.option("--prior", help="prior to use for VAE", type=str, default="gaussian")
 @click.option("--data", help="data to train on", type=str, default="sadc_2017")
 @click.option(
+    "--drop_columns", help="columns to drop from the data", type=str, default=None
+)
+@click.option(
+    "--rename_columns", help="columns to rename from the data", type=str, default=None
+)
+@click.option(
+    "--interest_columns", help="columns to merge from the data", type=str, default=None
+)
+@click.option(
     "--config",
     help="config file for training",
     type=str,
@@ -335,12 +344,230 @@ def train(
     type=str,
     default="cache/simple_model/",
 )
-def search_hyperparameters(seed, model_name, prior, data, config, output):
+def search_hyperparameters(
+    seed,
+    model_name,
+    prior,
+    data,
+    drop_columns,
+    rename_columns,
+    interest_columns,
+    config,
+    output,
+):
 
     set_seed(seed)
 
+    if data == "sadc_2017" or data == "sadc_2015":
+        drop_columns = [
+            "sitecode",
+            "sitename",
+            "sitetype",
+            "sitetypenum",
+            "year",
+            "survyear",
+            "record",
+            "stratum",
+            "PSU",
+            "q14",
+            "q20",
+            "q31",
+            "q36",
+            "q37",
+            "q39",
+            "q44",
+            "q56",
+            "q84",
+        ]
+
+        rename_columns = {
+            "age": "age",
+            "sex": "sex",
+            "grade": "grade",
+            "race4": "Hispanic_or_Latino",
+            "race7": "race",
+            "qnobese": "obese",
+            "qnowt": "overweight",
+            "q67": "sexual_identity",
+            "q66": "sex/sexual_contacts",
+            "sexid": "sexid",
+            "sexid2": "sexid2",
+            "sexpart": "sexpart",
+            "sexpart2": "sexpart2",
+            "q8": "seat_belt_use",
+            "q9": "riding_with_a_drinking_driver",
+            "q10": "drinking_and_driving",
+            "q11": "texting_and_driving",
+            "q12": "weapon_carrying",
+            "q13": "weapon_carrying_at_school",
+            "q15": "safety_concerns_at_school",
+            "q16": "threatened_at_school",
+            "q17": "physical_fighting",
+            "q18": "physical_fighting_at_school",
+            "q19": "forced_sexual_intercourse",
+            "q21": "sexual_dating_violence",
+            "q22": "physical_dating_violence",
+            "q23": "bullying_at_school",
+            "q24": "electronic_bullying",
+            "q25": "sad_or_hopeless",
+            "q26": "considered_suicide",
+            "q27": "made_a_suicide_plan",
+            "q28": "attempted_suicide",
+            "q29": "injurious_suicide_attempt",
+            "q30": "ever_cigarette_use",
+            "q32": "current_cigarette_use",
+            "q33": "smoking_amounts_per_day",
+            "q34": "electronic_vapor_product_use",
+            "q35": "current_electronic_vapor_product_use",
+            "q38": "current_cigar_use",
+            "q40": "ever_alcohol_use",
+            "q41": "initiation_of_alcohol_use",
+            "q42": "current_alcohol_use",
+            "q43": "source_of_alcohol",
+            "q45": "largest_number_of_drinks",
+            "q46": "ever_marijuana_use",
+            "q47": "initiation_of_marijuana_use",
+            "q48": "current_marijuana_use",
+            "q49": "ever_cocaine_use",
+            "q50": "ever_inhalant_use",
+            "q51": "ever_heroin_use",
+            "q52": "ever_methamphetamine_use",
+            "q53": "ever_ecstasy_use",
+            "q54": "ever_synthetic_marijuana_use",
+            "q55": "ever_steroid_use",
+            "q57": "illegal_injected_drug_use",
+            "q58": "illegal_drugs_at_school",
+            "q59": "ever_sexual_intercourse",
+            "q60": "first_sex_intercourse",
+            "q61": "multiple_sex_partners",
+            "q62": "current_sexual_activity",
+            "q63": "alcohol/drugs_at_sex",
+            "q64": "condom_use",
+            "q65": "birth_control_pill_use",
+            "q68": "perception_of_weight",
+            "q69": "weight_loss",
+            "q70": "fruit_juice_drinking",
+            "q71": "fruit_eating",
+            "q72": "green _salad_eating",
+            "q73": "potato_eating",
+            "q74": "carrot_eating",
+            "q75": "other_vegetable_eating",
+            "q76": "soda_drinking",
+            "q77": "milk_drinking",
+            "q78": "breakfast_eating",
+            "q79": "physical_activity",
+            "q80": "television_watching",
+            "q81": "computer_not_school_work_use",
+            "q82": "PE_attendance",
+            "q83": "sports_team_participation",
+            "q85": "HIV_testing",
+            "q86": "oral_health_care",
+            "q87": "asthma",
+            "q88": "sleep_on_school_night",
+            "q89": "grades_in_school",
+            "qhallucdrug": "ever_used_LSD",
+            "qsportsdrink": "sports_drinks",
+            "qwater": "plain_water",
+            "qfoodallergy": "food_allergies",
+            "qmusclestrength": "muscle_stregthening",
+            "qindoortanning": "indoor_tanning",
+            "qsunburn": "sunburn",
+            "qconcentrating": "difficulty_concentrating",
+            "qspeakenglish": "how_well_speak_English",
+        }
+
+        # The dataframe contains separate questionnaire questions, here we merge these columns to our project dataframe
+        interest_columns = [x for x in range(89)] + [
+            221,
+            231,
+            234,
+            236,
+            238,
+            240,
+            241,
+            242,
+            245,
+        ]
+
+    elif data == "pennycook_1":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        # interest_columns = [7,8,9,11,12,13,14,27,28,30,31,32,33,47,48,49,50.51,52,54,55,56,57,58,59,
+        #                     73,74,75,76,77,78,79] + [x for x in range(79,193)] + [314,315,316,317,318,319] + [
+        #     x for x in range(328, 345)
+        # ] + [x for x in range(346, 356)] + [363,364,365,366,367,368,369,370,375]
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            11,
+            12,
+            13,
+            14,
+            27,
+            28,
+            30,
+            31,
+            32,
+            33,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            363,
+            364,
+            365,
+            366,
+            367,
+            368,
+            369,
+            370,
+            375,
+        ]
+
+    else:
+        drop_columns = drop_columns.split(",")
+        rename_columns = {
+            x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
+        }
+        interest_columns = [int(x) for x in interest_columns.split(",")]
+
     logger.info(f"Loading data....")
-    data_loader = DataLoader()
+    data_loader = DataLoader(drop_columns, rename_columns, interest_columns)
     project_data, variable_types = data_loader.load_data(data)
 
     logger.info(f"Transforming the data....")
