@@ -47,6 +47,6 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
         ],
         axis=1,
     )
-    combined_df = combined_df.sort_values("error", ascending=False)
+
 
     return combined_df

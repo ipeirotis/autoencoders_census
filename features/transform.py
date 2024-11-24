@@ -46,7 +46,7 @@ class Table2Vector:
         self.one_hot_encoders = {}
         self.min_max_scalers = {}
 
-    def vectorize_table(self, original_df):
+    def vectorize_table(self, original_df, base_df=None):
         """
         Transform the dataframe according to the variable types.
 
@@ -72,9 +72,15 @@ class Table2Vector:
                 one_hot_encoder = OneHotEncoder(
                     sparse_output=False, handle_unknown="ignore"
                 )
-                df_encoded = pd.DataFrame(
-                    one_hot_encoder.fit_transform(vectorized_df[[column]])
-                )
+                if base_df is None:
+                    df_encoded = pd.DataFrame(
+                        one_hot_encoder.fit_transform(vectorized_df[[column]])
+                    )
+                else:
+                    one_hot_encoder.fit(base_df[[column]])
+                    df_encoded = pd.DataFrame(
+                        one_hot_encoder.transform(vectorized_df[[column]])
+                    )
                 df_encoded.columns = [
                     f"{column}{self.SEP}{cat}" for cat in one_hot_encoder.categories_[0]
                 ]
