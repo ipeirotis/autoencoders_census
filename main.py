@@ -276,7 +276,7 @@ def train(
             369,
             370,
             375,
-        ]
+        ] + [x for x in range(193, 313)]
 
     else:
         drop_columns = drop_columns.split(",")
@@ -557,7 +557,7 @@ def search_hyperparameters(
             369,
             370,
             375,
-        ]
+        ]  + [x for x in range(193, 313)]
 
     else:
         drop_columns = drop_columns.split(",")
@@ -821,7 +821,7 @@ def evaluate(
             369,
             370,
             375,
-        ]
+        ] + [x for x in range(193, 313)]
 
     else:
         drop_columns = drop_columns.split(",")
@@ -1103,7 +1103,7 @@ def find_outliers(
             369,
             370,
             375,
-        ]
+        ] + [x for x in range(193, 313)]
 
     else:
         drop_columns = drop_columns.split(",")

@@ -78,6 +78,18 @@ class DataLoader:
             0
         )
 
+        for i in range(1, 16):
+            df[f"Fake1_time_diff_{i}"] = df[f"Fake1_RT_2_{i}"] - df[f"Fake1_RT_1_{i}"]
+            df[f"Fake1_submit_diff_{i}"] = df[f"Fake1_RT_3_{i}"] - df[f"Fake1_RT_2_{i}"]
+            df[f"Fake1_clicks_{i}"] = df[f"Fake1_RT_4_{i}"]
+
+            df[f"Real1_time_diff_{i}"] = df[f"Real1_RT_2_{i}"] - df[f"Real1_RT_1_{i}"]
+            df[f"Real1_submit_diff_{i}"] = df[f"Real1_RT_3_{i}"] - df[f"Real1_RT_2_{i}"]
+            df[f"Real1_clicks_{i}"] = df[f"Real1_RT_4_{i}"]
+
+            df.drop(columns=[f"Fake1_RT_{j}_{i}" for j in range(1, 5)] + [f"Real1_RT_{j}_{i}" for j in range(1, 5)], inplace=True)
+
+
         # convert to integer columns
         for col in df.select_dtypes(include="float").columns:
             if (
@@ -131,13 +143,21 @@ class DataLoader:
             scaler = StandardScaler()
             df_copy[column] = scaler.fit_transform(df_copy[[column]])
 
+            highest_value = list(df_copy[column].value_counts().items())[0]
+            if highest_value[1] > 0.5 * len(df_copy):
+                used_value = highest_value[0]
+
+            else:
+                used_value = 0
+
             conditions = [
-                (df_copy[column] > 1.4),
-                (df_copy[column] <= 1.4) & (df_copy[column] > 0.7),
-                (df_copy[column] < -1.4),
-                (df_copy[column] < -0.7) & (df_copy[column] > -1.4),
+                (df_copy[column] > 1.4) & (df_copy[column] != used_value),
+                (df_copy[column] <= 1.4) & (df_copy[column] > 0.7) & (df_copy[column] != used_value),
+                (df_copy[column] < -1.4) & (df_copy[column] != used_value),
+                (df_copy[column] < -0.7) & (df_copy[column] > -1.4) & (df_copy[column] != used_value),
                 (missing_mask),
-                (df_copy[column] >= -0.7) & (df_copy[column] <= 0.7),
+                (df_copy[column] >= -0.7) & (df_copy[column] <= 0.7) & (df_copy[column] != used_value),
+                (df_copy[column] == used_value),
             ]
             choices = [
                 "top-extreme",
@@ -146,6 +166,7 @@ class DataLoader:
                 "low",
                 "missing",
                 "normal",
+                "zero",
             ]
             df_copy[column + "_cat"] = np.select(conditions, choices, default="unknown")
 
