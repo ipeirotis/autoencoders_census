@@ -278,6 +278,13 @@ def train(
             375,
         ] + [x for x in range(193, 313)]
 
+    elif data == "bot_bot_mturk":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
+            x for x in range(20, 34)
+        ] + [35,36,37,38,39]
+
     else:
         drop_columns = drop_columns.split(",")
         rename_columns = {
@@ -559,6 +566,13 @@ def search_hyperparameters(
             375,
         ]  + [x for x in range(193, 313)]
 
+    elif data == "bot_bot_mturk":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
+            x for x in range(20, 34)
+        ] + [35,36,37,38,39]
+
     else:
         drop_columns = drop_columns.split(",")
         rename_columns = {
@@ -822,6 +836,13 @@ def evaluate(
             370,
             375,
         ] + [x for x in range(193, 313)]
+
+    elif data == "bot_bot_mturk":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
+            x for x in range(20, 34)
+        ] + [35,36,37,38,39]
 
     else:
         drop_columns = drop_columns.split(",")
@@ -1105,6 +1126,13 @@ def find_outliers(
             375,
         ] + [x for x in range(193, 313)]
 
+    elif data == "bot_bot_mturk":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
+            x for x in range(20, 34)
+        ] + [35,36,37,38,39]
+
     else:
         drop_columns = drop_columns.split(",")
         rename_columns = {
@@ -1342,6 +1370,7 @@ def evaluate_on_condition(
             "qconcentrating": "difficulty_concentrating",
             "qspeakenglish": "how_well_speak_English",
         }
+        interest_columns = []
 
     elif data == "pennycook_1":
         rename_columns = {
@@ -1366,15 +1395,24 @@ def evaluate_on_condition(
             "SocialMedia_5": "whatsapp",
             "SocialMedia_6": "other",
         }
+        interest_columns = []
+
+    elif data == "bot_bot_mturk":
+        # drop_columns = []
+        rename_columns = {}
+        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
+            x for x in range(20, 35)
+        ] + [35,36,37,38,39]
 
     else:
         rename_columns = {
             x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
         }
+        interest_columns = []
 
     set_seed(seed)
 
-    data_loader = DataLoader([], rename_columns, [])
+    data_loader = DataLoader([], rename_columns, interest_columns)
 
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")

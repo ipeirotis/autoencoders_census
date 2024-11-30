@@ -26,7 +26,7 @@ class Trainer:
         logger.info(model.summary())
 
         early_stopping = EarlyStopping(
-            monitor="val_reconstruction_loss", patience=5, restore_best_weights=True
+            monitor="val_loss", patience=10, restore_best_weights=True
         )
 
         history = model.fit(
@@ -51,7 +51,7 @@ class Trainer:
             tuner = self.model.define_tuner(self.config)
 
         early_stopping = EarlyStopping(
-            monitor="val_reconstruction_loss", patience=5, restore_best_weights=True
+            monitor="val_loss", patience=10, restore_best_weights=True
         )
 
         train_dataset = tf.data.Dataset.from_tensor_slices((X_train, X_train))

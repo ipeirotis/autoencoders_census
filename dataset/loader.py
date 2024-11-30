@@ -104,6 +104,38 @@ class DataLoader:
         base_df, types = self.load_2017()
         return (df, base_df), types
 
+    def load_bot_bot_mturk(self):
+        url = "data/Bot_Bot_Bot__MTURK.csv"
+        df = self.load_original_data(url)
+
+        df = df[pd.to_numeric(df["Q6"], errors='coerce').notnull()]
+
+        df["Q2_1"] = pd.to_numeric(df["Q2_1"], errors='coerce')
+        df['Q2_2'] = pd.to_numeric(df['Q2_2'], errors='coerce')
+        df['Q2_3'] = pd.to_numeric(df['Q2_3'], errors='coerce')
+        df['Q4_1'] = pd.to_numeric(df['Q4_1'], errors='coerce')
+        df['Q4_2'] = pd.to_numeric(df['Q4_2'], errors='coerce')
+        df['Q4_3'] = pd.to_numeric(df['Q4_3'], errors='coerce')
+        df['Q5_1'] = pd.to_numeric(df['Q5_1'], errors='coerce')
+        df['Q5_2'] = pd.to_numeric(df['Q5_2'], errors='coerce')
+        df['Q5_3'] = pd.to_numeric(df['Q5_3'], errors='coerce')
+
+
+        df["Q2_time_diff"] = df["Q2_2"] - df["Q2_1"]
+        df["Q2_submit_diff"] = df["Q2_3"] - df["Q2_2"]
+
+        df["Q4_time_diff"] = df["Q4_2"] - df["Q4_1"]
+        df["Q4_submit_diff"] = df["Q4_3"] - df["Q4_2"]
+
+        df["Q5_time_diff"] = df["Q5_2"] - df["Q5_1"]
+        df["Q5_submit_diff"] = df["Q5_3"] - df["Q5_2"]
+
+        df.drop(columns=["Q2_1", "Q2_2", "Q2_3", "Q4_1", "Q4_2", "Q4_3", "Q5_1", "Q5_2", "Q5_3", "Q6"], inplace=True)
+
+        df = df.reset_index(drop=True)
+
+        return self.prepare_original_dataset(df, replacements={})
+
     def load_data(self, dataset: str):
         if dataset == "sadc_2015":
             return self.load_2015()
@@ -113,6 +145,9 @@ class DataLoader:
 
         if dataset == "pennycook_1":
             return self.load_pennycook_1()
+
+        if dataset == "bot_bot_mturk":
+            return self.load_bot_bot_mturk()
 
         return self.load_eval_dataset(dataset)
 
