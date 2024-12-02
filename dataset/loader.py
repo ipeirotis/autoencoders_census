@@ -8,10 +8,13 @@ class DataLoader:
     Class to handle data loading and preprocessing for the project.
     """
 
-    def __init__(self, drop_columns, rename_columns, columns_of_interest):
+    def __init__(self, drop_columns, rename_columns, columns_of_interest, additional_drop_columns=None, additional_rename_columns=None, additional_columns_of_interest=None):
         self.DROP_COLUMNS = drop_columns
         self.RENAME_COLUMNS = rename_columns
         self.COLUMNS_OF_INTEREST = columns_of_interest
+        self.ADDITIONAL_DROP_COLUMNS = additional_drop_columns
+        self.ADDITIONAL_RENAME_COLUMNS = additional_rename_columns
+        self.ADDITIONAL_COLUMNS_OF_INTEREST = additional_columns_of_interest
 
     def load_2015(self):
         url = "data/sadc_2015only_national.csv"
@@ -39,7 +42,6 @@ class DataLoader:
         url = "data/Pennycook et al._Study 1.csv"
         df = self.load_original_data(url)
         df = df.select_dtypes(exclude=["object", "string"])
-        # df = df.dropna(subset=["SciKnow", "Income"])
         df[
             [
                 "sharing_political",
@@ -99,6 +101,80 @@ class DataLoader:
 
         return self.prepare_original_dataset(df, replacements={})
 
+    def load_pennycook_2(self):
+        url = "data/Pennycook et al._Study 2.csv"
+        df = self.load_original_data(url)
+        df = df.select_dtypes(exclude=["object", "string"])
+        df[
+            [
+                "sharing_political",
+                "sharing_sports",
+                "sharing_celebrity",
+                "sharing_science",
+                "sharing_business",
+                "sharing_other",
+                "facebook",
+                "twitter",
+                "snapchat",
+                "instagram",
+                "whatsapp",
+                "other",
+                "news_criticism",
+                "news_side",
+            ]
+        ] = df[
+            [
+                "sharing_political",
+                "sharing_sports",
+                "sharing_celebrity",
+                "sharing_science",
+                "sharing_business",
+                "sharing_other",
+                "facebook",
+                "twitter",
+                "snapchat",
+                "instagram",
+                "whatsapp",
+                "other",
+                "news_criticism",
+                "news_side",
+            ]
+        ].fillna(
+            0
+        )
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        return self.prepare_original_dataset(df, replacements={})
+
+    def load_pennycook(self):
+        url1 = "data/Pennycook et al._Study 1.csv"
+        df1 = self.load_original_data(url1)
+        df1 = df1.select_dtypes(exclude=["object", "string"])
+
+        self.DROP_COLUMNS = self.ADDITIONAL_DROP_COLUMNS
+        self.RENAME_COLUMNS = self.ADDITIONAL_RENAME_COLUMNS
+        self.COLUMNS_OF_INTEREST = self.ADDITIONAL_COLUMNS_OF_INTEREST
+        url2 = "data/Pennycook et al._Study 2.csv"
+        df2 = self.load_original_data(url2)
+        df2 = df2.select_dtypes(exclude=["object", "string"])
+
+        df = pd.concat([df1, df2], axis=0)
+        df = df.reset_index(drop=True)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        return self.prepare_original_dataset(df, replacements={})
+
+
     def load_eval_dataset(self, dataset):
         df = pd.read_csv(dataset)
         base_df, types = self.load_2017()
@@ -145,6 +221,12 @@ class DataLoader:
 
         if dataset == "pennycook_1":
             return self.load_pennycook_1()
+
+        if dataset == "pennycook_2":
+            return self.load_pennycook_2()
+
+        if dataset == "pennycook":
+            return self.load_pennycook()
 
         if dataset == "bot_bot_mturk":
             return self.load_bot_bot_mturk()

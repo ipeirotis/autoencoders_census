@@ -77,6 +77,10 @@ def train(
     set_seed(seed)
 
     logger.info(f"Loading data....")
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
     if data == "sadc_2017" or data == "sadc_2015":
         drop_columns = [
             "sitecode",
@@ -208,7 +212,7 @@ def train(
             245,
         ]
 
-    elif data == "pennycook_1":
+    elif data == "pennycook_1" or data == "pennycook":
         drop_columns = []
         rename_columns = {
             "COVID_concern_1": "COVID_concern",
@@ -276,14 +280,82 @@ def train(
             369,
             370,
             375,
-        ] + [x for x in range(193, 313)]
+        ]  # + [x for x in range(193, 313)]
+
+    elif data == "pennycook_2":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
 
     elif data == "bot_bot_mturk":
         drop_columns = []
         rename_columns = {}
-        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
-            x for x in range(20, 34)
-        ] + [35,36,37,38,39]
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 34)]
+            + [35, 36, 37, 38, 39]
+        )
 
     else:
         drop_columns = drop_columns.split(",")
@@ -292,7 +364,81 @@ def train(
         }
         interest_columns = [int(x) for x in interest_columns.split(",")]
 
-    data_loader = DataLoader(drop_columns, rename_columns, interest_columns)
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
     project_data, variable_types = data_loader.load_data(data)
 
     logger.info(f"Transforming the data....")
@@ -365,6 +511,10 @@ def search_hyperparameters(
 
     set_seed(seed)
 
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
     if data == "sadc_2017" or data == "sadc_2015":
         drop_columns = [
             "sitecode",
@@ -496,7 +646,7 @@ def search_hyperparameters(
             245,
         ]
 
-    elif data == "pennycook_1":
+    elif data == "pennycook_1" or data == "pennycook":
         drop_columns = []
         rename_columns = {
             "COVID_concern_1": "COVID_concern",
@@ -564,14 +714,82 @@ def search_hyperparameters(
             369,
             370,
             375,
-        ]  + [x for x in range(193, 313)]
+        ]  # + [x for x in range(193, 313)]
+
+    elif data == "pennycook_2":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
 
     elif data == "bot_bot_mturk":
         drop_columns = []
         rename_columns = {}
-        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
-            x for x in range(20, 34)
-        ] + [35,36,37,38,39]
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 34)]
+            + [35, 36, 37, 38, 39]
+        )
 
     else:
         drop_columns = drop_columns.split(",")
@@ -580,8 +798,81 @@ def search_hyperparameters(
         }
         interest_columns = [int(x) for x in interest_columns.split(",")]
 
-    logger.info(f"Loading data....")
-    data_loader = DataLoader(drop_columns, rename_columns, interest_columns)
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
     project_data, variable_types = data_loader.load_data(data)
 
     logger.info(f"Transforming the data....")
@@ -636,6 +927,10 @@ def evaluate(
     seed, model_path, data, drop_columns, rename_columns, interest_columns, output
 ):
 
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
     if data == "sadc_2017" or data == "sadc_2015":
         drop_columns = [
             "sitecode",
@@ -767,7 +1062,7 @@ def evaluate(
             245,
         ]
 
-    elif data == "pennycook_1":
+    elif data == "pennycook_1" or data == "pennycook":
         drop_columns = []
         rename_columns = {
             "COVID_concern_1": "COVID_concern",
@@ -835,14 +1130,82 @@ def evaluate(
             369,
             370,
             375,
-        ] + [x for x in range(193, 313)]
+        ]  # + [x for x in range(193, 313)]
+
+    elif data == "pennycook_2":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
 
     elif data == "bot_bot_mturk":
         drop_columns = []
         rename_columns = {}
-        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
-            x for x in range(20, 34)
-        ] + [35,36,37,38,39]
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 34)]
+            + [35, 36, 37, 38, 39]
+        )
 
     else:
         drop_columns = drop_columns.split(",")
@@ -851,13 +1214,88 @@ def evaluate(
         }
         interest_columns = [int(x) for x in interest_columns.split(",")]
 
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+
     set_seed(seed)
 
     logger.info(f"Loading model....")
     model = load_model(model_path)
 
     logger.info(f"Loading data....")
-    data_loader = DataLoader(drop_columns, rename_columns, interest_columns)
     project_data, variable_types = data_loader.load_data(data)
 
     logger.info(f"Transforming the data....")
@@ -925,6 +1363,10 @@ def find_outliers(
 
     set_seed(seed)
 
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
     if data == "sadc_2017" or data == "sadc_2015":
         drop_columns = [
             "sitecode",
@@ -1056,7 +1498,7 @@ def find_outliers(
             245,
         ]
 
-    elif data == "pennycook_1":
+    elif data == "pennycook_1" or data == "pennycook":
         drop_columns = []
         rename_columns = {
             "COVID_concern_1": "COVID_concern",
@@ -1124,14 +1566,82 @@ def find_outliers(
             369,
             370,
             375,
-        ] + [x for x in range(193, 313)]
+        ]  # + [x for x in range(193, 313)]
+
+    elif data == "pennycook_2":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
 
     elif data == "bot_bot_mturk":
         drop_columns = []
         rename_columns = {}
-        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
-            x for x in range(20, 34)
-        ] + [35,36,37,38,39]
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 34)]
+            + [35, 36, 37, 38, 39]
+        )
 
     else:
         drop_columns = drop_columns.split(",")
@@ -1140,11 +1650,86 @@ def find_outliers(
         }
         interest_columns = [int(x) for x in interest_columns.split(",")]
 
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+
     logger.info(f"Loading model....")
     model = load_model(model_path)
 
     logger.info(f"Loading data....")
-    data_loader = DataLoader(drop_columns, rename_columns, interest_columns)
     project_data, variable_types = data_loader.load_data(data)
 
     base_df = None
@@ -1274,6 +1859,10 @@ def evaluate_on_condition(
     outlier_value,
 ):
 
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
     if data == "sadc_2017" or data == "sadc_2015":
         rename_columns = {
             "age": "age",
@@ -1372,7 +1961,7 @@ def evaluate_on_condition(
         }
         interest_columns = []
 
-    elif data == "pennycook_1":
+    elif data == "pennycook_1" or data == "pennycook":
         rename_columns = {
             "COVID_concern_1": "COVID_concern",
             "Media1.0": "news_side",
@@ -1395,14 +1984,120 @@ def evaluate_on_condition(
             "SocialMedia_5": "whatsapp",
             "SocialMedia_6": "other",
         }
-        interest_columns = []
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            11,
+            12,
+            13,
+            14,
+            27,
+            28,
+            30,
+            31,
+            32,
+            33,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            363,
+            364,
+            365,
+            366,
+            367,
+            368,
+            369,
+            370,
+            375,
+        ]
+
+    elif data == "pennycook_2":
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
 
     elif data == "bot_bot_mturk":
-        # drop_columns = []
         rename_columns = {}
-        interest_columns = [11, 12, 13, 14, 16, 17, 18, 19] + [
-            x for x in range(20, 35)
-        ] + [35,36,37,38,39]
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 35)]
+            + [35, 36, 37, 38, 39]
+        )
 
     else:
         rename_columns = {
@@ -1410,9 +2105,83 @@ def evaluate_on_condition(
         }
         interest_columns = []
 
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
     set_seed(seed)
 
-    data_loader = DataLoader([], rename_columns, interest_columns)
+    data_loader = DataLoader(
+        [],
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
 
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")
