@@ -108,7 +108,40 @@ class Evaluator:
         modified_data = self.impute_missing_values(data)
 
         logger.info("Predicting....")
-        predictions = self.predict(modified_data)
+        predictions = self.predict(data)
+
+        tabular_from_predicted = vectorizer.tabularize_vector(predictions)
+
+        logger.info("Evaluating....")
+        variables = []
+        accuracies = []
+        baseline_accuracies = []
+        ova = []
+        lift = []
+        for v in variable_types.keys():
+            if variable_types[v] == "categorical":
+                acc, base_acc, ova_roc_auc = self.create_scatterplot_for_categorical(
+                    project_data, tabular_from_predicted, v, output_path
+                )
+                variables.append(v)
+                accuracies.append(acc)
+                baseline_accuracies.append(base_acc)
+                ova.append(ova_roc_auc)
+                lift.append(round(acc / base_acc, 2))
+
+        logger.info(f"Mean lift of the classifier: {np.mean(lift)}")
+
+        return pd.DataFrame(
+            {
+                "Variable": variables,
+                "Accuracy": accuracies,
+                "Baseline Accuracy": baseline_accuracies,
+                "Lift": lift,
+                "OVA ROC AUC": ova,
+            }
+        )
+
+    def evaluate_with_predictions(self, predictions, vectorizer, project_data, variable_types, output_path):
 
         tabular_from_predicted = vectorizer.tabularize_vector(predictions)
 
