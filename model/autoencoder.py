@@ -10,6 +10,22 @@ from sklearn.model_selection import train_test_split
 from model.loss import CustomCategoricalCrossentropyAE
 
 
+class PercentileScheduler(tf.keras.callbacks.Callback):
+    def __init__(self, percentile_var, initial=0.6, final=0.8, step=0.0001):
+        super().__init__()
+        self.percentile_var = percentile_var
+        self.initial = initial
+        self.final = final
+        self.step = step
+        self.current = initial
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if self.current < self.final:
+            self.current = min(self.current + self.step, self.final)
+            self.percentile_var.assign(self.current)
+        print(f"Epoch {epoch + 1}: Percentile = {self.percentile_var.numpy():.4f}")
+
+
 @keras.utils.register_keras_serializable()
 class AutoencoderModel:
     def __init__(self, attribute_cardinalities):
@@ -230,7 +246,7 @@ class AutoencoderModel:
         autoencoder.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
             loss=CustomCategoricalCrossentropyAE(
-                attribute_cardinalities=self.attribute_cardinalities
+                attribute_cardinalities=self.attribute_cardinalities#, percentile=hp_limits["percentile_var"]
             ),
         )
 
@@ -243,16 +259,25 @@ class AutoencoderModel:
         encoder_output = self.build_encoder(config)(autoencoder_input)
         decoder_output = self.build_decoder(config)(encoder_output)
         autoencoder = Model(autoencoder_input, decoder_output)
+        # percentile_var = tf.Variable(0.6, dtype=tf.float32)
+        # Add to model training
+        # callback = PercentileScheduler(percentile_var, initial=0.7, final=0.8, step=0.001)
         autoencoder.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
             loss=CustomCategoricalCrossentropyAE(
-                attribute_cardinalities=self.attribute_cardinalities
+                attribute_cardinalities=self.attribute_cardinalities#, percentile=percentile_var
             ),
         )
 
-        return autoencoder
+        return autoencoder#, callback
 
     def define_tuner(self, hp_limits):
+
+
+        # percentile_var = tf.Variable(0.6, dtype=tf.float32)
+        # Add to model training
+        # callback = PercentileScheduler(percentile_var, initial=0.5, final=0.8, step=0.001)
+        # hp_limits["percentile_var"] = percentile_var
 
         build_fn = lambda hp: self.build_autoencoder_hp(hp, hp_limits)
 
@@ -263,4 +288,4 @@ class AutoencoderModel:
             executions_per_trial=hp_limits["executions_per_trial"],
             project_name=hp_limits["run_name"],
         )
-        return tuner
+        return tuner#, callback
