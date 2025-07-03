@@ -151,6 +151,31 @@ class DataLoader:
 
         return self.prepare_original_dataset(df, replacements={})
 
+    def load_inattentive(self):
+        url = "data/inattentive_users.csv"
+        df = self.load_original_data(url)
+        # df = df.select_dtypes(exclude=["object", "string"])
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        return self.prepare_original_dataset(df, replacements={})
+
+    def load_attention_check(self):
+        url = "data/attention_check.csv"
+        df = self.load_original_data(url)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        return self.prepare_original_dataset(df, replacements={})
+
     def load_pennycook(self):
         url1 = "data/Pennycook et al._Study 1.csv"
         df1 = self.load_original_data(url1)
@@ -231,6 +256,24 @@ class DataLoader:
         if dataset == "bot_bot_mturk":
             return self.load_bot_bot_mturk()
 
+        if dataset == "inattentive":
+            return self.load_inattentive()
+
+        if dataset == "attention_check":
+            return self.load_attention_check()
+
+        if dataset == "moral_data":
+            return self.load_moral_data()
+
+        if dataset == "mturk_ethics":
+            return self.load_mturk_ethics()
+
+        if dataset == "public_opinion":
+            return self.load_public_opinion()
+
+        if dataset == "racial_data":
+            return self.load_racial_data()
+
         return self.load_eval_dataset(dataset)
 
     def load_original_data(self, dataset_url):
@@ -247,6 +290,8 @@ class DataLoader:
 
         if self.RENAME_COLUMNS:
             original_df = original_df.rename(columns=self.RENAME_COLUMNS)
+
+        # original_df = original_df[original_df["Condition"] == 4].drop(columns=["Condition"]).reset_index(drop=True)
 
         return original_df
 
@@ -271,7 +316,7 @@ class DataLoader:
                 (df_copy[column] > 1.4) & (df_copy[column] != used_value),
                 (df_copy[column] <= 1.4) & (df_copy[column] > 0.7) & (df_copy[column] != used_value),
                 (df_copy[column] < -1.4) & (df_copy[column] != used_value),
-                (df_copy[column] < -0.7) & (df_copy[column] > -1.4) & (df_copy[column] != used_value),
+                (df_copy[column] < -0.7) & (df_copy[column] >= -1.4) & (df_copy[column] != used_value),
                 (missing_mask),
                 (df_copy[column] >= -0.7) & (df_copy[column] <= 0.7) & (df_copy[column] != used_value),
                 (df_copy[column] == used_value),
@@ -334,3 +379,94 @@ class DataLoader:
         df, _ = self.load_data(data)
 
         return df[outlier_column]
+
+    def find_outlier_data_sadc_2017(self, data, outlier_column):
+        """
+        Find outlier data in the dataset.
+        """
+        df, _ = self.load_data(data)
+
+        # now I want the samples of the above characteristics CONCURRENTLY to have a new outlier column equal to 1 and the rest 0
+        df[outlier_column] = 0
+        conditions = [
+            df["carrot_eating"] == "4 or more times per day",
+            df["green _salad_eating"] == "4 or more times per day",
+            df["fruit_juice_drinking"] == "4 or more times per day",
+            df["fruit_eating"] == "4 or more times per day",
+            df["stheight_cat"] == "top-extreme",
+            df["stweight_cat"] == "top-extreme",
+            df["stheight_cat"] == "bottom-extreme",
+            df["stweight_cat"] == "bottom-extreme",
+        ]
+
+        df.loc[sum(conditions) >= 4, outlier_column] = 1
+
+        return df[outlier_column]
+
+    def load_moral_data(self):
+        url = "data/moral_data.csv"
+        df = self.load_original_data(url)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                    df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        df = df[df["complete"] == 1]
+        df.drop(columns=["complete"], inplace=True)
+
+        df.dropna(inplace=True)
+        df = df.reset_index(drop=True)
+
+        return self.prepare_original_dataset(df, replacements={})
+
+    def load_mturk_ethics(self):
+        url = "data/ethics.csv"
+        df = self.load_original_data(url)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                    df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        return self.prepare_original_dataset(df, replacements={})
+
+    def load_public_opinion(self):
+        url = "data/public_opinion.csv"
+        df = self.load_original_data(url)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                    df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        # df = df[df["Progress"] == 100]
+        # df.drop(columns=["Progress"], inplace=True)
+
+        df = df.reset_index(drop=True)
+
+        return self.prepare_original_dataset(df, replacements={})
+
+    def load_racial_data(self):
+        url = "data/racial_data.csv"
+        df = self.load_original_data(url)
+
+        for col in df.select_dtypes(include="float").columns:
+            if (
+                    df[col].dropna() % 1 == 0
+            ).all():  # Check if all non-NaN values are whole numbers
+                df[col] = df[col].astype("Int64")
+
+        df = df[df["Finished"] == "1. True"]
+        df.drop(columns=["Finished"], inplace=True)
+
+        df.dropna(inplace=True)
+        df = df.reset_index(drop=True)
+
+        return self.prepare_original_dataset(df, replacements={})
+
+
+
