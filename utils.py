@@ -111,28 +111,6 @@ def save_to_csv(df: pd.DataFrame, output_path: str, suffix: str = "metrics"):
     df.to_csv(output_path + f"{suffix}.csv", index=False)
 
 
-# Precision@k
-def precision_at_k(relevance, k):
-    return np.sum(relevance[:k]) / k
-
-
-# Recall@k
-def recall_at_k(relevance, k, total_relevant):
-    return np.sum(relevance[:k]) / total_relevant
-
-
-# DCG
-def dcg(relevance, k):
-    relevance = relevance[:k]
-    return np.sum(relevance / np.log2(np.arange(2, len(relevance) + 2)))
-
-
-# nDCG
-def ndcg(relevance, k):
-    ideal_relevance = np.sort(relevance)[::-1]
-    return dcg(relevance, k) / dcg(ideal_relevance, k)
-
-
 def evaluate_errors(error_data, column, values):
 
     error_data = error_data.replace("<NA>", "0")
@@ -319,3 +297,429 @@ def evaluate_errors(error_data, column, values):
     print(f"Accuracy: {round(accuracy, 4)}")
 
     return metrics
+
+
+def define_necessary_elements(data, drop_columns, rename_columns, interest_columns):
+
+    additional_drop_columns = None
+    additional_rename_columns = None
+    additional_interest_columns = None
+
+    if data == "sadc_2017" or data == "sadc_2015":
+        drop_columns = [
+            "sitecode",
+            "sitename",
+            "sitetype",
+            "sitetypenum",
+            "year",
+            "survyear",
+            "record",
+            "stratum",
+            "PSU",
+            "q14",
+            "q20",
+            "q31",
+            "q36",
+            "q37",
+            "q39",
+            "q44",
+            "q56",
+            "q84",
+        ]
+
+        rename_columns = {
+            "age": "age",
+            "sex": "sex",
+            "grade": "grade",
+            "race4": "Hispanic_or_Latino",
+            "race7": "race",
+            "qnobese": "obese",
+            "qnowt": "overweight",
+            "q67": "sexual_identity",
+            "q66": "sex/sexual_contacts",
+            "sexid": "sexid",
+            "sexid2": "sexid2",
+            "sexpart": "sexpart",
+            "sexpart2": "sexpart2",
+            "q8": "seat_belt_use",
+            "q9": "riding_with_a_drinking_driver",
+            "q10": "drinking_and_driving",
+            "q11": "texting_and_driving",
+            "q12": "weapon_carrying",
+            "q13": "weapon_carrying_at_school",
+            "q15": "safety_concerns_at_school",
+            "q16": "threatened_at_school",
+            "q17": "physical_fighting",
+            "q18": "physical_fighting_at_school",
+            "q19": "forced_sexual_intercourse",
+            "q21": "sexual_dating_violence",
+            "q22": "physical_dating_violence",
+            "q23": "bullying_at_school",
+            "q24": "electronic_bullying",
+            "q25": "sad_or_hopeless",
+            "q26": "considered_suicide",
+            "q27": "made_a_suicide_plan",
+            "q28": "attempted_suicide",
+            "q29": "injurious_suicide_attempt",
+            "q30": "ever_cigarette_use",
+            "q32": "current_cigarette_use",
+            "q33": "smoking_amounts_per_day",
+            "q34": "electronic_vapor_product_use",
+            "q35": "current_electronic_vapor_product_use",
+            "q38": "current_cigar_use",
+            "q40": "ever_alcohol_use",
+            "q41": "initiation_of_alcohol_use",
+            "q42": "current_alcohol_use",
+            "q43": "source_of_alcohol",
+            "q45": "largest_number_of_drinks",
+            "q46": "ever_marijuana_use",
+            "q47": "initiation_of_marijuana_use",
+            "q48": "current_marijuana_use",
+            "q49": "ever_cocaine_use",
+            "q50": "ever_inhalant_use",
+            "q51": "ever_heroin_use",
+            "q52": "ever_methamphetamine_use",
+            "q53": "ever_ecstasy_use",
+            "q54": "ever_synthetic_marijuana_use",
+            "q55": "ever_steroid_use",
+            "q57": "illegal_injected_drug_use",
+            "q58": "illegal_drugs_at_school",
+            "q59": "ever_sexual_intercourse",
+            "q60": "first_sex_intercourse",
+            "q61": "multiple_sex_partners",
+            "q62": "current_sexual_activity",
+            "q63": "alcohol/drugs_at_sex",
+            "q64": "condom_use",
+            "q65": "birth_control_pill_use",
+            "q68": "perception_of_weight",
+            "q69": "weight_loss",
+            "q70": "fruit_juice_drinking",
+            "q71": "fruit_eating",
+            "q72": "green _salad_eating",
+            "q73": "potato_eating",
+            "q74": "carrot_eating",
+            "q75": "other_vegetable_eating",
+            "q76": "soda_drinking",
+            "q77": "milk_drinking",
+            "q78": "breakfast_eating",
+            "q79": "physical_activity",
+            "q80": "television_watching",
+            "q81": "computer_not_school_work_use",
+            "q82": "PE_attendance",
+            "q83": "sports_team_participation",
+            "q85": "HIV_testing",
+            "q86": "oral_health_care",
+            "q87": "asthma",
+            "q88": "sleep_on_school_night",
+            "q89": "grades_in_school",
+            "qhallucdrug": "ever_used_LSD",
+            "qsportsdrink": "sports_drinks",
+            "qwater": "plain_water",
+            "qfoodallergy": "food_allergies",
+            "qmusclestrength": "muscle_stregthening",
+            "qindoortanning": "indoor_tanning",
+            "qsunburn": "sunburn",
+            "qconcentrating": "difficulty_concentrating",
+            "qspeakenglish": "how_well_speak_English",
+        }
+
+        # The dataframe contains separate questionnaire questions, here we merge these columns to our project dataframe
+        interest_columns = [x for x in range(89)] + [
+            221,
+            231,
+            234,
+            236,
+            238,
+            240,
+            241,
+            242,
+            245,
+        ]
+
+    elif data == "pennycook_1" or data == "pennycook":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        # interest_columns = [7,8,9,11,12,13,14,27,28,30,31,32,33,47,48,49,50.51,52,54,55,56,57,58,59,
+        #                     73,74,75,76,77,78,79] + [x for x in range(79,193)] + [314,315,316,317,318,319] + [
+        #     x for x in range(328, 345)
+        # ] + [x for x in range(346, 356)] + [363,364,365,366,367,368,369,370,375]
+        interest_columns = ([
+            7,
+            8,
+            9,
+            11,
+            12,
+            13,
+            14,
+            15,
+            27,
+            28,
+            30,
+            31,
+            32,
+            33,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            363,
+            364,
+            365,
+            366,
+            367,
+            368,
+            369,
+            370,
+            375,
+        ] +
+        # [
+        #     x for x in range(73, 103) #cond1
+        # ] +
+        # [
+        #     x for x in range(103, 133) #cond2
+        # ] +
+        # [
+        #     x for x in range(133, 163) #cond3
+        # ]
+        #    +
+        [x for x in range(163, 193)] +  #cond4
+                            [
+            x for x in range(314, 321) #crt
+        ] + [
+            x for x in range(328, 345) #sci
+        ] + [
+            x for x in range(346, 356) #mms
+        ])
+        # interest_columns = []
+
+
+    elif data == "pennycook_2":
+        drop_columns = []
+        rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+        interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    elif data == "bot_bot_mturk":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = (
+            [11, 12, 13, 14, 16, 17, 18, 19]
+            + [x for x in range(20, 34)]
+            + [35, 36, 37, 38, 39]
+        )
+
+    elif data == "inattentive":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [x for x in range(10, 16)] + [
+            x for x in range(18, 24)
+        ] + [
+            25, 27, 29, 30, 31, 32, 33, 35
+        ] + [
+            x for x in range(36, 55)
+        ]
+
+    elif data == "attention_check":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [x for x in range(4, 64)]
+
+    elif data == "moral_data":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [x for x in range(2, 10)] + [
+            x for x in range(12, 77)
+        ]
+
+    elif data == "mturk_ethics":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [13, 14] + [
+            x for x in range(17, 52)
+        ] + [53, 55, 58, 61, 63, 65, 68, 69, 70, 72, 73, 74, 76, 77]
+
+    elif data == "public_opinion":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [19, 4] + [
+            x for x in range(21, 175)
+        ]
+
+    elif data == "racial_data":
+        drop_columns = []
+        rename_columns = {}
+        interest_columns = [5, 6] + [
+            x for x in range(7, 73)
+        ]
+
+    else:
+        drop_columns = drop_columns.split(",")
+        rename_columns = {
+            x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
+        }
+        interest_columns = [int(x) for x in interest_columns.split(",")]
+
+    if data == "pennycook":
+        additional_drop_columns = []
+        additional_rename_columns = {
+            "COVID_concern_1": "COVID_concern",
+            "Media1.0": "news_side",
+            "Media1": "news_criticism",
+            "Media3_1": "trust_national_news_org",
+            "Media3_2": "trust_local_news_org",
+            "Media3_3": "trust_friends_family",
+            "Media3_11": "trust_social",
+            "Media3_12": "trust_fact_checkers",
+            "SharingType_1": "sharing_political",
+            "SharingType_2": "sharing_sports",
+            "SharingType_3": "sharing_celebrity",
+            "SharingType_4": "sharing_science",
+            "SharingType_6": "sharing_business",
+            "SharingType_7": "sharing_other",
+            "SocialMedia_1": "facebook",
+            "SocialMedia_2": "twitter",
+            "SocialMedia_3": "snapchat",
+            "SocialMedia_4": "instagram",
+            "SocialMedia_5": "whatsapp",
+            "SocialMedia_6": "other",
+        }
+
+        additional_interest_columns = [
+            1,
+            2,
+            4,
+            5,
+            6,
+            51,
+            52,
+            310,
+            312,
+            313,
+            314,
+            315,
+            18,
+            19,
+            21,
+            22,
+            23,
+            24,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            296,
+            301,
+        ]
+
+    return (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    )
