@@ -4,11 +4,20 @@ from sklearn.preprocessing import StandardScaler
 
 
 class DataLoader:
-    """
-    Class to handle data loading and preprocessing for the project.
-    """
+    """Class to handle data loading and preprocessing for the project."""
 
-    def __init__(self, drop_columns, rename_columns, columns_of_interest, additional_drop_columns=None, additional_rename_columns=None, additional_columns_of_interest=None):
+    DATASET_URL_2015 = "data/sadc_2015only_national.csv"
+    DATASET_URL_2017 = "data/sadc_2017only_national_full.csv"
+
+    def __init__(
+        self,
+        drop_columns=None,
+        rename_columns=None,
+        columns_of_interest=None,
+        additional_drop_columns=None,
+        additional_rename_columns=None,
+        additional_columns_of_interest=None,
+    ):
         self.DROP_COLUMNS = drop_columns
         self.RENAME_COLUMNS = rename_columns
         self.COLUMNS_OF_INTEREST = columns_of_interest

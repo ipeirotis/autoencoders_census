@@ -41,7 +41,7 @@ decoder_dropout_3: 0.0
 decoder_batch_norm_3: False
 
 test_size: 0.2
-epochs: 1
+epochs: 20
 kl_loss_weight: 1
 batch_size: 256
 anneal_period: 20000
