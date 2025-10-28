@@ -105,7 +105,7 @@ class Evaluator:
     def evaluate(self, data, vectorizer, project_data, variable_types, output_path):
 
         logger.info(f"Imputing missing values....")
-        modified_data = self.impute_missing_values(data)
+        # modified_data = self.impute_missing_values(data)
 
         logger.info("Predicting....")
         predictions = self.predict(data)

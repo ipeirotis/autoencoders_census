@@ -399,7 +399,7 @@ class DataLoader:
             df["stweight_cat"] == "bottom-extreme",
         ]
 
-        df.loc[sum(conditions) >= 4, outlier_column] = 1
+        df.loc[sum(conditions) >= 3, outlier_column] = 1
 
         return df[outlier_column]
 
