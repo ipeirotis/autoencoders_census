@@ -155,7 +155,7 @@ def evaluate_errors(error_data, column, values):
                 relevant.append(1 if row[column] != value else 0)
 
             else:
-                relevant.append(1 if str(row[column]) != str(value) else 0)
+                relevant.append(1 if str(int(row[column])) != str(int(value)) else 0)
 
     else:
         temp_data = error_data.copy()
