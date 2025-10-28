@@ -5,7 +5,14 @@ from tensorflow import keras
 
 @keras.utils.register_keras_serializable()
 class CustomCategoricalCrossentropyAE(tf.keras.losses.Loss):
-    def __init__(self, attribute_cardinalities, name="custom_categorical_crossentropy"):
+    def __init__(self, attribute_cardinalities, percentile=80, name="custom_categorical_crossentropy"):
+        """
+        Custom Categorical Crossentropy loss with Percentile Loss (PL) adjustment.
+
+        Args:
+            attribute_cardinalities (list): List of categorical attribute cardinalities.
+            percentile (float): The percentile threshold for loss exclusion (e.g., 90 means ignoring the top 10% highest-loss samples).
+        """
         super(CustomCategoricalCrossentropyAE, self).__init__(name=name)
         self.attribute_cardinalities = attribute_cardinalities
         self.percentile = percentile  # Exclude top X% highest-loss samples
