@@ -80,7 +80,14 @@ class LinearAutoencoder(tf.keras.Model):
         encoder = self.build_encoder(config)
         decoder = self.build_decoder(config)
 
-        autoencoder = PCAAutoencoderWithOrthogonality(encoder, decoder, lambda_ortho=1e-2)
-        autoencoder.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9))
+        # autoencoder = PCAAutoencoderWithOrthogonality(encoder, decoder, lambda_ortho=1e-2)
+        inputs = tf.keras.Input(shape=self.INPUT_SHAPE)
+        encoded = encoder(inputs)
+        decoded = decoder(encoded)
+        autoencoder = tf.keras.Model(inputs, decoded)
+        # print()
+
+        autoencoder.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9),
+        loss="mse")
 
         return autoencoder
