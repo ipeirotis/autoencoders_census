@@ -484,8 +484,29 @@ def evaluate_on_condition(
     additional_drop_columns = None
     additional_rename_columns = None
     additional_interest_columns = None
+    drop_columns = []
 
     if data == "sadc_2017" or data == "sadc_2015":
+        drop_columns = [
+            "sitecode",
+            "sitename",
+            "sitetype",
+            "sitetypenum",
+            "year",
+            "survyear",
+            "record",
+            "stratum",
+            "PSU",
+            "q14",
+            "q20",
+            "q31",
+            "q36",
+            "q37",
+            "q39",
+            "q44",
+            "q56",
+            "q84",
+        ]
         rename_columns = {
             "age": "age",
             "sex": "sex",
@@ -581,7 +602,17 @@ def evaluate_on_condition(
             "qconcentrating": "difficulty_concentrating",
             "qspeakenglish": "how_well_speak_English",
         }
-        interest_columns = []
+        interest_columns = [x for x in range(89)] + [
+            221,
+            231,
+            234,
+            236,
+            238,
+            240,
+            241,
+            242,
+            245,
+        ]
 
     elif data == "pennycook_1" or data == "pennycook":
         rename_columns = {
@@ -798,7 +829,7 @@ def evaluate_on_condition(
     set_seed(seed)
 
     data_loader = DataLoader(
-        [],
+        drop_columns,
         rename_columns,
         interest_columns,
         additional_drop_columns=additional_drop_columns,
@@ -861,8 +892,30 @@ column_to_condition,
     additional_drop_columns = None
     additional_rename_columns = None
     additional_interest_columns = None
+    drop_columns = []
 
     if data == "sadc_2017" or data == "sadc_2015":
+        drop_columns = [
+            "sitecode",
+            "sitename",
+            "sitetype",
+            "sitetypenum",
+            "year",
+            "survyear",
+            "record",
+            "stratum",
+            "PSU",
+            "q14",
+            "q20",
+            "q31",
+            "q36",
+            "q37",
+            "q39",
+            "q44",
+            "q56",
+            "q84",
+        ]
+
         rename_columns = {
             "age": "age",
             "sex": "sex",
@@ -958,7 +1011,20 @@ column_to_condition,
             "qconcentrating": "difficulty_concentrating",
             "qspeakenglish": "how_well_speak_English",
         }
-        interest_columns = []
+
+        # The dataframe contains separate questionnaire questions, here we merge these columns to our project dataframe
+        interest_columns = [x for x in range(89)] + [
+            221,
+            231,
+            234,
+            236,
+            238,
+            240,
+            241,
+            242,
+            245,
+        ]
+
 
     elif data == "pennycook_1" or data == "pennycook":
         rename_columns = {
@@ -983,7 +1049,131 @@ column_to_condition,
             "SocialMedia_5": "whatsapp",
             "SocialMedia_6": "other",
         }
-        interest_columns = []
+
+        # interest_columns = [7,8,9,11,12,13,14,27,28,30,31,32,33,47,48,49,50.51,52,54,55,56,57,58,59,
+
+        #                     73,74,75,76,77,78,79] + [x for x in range(79,193)] + [314,315,316,317,318,319] + [
+
+        #     x for x in range(328, 345)
+
+        # ] + [x for x in range(346, 356)] + [363,364,365,366,367,368,369,370,375]
+
+        interest_columns = ([
+
+                                7,
+
+                                8,
+
+                                9,
+
+                                11,
+
+                                12,
+
+                                13,
+
+                                14,
+
+                                15,
+
+                                27,
+
+                                28,
+
+                                30,
+
+                                31,
+
+                                32,
+
+                                33,
+
+                                47,
+
+                                48,
+
+                                49,
+
+                                50,
+
+                                51,
+
+                                52,
+
+                                54,
+
+                                55,
+
+                                56,
+
+                                57,
+
+                                58,
+
+                                59,
+
+                                363,
+
+                                364,
+
+                                365,
+
+                                366,
+
+                                367,
+
+                                368,
+
+                                369,
+
+                                370,
+
+                                375,
+
+                            ] +
+
+                            # [
+                            #
+                            #     x for x in range(73, 103)  # cond1
+                            #
+                            # ] +
+
+                            # [
+                            #
+                            #     x for x in range(103, 133)  # cond2
+                            #
+                            # ] +
+
+                            # [
+                            #
+                            #     x for x in range(133, 163)  # cond3
+                            #
+                            # ]
+                            #
+                            # +
+
+                            [x for x in range(163, 193)] +  # cond4
+
+                            [
+
+                                x for x in range(314, 321)  # crt
+
+                            ] + [
+
+                                x for x in range(328, 345)  # sci
+
+                            ] + [
+
+                                x for x in range(346, 356)  # mms
+
+                            ]
+                            + [385] #Random
+                            + [x for x in range(63, 72)] #screen1
+                            + [x for x in range(321, 327)] #screen2
+                            + [357] #screen3
+                            )
+
+        # interest_columns = []
 
     elif data == "pennycook_2":
         rename_columns = {
@@ -1175,7 +1365,7 @@ column_to_condition,
     set_seed(seed)
 
     data_loader = DataLoader(
-        [],
+        drop_columns,
         rename_columns,
         interest_columns,
         additional_drop_columns=additional_drop_columns,
@@ -1198,10 +1388,10 @@ column_to_condition,
 
     # drop column of column_to_condition from project_data
     if column_to_condition is not None:
-        column_to_condition = column_to_condition[0]
-        project_data = project_data.drop(columns=column_to_condition)#["attn1", "attn2", "attnB"])
+        # column_to_condition = column_to_condition[0]
+        project_data = project_data.drop(columns=column_to_condition) #column_to_condition
         variable_types = {
-            k: v for k, v in variable_types.items() if k != column_to_condition#!= "attn1" and k != "attn2" and k != "attnB"
+            k: v for k, v in variable_types.items() if k not in column_to_condition
         }
 
     vectorizer = Table2Vector(variable_types)
