@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-
+from typing import Dict, Any, List, Tuple, Optional
+import io
 
 class DataLoader:
     """
@@ -237,7 +238,13 @@ class DataLoader:
 
         return self.prepare_original_dataset(df, replacements={})
 
-    def load_data(self, dataset: str):
+    def load_data(self, dataset: str, csv_bytes: bytes = None):
+        # new "uploaded" branch
+        if dataset == "uploaded":
+            if csv_bytes is None:
+                raise ValueError("csv_bytes must be provided for uploaded dataset")
+            return self.load_uploaded_csv(csv_bytes)
+        
         if dataset == "sadc_2015":
             return self.load_2015()
 
@@ -275,18 +282,53 @@ class DataLoader:
             return self.load_racial_data()
 
         return self.load_eval_dataset(dataset)
+    
+    def load_uploaded_csv(self, csv_bytes: bytes, replacements=None):
+        """
+        Specific entry point for frontend uploads
+        
+        Args:
+            csv_bytes: The raw file content as bytes
+            replacements: Optional dictionary for column name replacements
+        """
+        if replacements is None:
+            replacements = {}
+            
+        # load raw data
+        df = self.load_original_data(csv_bytes)
+        
+        # run preprocessing
+        return self.prepare_original_dataset(df, replacements=replacements)
 
-    def load_original_data(self, dataset_url):
-        try:
-            original_df = pd.read_csv(dataset_url, encoding="utf-8")
-        except UnicodeDecodeError:
-            original_df = pd.read_csv(dataset_url, encoding="latin1")
-
+    def load_original_data(self, dataset_source):
+        """
+        Loads data from a file path (str) or raw bytes (uploaded file).
+        """
+        # 1. Handle Raw Bytes (frontend upload) 
+        if isinstance(dataset_source, bytes):
+            try:
+                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="utf-8")
+            except UnicodeDecodeError:
+                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="latin1")
+                
+        # 2. Handle File-like objects
+        elif isinstance(dataset_source, io.IOBase):
+            original_df = pd.read_csv(dataset_source) 
+            
+        else:
+            try:
+                original_df = pd.read_csv(dataset_source, encoding="utf-8")
+            except UnicodeDecodeError:
+                original_df = pd.read_csv(dataset_source, encoding="latin1")
+                
+        # colummn processing logic
         if self.DROP_COLUMNS:
-            original_df = original_df.drop(columns=self.DROP_COLUMNS)
+            original_df = original_df.drop(columns=self.DROP_COLUMNS, errors='ignore')
 
         if self.COLUMNS_OF_INTEREST:
-            original_df = original_df.iloc[:, self.COLUMNS_OF_INTEREST]
+            # only select columns that actually exist in the dataframe
+            existing_cols = [c for c in self.COLUMNS_OF_INTEREST if c in original_df.columns]
+            original_df = original_df[existing_cols]
 
         if self.RENAME_COLUMNS:
             original_df = original_df.rename(columns=self.RENAME_COLUMNS)
@@ -300,15 +342,28 @@ class DataLoader:
         df_copy = df.copy()
 
         for column in numeric_vars:
+            # 1. safety check
+            # check if column is empty or has all the same value before scaling
+            if df_copy[column].nunique(dropna=True) <= 1:
+                df_copy[column + "_cat"] = "NA"
+                
+                # drop the original bad column
+                df_copy = df_copy.drop(columns=[column])
+                continue
+                
             missing_mask = df_copy[column].isna()
-
+            
+            # 2. Scale
             scaler = StandardScaler()
-            df_copy[column] = scaler.fit_transform(df_copy[[column]])
-
-            highest_value = list(df_copy[column].value_counts().items())[0]
+            scaled_values = scaler.fit_transform(df_copy[[column]])
+            df_copy[column] = scaled_values
+            
+            # 3. Binning Logic
+            counts = df_copy[column].value_counts()
+            highest_value = list(counts.items())[0]
+            # highest_value = list(df_copy[column].value_counts().items())[0]
             if highest_value[1] > 0.5 * len(df_copy):
                 used_value = highest_value[0]
-
             else:
                 used_value = 0
 
@@ -332,7 +387,9 @@ class DataLoader:
             ]
             df_copy[column + "_cat"] = np.select(conditions, choices, default="unknown")
 
-        df_copy = df_copy.drop(columns=numeric_vars)
+        # 4. final cleanup
+        # ignore errors because some columns in numeric_vars might have already been dropped inside the loop above
+        df_copy = df_copy.drop(columns=numeric_vars, errors='ignore')
 
         return df_copy
 
@@ -359,7 +416,7 @@ class DataLoader:
             project_data[k] = project_data[k].replace(v)
 
         numeric_vars = self.detect_continuous_vars(project_data)
-        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars)
+        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
 
         categorical_vars = [c for c in project_data.columns if c not in numeric_vars]
         for c in categorical_vars:

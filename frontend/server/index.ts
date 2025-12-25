@@ -1,61 +1,105 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { handleDemo } from "./routes/demo";
-import { _readonly } from "zod/v4/core";
+import multer from "multer";
+import { Storage } from "@google-cloud/storage";
+import { Firestore } from "@google-cloud/firestore";
+import { PubSub } from "@google-cloud/pubsub";
+import path from "path";
+
+// --- Configuration ---
+const GCS_BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name"; // TODO: Set in .env
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || "your-project-id"; // TODO: Set in .env
+const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens to
+
+// --- Google Cloud Clients ---
+const storage = new Storage({ projectId: PROJECT_ID });
+const firestore = new Firestore({ projectId: PROJECT_ID });
+const pubsub = new PubSub({ projectId: PROJECT_ID });
+
+// --- Multer Middleware (Memory Storage) ---
+// Keeps the file in RAM (req.file.buffer) so we can stream it to GCS
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // Limit to 50MB
+});
 
 export function createServer() {
   const app = express();
 
-  // Middleware
   app.use(cors());
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Health check
-  // Example API routes
-  app.get("/api/ping", (_req, res) => {
-    console.log("✅ Ping endpoint hit");
-    res.json({ message: "pong" });
-  });
+  // Health Check
+  app.get("/api/ping", (_req, res) => res.json({ message: "pong" }));
 
-  app.get("/api/demo", (_req, res) => {
-    res.json({ message: "This is a demo endpoint." });
-  });
-
-  // Upload endpoint
-  app.post("/api/upload", async (req, res) => {
-    console.log("Upload request received");
-    console.log("Headers:", req.headers);
-    console.log("Body:", req.body);
+  // --- The Main Upload Route ---
+  app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
-      // mock data for now
-      // TODO: Connect to autoencoder backend
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
 
-      const mockResponse = {
-        dataset_id: `dataset_${Date.now()}`,
-        schema: [
-          { name: "column1", detected_type: "string" },
-          { name: "column2", detected_type: "number" }
-        ],
-        preview: [
-          { column1: "value1", column2: 123 },
-          { column1: "value2", column2: 456 }
-        ]
+      const originalName = req.file.originalname;
+      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const safeFilename = `uploads/${uniqueId}/${originalName}`;
+
+      console.log(`🚀 Starting upload job: ${uniqueId}`);
+
+      // 1. Stream file to Google Cloud Storage
+      const bucket = storage.bucket(GCS_BUCKET_NAME);
+      const file = bucket.file(safeFilename);
+
+      await file.save(req.file.buffer, {
+        contentType: req.file.mimetype,
+        resumable: false, // Simple upload for small/medium files
+      });
+
+      console.log(`✅ File saved to GCS: ${safeFilename}`);
+
+      // 2. Create Firestore Document (Job Metadata)
+      const jobMetadata = {
+        jobId: uniqueId,
+        fileName: originalName,
+        gcsPath: safeFilename,
+        bucket: GCS_BUCKET_NAME,
+        status: "uploaded", // Initial status
+        createdAt: new Date().toISOString(),
       };
-      res.json(mockResponse);
+
+      await firestore.collection("jobs").doc(uniqueId).set(jobMetadata);
+      console.log(`✅ Firestore document created: jobs/${uniqueId}`);
+
+      // 3. Publish Pub/Sub Message (Trigger the Worker)
+      const messageBuffer = Buffer.from(JSON.stringify({
+        jobId: uniqueId,
+        bucket: GCS_BUCKET_NAME,
+        file: safeFilename
+      }));
+
+      try {
+        await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: messageBuffer });
+        console.log(`✅ Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
+      } catch (pubError) {
+        console.warn("⚠️ Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", pubError);
+        // We don't fail the request here, just warn, so you can test upload without PubSub initially
+      }
+
+      // 4. Return Job ID to Frontend
+      res.json({
+        success: true,
+        jobId: uniqueId,
+        message: "Upload successful. Processing started.",
+      });
+
     } catch (error) {
-      console.error("Upload error:", error);
-      res.status(500).json({ 
-        error: error instanceof Error ? error.message : "Failed to process upload." 
+      console.error("❌ Upload failed:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Internal Server Error",
       });
     }
   });
-
-  // ✅ SAFE way to log routes (optional - you can remove this entirely)
-  console.log("📋 Registered routes:");
-  console.log("  GET /api/ping");
-  console.log("  POST /api/upload");
 
   return app;
 }

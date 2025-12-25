@@ -6,6 +6,7 @@ import click
 import pandas as pd
 import yaml
 
+from google.cloud import storage
 from dataset.loader import DataLoader
 from evaluate.evaluator import Evaluator
 from evaluate.generator import Generator
@@ -29,6 +30,41 @@ logger = logging.Logger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
+def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="guassian"):
+    """
+    Reusable training logic that accepts a DataFrame directly.
+    Used by both the CLI and the Cloud Worker
+    """
+    
+    # 1. Transform Data
+    # We assume df is already processed by the loader
+    
+    # infer variable types if not passed (simplified for pipeline)
+    variable_types = {c: "categorical" for c in df.columns}
+    
+    logger.info(f"transforming the data...")
+    vectorizer = Table2Vector(variable_types)
+    vectorized_df = vectorizer.vectorize_table(df)
+    
+    cardinalities = list(df.describe().T["unique"].values)
+    
+    model = get_model(model_name, cardinalities) 
+    
+    logger.info(f"loading config from {config_path}...")
+    with open(config_path, "r") as file:
+        config = yaml.safe_load(file)
+
+    trainer = Trainer(model, config)
+
+    logger.info(f"Training model....")
+    model, history = trainer.train(vectorized_df, prior)
+
+    logger.info("Saving model....")
+    save_model(model, output_path)
+    save_history(history, output_path)
+    # model_analysis(history, output_path, model_name) # Optional for worker
+
+    return model, history
 
 @click.group()
 def cli():
