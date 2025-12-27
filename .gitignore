@@ -59,3 +59,4 @@ Thumbs.db
 # Model checkpoints
 backend/data/models/
 backend/data/checkpoints/
+cache/
