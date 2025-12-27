@@ -26,6 +26,7 @@ from utils import (
     define_necessary_elements,
 )
 
+
 logger = logging.Logger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
@@ -110,11 +111,15 @@ def train(
     config,
     output,
 ):
-
+    # --- ADD THIS PRINT ---
+    print("DEBUG: Starting main.py train function...")
+    
+    # 1. Set Seed
     set_seed(seed)
 
-    logger.info(f"Loading data....")
+    
 
+    # 2. Parse Column Arguments (Safe Split)
     (
         drop_columns,
         rename_columns,
@@ -124,6 +129,8 @@ def train(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    # 3. Initialize Loader
+    logger.info(f"Loading data....")
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -132,34 +139,118 @@ def train(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
     )
-    project_data, variable_types = data_loader.load_data(data)
+    
+    # 4. Load the raw result from the updated loader
+    # this handles any return format
+    load_result = data_loader.load_data(data)
+    
+    project_data = None
+    variable_types = {}
+    
+    # Attempt to unpack if it's a tuple 
+    if isinstance(load_result, tuple):
+        print(f"DEBUG: Unpacking tuple of length {len(load_result)}")
+        project_data = load_result[0]
+        possible_metadata = load_result[1] # this contains 'ignore_columns' and 'variable_types'
+        
+        # if the first item is ALSO a tuple (nested), unpack again
+        if isinstance(project_data, tuple):
+            print(f"DEBUG: Unpacking nested tuple of length {len(project_data)}")
+            project_data = project_data[0]
+            
+        # Extract variable types from metadata dict
+        if isinstance(possible_metadata, dict) and "variable_types" in possible_metadata:
+            variable_types = possible_metadata["variable_types"]
+        else:
+            variable_types = possible_metadata
+    else:
+        # It's just a dataframe
+        project_data = load_result
+        metadata = {}
 
+    # 5. Data Cleaning 
+    print(f"DEBUG: Data Shape before cleaning: {project_data.shape}")
+    project_data = project_data.fillna("missing")
+    project_data = project_data.astype(str)
+    
+    # No more than 9 unique values
+    cols_to_keep = []
+    for col in project_data.columns:
+        if project_data[col].nunique() > 1 and project_data[col].nunique() <= 9:
+            cols_to_keep.append(col)
+        else:
+            # Optional: Print what we're dropping to be safe
+            pass
+        
+    #print(f"DEBUG: Dropping {len(project_data.columns) - len(cols_to_keep)} columns with >9 unique values.")
+    project_data = project_data[cols_to_keep]
+    print(f"DEBUG: Final Data Shape: {project_data.shape}")
+    
+    # Sync variable types
+    # reset variable types to match ONLY the surviving columns
+    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
+
+    # 6. Vectorization
+    print("DEBUG: Starting vectorization...")
     logger.info(f"Transforming the data....")
+    
+    # FIX: Safety Net for Missing Types 
+    # if variable_types is None or empty, the vectorizer will do nothing.
+    # Must force it to treat everything as categorical so it encodes the strings
+    if not variable_types:
+        print("WARNING: variable_types is empty! Auto-generating types as 'categorical'...")
+        variable_types = {col: 'categorical' for col in project_data.columns}
+    else:
+        # Extra Safety: Ensure all cols exist in data exist in variable_types
+        missing_cols = [c for c in project_data.columns if c not in variable_types]
+        if missing_cols:
+            print(f"DEBUG:FOUND {len(missing_cols)} columns missing from type map. Adding them as 'categorical': {missing_cols}")
+            for c in missing_cols:
+                variable_types[c] = 'categorical'
+
     vectorizer = Table2Vector(variable_types)
     vectorized_df = vectorizer.vectorize_table(project_data)
 
-    cardinalities = list(project_data.describe().T["unique"].values)
+    # 7. Float Conversion ("TensorFlow" Fix)
+    print("DEBUG: Converting data to float32...")
+    try:
+        vectorized_df = vectorized_df.astype('float32')
+    except Exception as e:
+        print("❌ CRITICAL: Data contains non-numeric values!")
+        # Find the specific column causing the crash
+        for col in vectorized_df.columns:
+            try:
+                vectorized_df[col].astype('float32')
+            except:
+                print(f"👉 BAD COLUMN: '{col}' contains: {vectorized_df[col].unique()[:5]}")
+        raise e
 
-    logger.info(f"Looading model....")
+    # 8. Calculate Cardinalities
+    # calculate unique values directly (ignoreing data types)
+    cardinalities = [project_data[c].nunique() for c in project_data.columns]
+
+    # 9. Build and Train model
+    logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
     logger.info(f"Loading config from config file....")
     with open(config, "r") as file:
-        config = yaml.safe_load(file)
+        config_dict = yaml.safe_load(file)
 
-    trainer = Trainer(model, config)
+    trainer = Trainer(model, config_dict)
 
     logger.info(f"Training model....")
     model, history = trainer.train(vectorized_df, prior)
 
+    # 10. Save Results
     logger.info("Saving model....")
     save_model(model, output)
-
     logger.info(f"Saving history....")
     save_history(history, output)
-
     logger.info("Saving plots....")
     model_analysis(history, output, model_name)
+    
+    print("Done: Training pipeline finished successfully.")
 
 
 @cli.command("search_hyperparameters")
@@ -363,9 +454,10 @@ def find_outliers(
     k,
     output,
 ):
-
+    print("DEBUG: Starting find_outliers...")
     set_seed(seed)
 
+    # 1. Parse Column Arguments 
     (
         drop_columns,
         rename_columns,
@@ -375,6 +467,8 @@ def find_outliers(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    # 2. Initialize Loader
+    logger.info(f"Loading data...")
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -384,28 +478,99 @@ def find_outliers(
         additional_columns_of_interest=additional_interest_columns,
     )
 
-    logger.info(f"Loading model....")
-    model = load_model(model_path)
+    # 3. Load and Unpakc Data
+    load_result = data_loader.load_data(data)
+    
+    project_data = None
+    variable_types = {}
+    
+    # Hand Tuple/Metadata unpacking 
+    if isinstance(load_result, tuple):
+        project_data = load_result[0]
+        metadata = load_result[1]
+        
+        # If nested tuple, take the first one
+        if isinstance(project_data, tuple):
+            project_data = project_data[0]
 
-    logger.info(f"Loading data....")
-    project_data, variable_types = data_loader.load_data(data)
+        # Extract types from metadata
+        if isinstance(metadata, dict) and "variable_types" in metadata:
+            variable_types = metadata["variable_types"]
+        else:
+            variable_types = metadata
+    else:
+        project_data = load_result
+        variable_types = {}
+        
+    # 4. Data Cleaning
+    print(f"DEBUG: Data Shape before cleaning: {project_data.shape}")
+    project_data = project_data.fillna("missing")
+    project_data = project_data.astype(str)
 
-    base_df = None
-    if isinstance(project_data, tuple):
-        project_data, base_df = project_data
-
+    # No more than 9 unique values
+    cols_to_keep = []
+    for col in project_data.columns:
+        if project_data[col].nunique() > 1 and project_data[col].nunique() <= 9:
+            cols_to_keep.append(col)
+        else:
+            # Optional: Print what we're dropping to be safe
+            pass
+        
+    #print(f"DEBUG: Dropping {len(project_data.columns) - len(cols_to_keep)} columns with >9 unique values.")
+    project_data = project_data[cols_to_keep]
+    
+    # Sync variable types
+    # reset variable types to match ONLY the surviving columns
+    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
+    
+    # 5. Vectorization
     logger.info(f"Transforming the data....")
+    
+    if not variable_types:
+        print("WARNING: variable_types is empty! Auto-generating types...")
+        variable_types = {col: "categorical" for col in project_data.columns}
+    else:
+        # Fill in any gaps
+        missing_cols = [c for c in project_data.columns if c not in variable_types]
+        for col in missing_cols:
+            variable_types[col] = "categorical" 
+            
     vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data, base_df)
+    vectorized_df = vectorizer.vectorize_table(project_data)
+    
+    # 6. Float Conversion (TensorFlow Fix)
+    print("DEBUG: Converting data to float32...")
+    try:
+        vectorized_df = vectorized_df.astype('float32')
+    except Exception as e:
+        print("CRITICAL: Vectorization failed to produce numbers.")
+        raise e
+    
+    # 7. Load model
+    logger.info(f"Loading model from {model_path}")
+    try:
+        # Try loading strictly as Keras first 
+        from tensorflow.keras.models import load_model as keras_load_model
+        model = keras_load_model(model_path)
+    except:
+        # Fallback to internal loader
+        model = load_model(model_path)
 
-    attr_cardinalities = list(project_data.describe().T["unique"].values)
+    # 8. Calculate Cardinalities
+    attr_cardinalities = [project_data[c].nunique() for c in project_data.columns]
 
+    # 9. Get Outliers
+    logger.info("Calculating outliers...")
     error_df = get_outliers_list(
         vectorized_df, model, k, attr_cardinalities, vectorizer, prior
     )
 
+    # 10. Save
     logger.info("Saving outliers....")
+    if not os.path.exists(output):
+        os.makedirs(output) 
     save_to_csv(error_df, output, "errors")
+    print("DONE: Outliers identified successfully.")
 
 
 @cli.command("generate")

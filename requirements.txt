@@ -1,6 +1,6 @@
 numpy~=1.26.4
-tensorflow~=2.15.0
-keras~=2.9.0
+tensorflow~=2.15.0  # Changed from 2.20.0
+keras~=2.15.0       # Changed from 2.9.0 (compatible with TF 2.15)
 keras-tuner~=1.4.7
 scikit-learn~=1.5.2
 pandas~=2.2.3

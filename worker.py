@@ -38,26 +38,27 @@ def process_upload_job(job_id, bucket_name, file_path):
         
         # 2. Load Data using load_uploaded_csv method
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
-        df, types = loader.load_uploaded_csv(csv_bytes)
+        df, metadata = loader.load_uploaded_csv(csv_bytes)
+        ignored_list = metadata.get("ignored_columns", [])
 
         logger.info(f"Successfully loaded CSV data. Shape: {df.shape}")
         
         # 3. Calculate States (for Frontend)
         stats = {
             "total_rows": len(df),
-            "columns": []
+            "kept_columns": [],
+            "ignored_columns": ignored_list
         }
         
         for col in df.columns:
-            col_stat = {
+            stats["kept_columns"].append({
                 "name": col,
                 "type": str(df[col].dtype),
                 "unique_values": df[col].nunique(),
-                "missing_values": int(df[col].isnull().sum())
-            }
-            stats["columns"].append(col_stat)
+                "missing_values": int(df[col].isin(["NA", "nan"]).sum()) # check custom missing tokens
+            })
             
-        logger.info(f"Generated stats for {len(stats['columns'])} columns.")
+        logger.info(f"Stats: Kept {len(stats['kept_columns'])} columns, Ignored {len(stats['ignored_columns'])} columns.")
 
         # 4. Save to Firestore
         doc_ref = db.collection('jobs').document(job_id)

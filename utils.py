@@ -642,11 +642,12 @@ def define_necessary_elements(data, drop_columns, rename_columns, interest_colum
         ]
 
     else:
-        drop_columns = drop_columns.split(",")
+        # Handle None values gracefully
+        drop_columns = drop_columns.split(",") if drop_columns else []
         rename_columns = {
             x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
-        }
-        interest_columns = [int(x) for x in interest_columns.split(",")]
+        } if rename_columns else {}
+        interest_columns = [int(x) for x in interest_columns.split(",")] if interest_columns else []
 
     if data == "pennycook":
         additional_drop_columns = []

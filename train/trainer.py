@@ -37,6 +37,8 @@ class Trainer:
             verbose=1,
             validation_data=(X_test, X_test),
             callbacks=[early_stopping],
+            workers=0,                 # <--- ADD THIS (Forces single thread)
+            use_multiprocessing=False  # <--- ADD THIS (Prevents forking crash)
         )
 
         return model, history

@@ -3,6 +3,11 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from typing import Dict, Any, List, Tuple, Optional
 import io
+import warnings 
+from pandas.errors import PerformanceWarning
+
+# Silence the gramentation warning so the terminal stays clean
+warnings.simplefilter(action='ignore', category=PerformanceWarning)
 
 class DataLoader:
     """
@@ -408,26 +413,58 @@ class DataLoader:
 
     def prepare_original_dataset(self, project_data, replacements):
         """
-        Prepare the dataset for the project, this includes selecting specific columns, renaming them
-        and categorizing them as numeric or categorical.
+        1. Bins numeric data (making it categorical)
+        2. Checks ALL columns for cardinality 
+        3. Drops anything with > 9 unique values 
+        4. Returns cleaned dataframe and list of ignored columns
         """
-
+        # Apply replacements
         for k, v in replacements.items():
-            project_data[k] = project_data[k].replace(v)
+            if k in project_data.columns: # ensure code doesn't crash if col doesn't exist in current dataset
+                project_data[k] = project_data[k].replace(v)
 
-        numeric_vars = self.detect_continuous_vars(project_data)
+        # 1. Identify and Bin Numeric Columns 
+        # Only treat as numeric if the col is truly numeric 
+        numeric_vars = []
+        for col in project_data.columns:
+            if pd.api.types.is_numeric_dtype(project_data[col]):
+                numeric_vars.append(col)
+
         project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
 
-        categorical_vars = [c for c in project_data.columns if c not in numeric_vars]
-        for c in categorical_vars:
-            project_data[c] = project_data[c].astype("str")
+        # 2. Filter High-Cardinality Columns 
+        kept_columns = []
+        ignored_columns = []
+        
+        MAX_UNIQUE = 9
+        
+        for col in project_data.columns:
+            # Drop NaN first to get true unique count 
+            n_unique = project_data[col].nunique(dropna=True)
+            
+            if n_unique <= MAX_UNIQUE:
+                kept_columns.append(col)
+                # kept as string for the Autoencoder
+                project_data[col] = project_data[col].astype(str)
+            else:
+                ignored_columns.append({
+                    "name": col,
+                    "unique_values": n_unique,
+                    "reason": f"High cardinality (> {MAX_UNIQUE} unique values)"
+                })
 
-        variable_types = {
-            column: ("numeric" if column in numeric_vars else "categorical")
-            for column in project_data.columns
+        # 3. Construct Final dataframe
+        clean_df = project_data[kept_columns].copy()
+        
+        # 4. Prepare Metadata
+        variable_types = {c: "categorical" for c in clean_df.columns}
+        
+        metadata = {
+            "ignored_columns": ignored_columns,
+            "variable_types": variable_types
         }
-
-        return project_data, variable_types
+        
+        return clean_df, variable_types
 
     def find_outlier_data(self, data, outlier_column):
         """
