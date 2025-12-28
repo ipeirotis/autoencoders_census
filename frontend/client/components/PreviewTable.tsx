@@ -88,7 +88,17 @@ export const PreviewTable: React.FC<PreviewTableProps> = ({
                     className="px-4 py-2 text-gray-700"
                   >
                     <span className="block truncate max-w-xs">
-                      {String(row[header] || "")}
+                      {/* CONDITIONAL FORMATTING START */}
+                      {header === "reconstruction_error" ? (
+                        <span className="font-bold text-red-600">
+                          {typeof row[header] === "number"
+                            ? (row[header] as number).toFixed(4)
+                            : String(row[header])}
+                        </span>
+                      ) : (
+                        String(row[header] || "")
+                      )}
+                      {/* CONDITIONAL FORMATTING END */}
                     </span>
                   </td>
                 ))}

@@ -5,6 +5,7 @@ import multer from "multer";
 import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
+import { jobsRouter } from "./routes/jobs";
 import path from "path";
 
 // --- Configuration ---
@@ -34,7 +35,10 @@ export function createServer() {
   // Health Check
   app.get("/api/ping", (_req, res) => res.json({ message: "pong" }));
 
+  app.use("/api/jobs", jobsRouter);
+
   // --- The Main Upload Route ---
+  // (keep this as a fallback, but new frontend uses the 'jobsRouter' endpoints instead)
   app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) {
@@ -86,10 +90,9 @@ export function createServer() {
         // We don't fail the request here, just warn, so you can test upload without PubSub initially
       }
 
-      // 4. Return Job ID to Frontend
+      // 4. Return Response matching UploadResponse interface
       res.json({
-        success: true,
-        jobId: uniqueId,
+        dataset_id: uniqueId, // <--- CHANGED from jobId to dataset_id
         message: "Upload successful. Processing started.",
       });
 
@@ -98,6 +101,25 @@ export function createServer() {
       res.status(500).json({
         error: error instanceof Error ? error.message : "Internal Server Error",
       });
+    }
+  });
+
+  // --- NEW: Job Status Route ---
+  app.get("/api/jobs/job-status/:jobId", async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const doc = await firestore.collection("jobs").doc(jobId).get();
+
+      if (!doc.exists) {
+        // If the doc doesn't exist yet, it might be just starting
+        return res.json({ status: "uploading" });
+      }
+
+      const data = doc.data();
+      res.json(data); // Returns { status: 'complete', outliers: [...] }
+    } catch (error) {
+      console.error("Error checking status:", error);
+      res.status(500).json({ error: "Failed to check status" });
     }
   });
 

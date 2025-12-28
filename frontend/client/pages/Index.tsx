@@ -1,303 +1,215 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Dropzone } from "@/components/Dropzone";
-import { PreviewTable } from "@/components/PreviewTable";
+import { PreviewTable } from "@/components/PreviewTable"; // We reuse this for results!
 import { ResultCard } from "@/components/ResultCard";
 import { parseCSVFile, type CSVParseResult } from "@/utils/csv-parser";
-import { uploadCsv, type UploadResponse } from "@/utils/api";
+import { uploadCsv, checkJobStatus, type JobStatus } from "@/utils/api";
 import { cn } from "@/lib/utils";
 
-interface UploadState {
-  file: File | null;
-  preview: CSVParseResult | null;
-  error: string | null;
-  response: UploadResponse | null;
-  copied: boolean;
-}
-
-const INITIAL_STATE: UploadState = {
-  file: null,
-  preview: null,
-  error: null,
-  response: null,
-  copied: false,
-};
-
 export default function Index() {
-  const [state, setState] = useState<UploadState>(INITIAL_STATE);
-  const [skipRows, setSkipRows] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<CSVParseResult | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [status, setStatus] = useState<JobStatus["status"]>("uploading"); // Reusing for idle state
+  const [results, setResults] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<any>(null); 
   const { toast } = useToast();
 
-  // User uploads CSV file
-  const handleFileSelect = useCallback(
-    async (file: File) => {
-      // Validate file size (warn if > 50MB)
-      const MAX_SIZE = 50 * 1024 * 1024;
-      if (file.size > MAX_SIZE) {
-        if (
-          !window.confirm(
-            `File is ${(file.size / 1024 / 1024).toFixed(1)}MB (max recommended: 50MB). Continue?`
-          )
-        ) {
-          return;
-        }
-      }
+  // Polling Logic
+  useEffect(() => {
+    if (!jobId || status === "complete" || status === "error") return;
 
-      setState((prev) => ({ ...prev, file, error: null }));
-
+    const interval = setInterval(async () => {
       try {
-        // Parse CSV for preview
-        const preview = await parseCSVFile(file, skipRows);
-        setState((prev) => ({ ...prev, preview, error: null }));
-      } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "Failed to parse CSV";
-        setState((prev) => ({ ...prev, error: errorMessage, preview: null }));
-        toast({
-          variant: "destructive",
-          title: "CSV Parse Error",
-          description: errorMessage,
-        });
+        const data = await checkJobStatus(jobId);
+        if (data.status === "complete") {
+          setResults(data.outliers || []);
+          setStats(data.stats);
+          setStatus("complete");
+          toast({ title: "Analysis Complete", description: "Outliers detected successfully." });
+          clearInterval(interval);
+        } else if (data.status === "error") {
+          setError(data.error || "Unknown error occurred");
+          setStatus("error");
+          clearInterval(interval);
+        }
+      } catch (e) {
+        console.error("Polling error", e);
       }
-    },
-    [skipRows, toast]
-  );
-  // User clicks upload button
-  const handleUpload = useCallback(async () => {
-    if (!state.file) return;
+    }, 2000); // Check every 2 seconds
 
-    setIsLoading(true);
+    return () => clearInterval(interval);
+  }, [jobId, status, toast]);
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
+    setFile(selectedFile);
+    setError(null);
+    setResults([]);
+    setJobId(null);
+    setStatus("uploading"); // Reset to initial state (idle)
+
     try {
-      const response = await uploadCsv(state.file, skipRows);
-
-      // Save to localStorage
-      localStorage.setItem(
-        "last_upload",
-        JSON.stringify({
-          dataset_id: response.dataset_id,
-          filename: state.file.name,
-          uploadedAt: new Date().toISOString(),
-        })
-      );
-
-      setState((prev) => ({
-        ...prev,
-        response,
-        error: null,
-      }));
-
-      toast({
-        title: "Success",
-        description: "CSV uploaded successfully",
-      });
+      const parsed = await parseCSVFile(selectedFile);
+      setPreview(parsed);
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "Upload failed";
-      setState((prev) => ({ ...prev, error: errorMessage }));
-      toast({
-        variant: "destructive",
-        title: "Upload Error",
-        description: errorMessage,
-      });
-    } finally {
-      setIsLoading(false);
+      setError("Failed to parse CSV preview");
     }
-  }, [state.file, skipRows, toast]);
-
-  const handleReset = useCallback(() => {
-    setState(INITIAL_STATE);
-    setSkipRows(0);
   }, []);
 
-  const handleCopyDatasetId = useCallback(() => {
-    if (state.response?.dataset_id) {
-      navigator.clipboard.writeText(state.response.dataset_id);
-      setState((prev) => ({ ...prev, copied: true }));
-      setTimeout(() => {
-        setState((prev) => ({ ...prev, copied: false }));
-      }, 2000);
-    }
-  }, [state.response?.dataset_id]);
+  const handleUpload = useCallback(async () => {
+    if (!file) return;
+    setStatus("processing"); // Show spinner
 
-  const hasFile = !!state.file;
-  const hasPreview = !!state.preview;
-  const hasResponse = !!state.response;
-  const hasError = !!state.error;
+    try {
+      const response = await uploadCsv(file);
+      setJobId(response.jobId);
+      // Polling useEffect will take over now
+    } catch (err: any) {
+      setError(err.message);
+      setStatus("error");
+    }
+  }, [file]);
+
+  const handleReset = () => {
+    setFile(null);
+    setPreview(null);
+    setJobId(null);
+    setResults([]);
+    setError(null);
+    setStatus("uploading");
+  };
+
+  const getOrderedHeaders = (row: any) => {
+    if (!row) return [];
+    const allHeaders = Object.keys(row);
+    
+    // Remove 'reconstruction_error' from the list
+    const dataHeaders = allHeaders.filter(h => h !== 'reconstruction_error');
+    
+    // Put 'reconstruction_error' at the very start
+    return ['reconstruction_error', ...dataHeaders];
+  };
+
+
+  const isProcessing = status === "processing" || (jobId && status !== "complete" && status !== "error");
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-5xl mx-auto">
+    <div className="min-h-screen bg-slate-50 py-8 px-4">
+      <div className="max-w-5xl mx-auto space-y-6">
+        
         {/* Header */}
-        <div className="mb-8 flex items-center gap-4">
-          <img 
-            src="/AutoEncoder_logo_black.png" 
-            alt="AutoEncoder Logo Black" 
-            className="w-16 h-16 object-contain"
-          />
-          <div>
-            <h1 className="text-4xl font-bold text-gray-900">CSV Upload</h1>
-            <p className="mt-2 text-gray-600">
-              Upload your CSV file to process and analyze
-            </p>
-          </div>
+        <div className="flex items-center gap-4 mb-8">
+          <img src="/AutoEncoder_logo_black.png" alt="Logo" className="w-16 h-16 object-contain" />
+          <h1 className="text-4xl font-bold text-gray-900">Outlier Detection</h1>
         </div>
 
-        {/* Main Content */}
-        <div className="space-y-6">
-          {/* Dropzone Card */}
+        {/* 1. Upload Section */}
+        {!jobId && (
           <div className="bg-white rounded-2xl shadow p-6">
-            <Dropzone onFileSelect={handleFileSelect} disabled={isLoading} />
+            <Dropzone onFileSelect={handleFileSelect} disabled={isProcessing} />
+            
+            {/* Input Preview */}
+            {preview && (
+              <div className="mt-6">
+                <h3 className="text-sm font-semibold mb-2">Input Preview</h3>
+                <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
+                
+                <div className="mt-4 flex gap-4">
+                  <Button onClick={handleUpload} disabled={isProcessing} size="lg" className="flex-1">
+                    {isProcessing ? "Processing..." : "Run Analysis"}
+                  </Button>
+                  <Button onClick={handleReset} variant="outline" size="lg">Reset</Button>
+                </div>
+              </div>
+            )}
           </div>
+        )}
 
-          {/* Skip Rows Input */}
-          {hasFile && (
-            <div className="bg-white rounded-2xl shadow p-6">
-              <div className="space-y-3">
-                <Label htmlFor="skip-rows" className="text-sm font-medium text-gray-900">
-                  Skip rows from beginning
-                </Label>
-                <Input
-                  id="skip-rows"
-                  type="number"
-                  min="0"
-                  max="1000"
-                  value={skipRows}
-                  onChange={(e) => {
-                    const newSkipRows = Math.max(0, parseInt(e.target.value) || 0);
-                    setSkipRows(newSkipRows);
-                    if (state.file) {
-                      handleFileSelect(state.file);
-                    }
-                  }}
-                  disabled={isLoading}
-                  placeholder="0"
-                  className="w-full"
-                />
-                <p className="text-xs text-gray-500">
-                  Useful for skipping header rows or metadata. Leave at 0 to include all rows.
+        {/* 2. Processing State */}
+        {isProcessing && (
+          <div className="bg-white rounded-2xl shadow p-12 text-center">
+            <div className="animate-spin w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <h2 className="text-xl font-semibold">Analyzing Data...</h2>
+            <p className="text-gray-500">This may take a minute. Detecting outliers.</p>
+          </div>
+        )}
+
+        {/* 3. Results Section */}
+        {status === "complete" && results.length > 0 && (
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            
+            {/* Left Column: Outlier Table (Takes 75% width) */}
+            <div className="lg:col-span-3 bg-white rounded-2xl shadow p-6">
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-green-700">Analysis Complete</h2>
+                <p className="text-gray-600">
+                  Found {results.length} outliers. 
+                  Kept {stats?.kept_columns?.length || 0} columns.
                 </p>
               </div>
+              <Button onClick={handleReset} variant="outline">Analyze New File</Button>
             </div>
-          )}
 
-          {/* Preview Card */}
-          {hasPreview && (
-            <div className="bg-white rounded-2xl shadow p-6">
-              <div className="space-y-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">
-                    File: {state.file?.name}
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    Size: {(state.file?.size || 0) > 1024 * 1000
-                      ? ((state.file?.size || 0) / 1024 / 1024).toFixed(1) + ' MB'
-                      : ((state.file?.size || 0) / 1024).toFixed(1) + ' KB'}
-                  </p>
-                </div>
-                <PreviewTable
-                  rows={state.preview.rows}
-                  headers={state.preview.headers}
-                  totalRows={state.preview.totalRows}
-                />
+            <ResultCard type="success" message="Outliers identified successfully." />
+            
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold mb-3">Top Outliers</h3>
+              
+              {/* [STEP 2] Update the headers prop here */}
+              <PreviewTable 
+                rows={results} 
+                headers={getOrderedHeaders(results[0])}  
+                totalRows={results.length} 
+              />
+              
+            </div>
+          </div>
+
+            {/* Right Column: Dropped Columns Panel (Takes 25% width) */}
+            <div className="lg:col-span-1 bg-white rounded-2xl shadow p-6 h-fit max-h-[80vh] flex flex-col">
+              <div className="mb-4">
+                <h3 className="font-bold text-gray-800 text-lg">Dropped Columns</h3>
+                <p className="text-xs text-gray-500">
+                  Removed due to high cardinality ({'>'}9) or being a single value.
+                </p>
+              </div>
+              
+              <div className="overflow-y-auto pr-2 space-y-2 flex-1">
+                {stats?.ignored_columns?.length === 0 ? (
+                  <p className="text-sm text-gray-400 italic">No columns dropped.</p>
+                ) : (
+                  stats?.ignored_columns?.map((col: any, idx: number) => (
+                    <div key={idx} className="p-3 bg-slate-50 rounded border border-slate-200 text-sm group hover:border-red-300 transition-colors">
+                      <div className="font-semibold text-slate-700 truncate" title={col.name}>
+                        {col.name}
+                      </div>
+                      <div className="flex justify-between items-center mt-1">
+                        <span className="text-xs text-slate-500">Unique Values:</span>
+                        <span className="text-xs font-mono bg-slate-200 px-1.5 py-0.5 rounded text-slate-600">
+                          {col.unique_values}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-          )}
 
-          {/* Error Alert */}
-          {hasError && !hasResponse && (
-            <ResultCard
-              type="error"
-              message={state.error}
-              onCopy={
-                state.error
-                  ? () => {
-                      navigator.clipboard.writeText(state.error!);
-                      setState((prev) => ({ ...prev, copied: true }));
-                      setTimeout(() => {
-                        setState((prev) => ({ ...prev, copied: false }));
-                      }, 2000);
-                    }
-                  : undefined
-              }
-              copied={state.copied}
-            />
-          )}
+          </div>
+        )}
 
-          {/* Action Buttons */}
-          {hasFile && !hasResponse && (
-            <div className="flex gap-3">
-              <Button
-                data-testid="upload-button"
-                onClick={handleUpload}
-                disabled={!hasFile || isLoading}
-                size="lg"
-                className={cn(
-                  "flex-1",
-                  isLoading && "opacity-75"
-                )}
-              >
-                {isLoading ? (
-                  <>
-                    <svg
-                      className="animate-spin -ml-1 mr-2 h-5 w-5"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      />
-                    </svg>
-                    Uploading...
-                  </>
-                ) : (
-                  "Upload"
-                )}
-              </Button>
-              <Button
-                onClick={handleReset}
-                variant="outline"
-                size="lg"
-              >
-                Reset
-              </Button>
-            </div>
-          )}
+        {/* Error State */}
+        {error && (
+          <div className="bg-white rounded-2xl shadow p-6">
+             <ResultCard type="error" message={error} />
+             <Button onClick={handleReset} variant="outline" className="mt-4">Try Again</Button>
+          </div>
+        )}
 
-          {/* Success Card */}
-          {hasResponse && (
-            <div className="space-y-4">
-              <ResultCard
-                type="success"
-                message={`Dataset ID: ${state.response.dataset_id}`}
-                onCopy={handleCopyDatasetId}
-                copied={state.copied}
-              />
-              <Button
-                onClick={handleReset}
-                variant="outline"
-                size="lg"
-                className="w-full"
-              >
-                Upload Another File
-              </Button>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

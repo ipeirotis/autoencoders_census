@@ -25,3 +25,5 @@ dist-ssr
 
 .config/
 !.env
+
+service-account.json

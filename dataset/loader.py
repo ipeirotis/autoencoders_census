@@ -464,7 +464,7 @@ class DataLoader:
             "variable_types": variable_types
         }
         
-        return clean_df, variable_types
+        return clean_df, metadata
 
     def find_outlier_data(self, data, outlier_column):
         """

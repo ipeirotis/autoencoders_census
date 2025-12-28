@@ -52,6 +52,7 @@ frontend/out/
 *.pth
 *.ckpt
 
+
 # OS
 .DS_Store
 Thumbs.db
@@ -60,3 +61,10 @@ Thumbs.db
 backend/data/models/
 backend/data/checkpoints/
 cache/
+
+# --- Secrets & Keys 
+service-account.json
+*.json
+!package.json
+!tsconfig.json
+!cors.json

@@ -3,41 +3,66 @@ export interface DemoResponse {
 }
 
 export interface UploadResponse {
-  dataset_id: string;
-  schema?: Array<{ name: string; detected_type: string }>;
-  preview?: Record<string, unknown>[];
+  jobId: string;
 }
 
-// Import from shared
-//import { UploadResponse } from "@shared/api";  
+export interface JobStatus {
+  status: "uploading" | "processing" | "complete" | "error";
+  stats?: any;
+  outliers?: any[];
+  error?: string;
+}
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
-// Uploads CSV file to backend and returns response
-export async function uploadCsv(
-  file: File,
-  skipRows: number = 0
-): Promise<UploadResponse> {
-  const base =
-    import.meta.env.VITE_API_BASE_URL ||
-    "";
-
-  const form = new FormData();
-  form.append("file", file);
-  form.append("skip_rows", String(skipRows));
-
-  const url = `${base}/api/upload`;
-  console.log("Uploading to URL:", url);
-  console.log("Base URL:", base);
-
-  const res = await fetch(url, {
+// 1. Get the Signed URL
+async function getUploadUrl(filename: string, contentType: string) {
+  const res = await fetch(`${API_BASE}/api/jobs/upload-url`, {
     method: "POST",
-    body: form,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename, contentType }),
   });
+  if (!res.ok) throw new Error("Failed to get upload URL");
+  return res.json();
+}
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(errorText || "Upload failed");
-  }
+// 2. Upload File to GCS
+async function uploadToGcs(url: string, file: File) {
+  const res = await fetch(url, {
+    method: "PUT",
+    body: file,
+    headers: { "Content-Type": file.type },
+  });
+  if (!res.ok) throw new Error("Failed to upload file to storage");
+}
 
+// 3. Notify Backend to Start Worker
+async function startJob(jobId: string, gcsFileName: string) {
+  const res = await fetch(`${API_BASE}/api/jobs/start-job`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId, gcsFileName }),
+  });
+  if (!res.ok) throw new Error("Failed to start processing job");
+}
+
+// Main Upload Function
+export async function uploadCsv(file: File): Promise<UploadResponse> {
+  // A. Get URL
+  const { url, jobId, gcsFileName } = await getUploadUrl(file.name, file.type);
+  
+  // B. Upload
+  await uploadToGcs(url, file);
+  
+  // C. Start Job
+  await startJob(jobId, gcsFileName);
+  
+  return { jobId };
+}
+
+// Poll Status
+export async function checkJobStatus(jobId: string): Promise<JobStatus> {
+  const res = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`);
+  if (!res.ok) throw new Error("Failed to check job status");
   return res.json();
 }
