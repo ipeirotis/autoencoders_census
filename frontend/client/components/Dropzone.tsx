@@ -1,3 +1,9 @@
+/**
+ * File upload drag-and-drop component
+ *
+ * This component allows users to upload CSV files by dragging and dropping them
+ * into a designated area or by clicking to open a file dialog.
+ */
 import React, { useState, useRef } from "react";
 import { Upload } from "lucide-react";
 import { cn } from "@/lib/utils";

@@ -1,3 +1,26 @@
+"""
+CLI Entry Point - Command-line interface for training and evaluating autoencoders.
+
+Commands:
+    train                  - Train an autoencoder (AE or VAE) on a dataset
+    search_hyperparameters - Run Bayesian hyperparameter optimization
+    evaluate               - Evaluate model reconstruction accuracy
+    find_outliers          - Detect outliers using reconstruction error
+    generate               - Generate synthetic samples from a trained VAE
+
+Example Usage:
+    python main.py train --model_name AE --data sadc_2017
+    python main.py find_outliers --model_path cache/simple_model/autoencoder
+    python main.py search_hyperparameters --model_name VAE
+
+Pipeline Steps:
+    1. Load data via DataLoader (handles multiple dataset formats)
+    2. Clean data (fill NaN, apply "Rule of 9" filter for cardinality)
+    3. Vectorize categorical data via Table2Vector (one-hot encoding)
+    4. Train/load autoencoder model
+    5. Calculate reconstruction error for outlier detection
+"""
+
 import logging
 import os
 import sys

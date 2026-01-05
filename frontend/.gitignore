@@ -27,3 +27,4 @@ dist-ssr
 !.env
 
 service-account.json
+service-account-key.json

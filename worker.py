@@ -1,4 +1,23 @@
-import os 
+"""
+Pub/Sub Worker - Listens for upload messages and dispatches Vertex AI training jobs.
+
+This worker runs locally and:
+1. Subscribes to a Pub/Sub topic for new upload notifications
+2. Receives messages containing {jobId, bucket, file} from the Express backend
+3. Triggers a Vertex AI CustomContainerTrainingJob to process the data
+4. The Vertex AI container downloads the CSV, runs outlier detection, and writes results to Firestore
+
+Usage:
+    export GOOGLE_APPLICATION_CREDENTIALS="frontend/service-account-key.json"
+    python worker.py
+
+Required Environment Variables:
+    - GOOGLE_CLOUD_PROJECT: GCP project ID
+    - GCS_BUCKET_NAME: Storage bucket for uploads
+    - PUBSUB_SUBSCRIPTION_ID: Pub/Sub subscription to listen on
+"""
+
+import os
 import io
 import json
 import logging 

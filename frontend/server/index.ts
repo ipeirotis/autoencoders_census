@@ -1,3 +1,17 @@
+/**
+ * server/index.ts
+ *
+ * Express API server for the AutoEncoder app. This is where the GCS upload happens.
+ *
+ * Key responsibilities:
+ * - Initialize Google Cloud clients (Storage, Firestore, PubSub)
+ * - POST /api/upload endpoint that:
+ *   1. Receives file via multer
+ *   2. Uploads to GCS bucket
+ *   3. Creates Firestore job document
+ *   4. Publishes Pub/Sub message to trigger worker
+ */
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";

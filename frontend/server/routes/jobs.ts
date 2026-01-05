@@ -1,3 +1,13 @@
+/**
+ * Jobs API Routes - Handles the 3-step upload workflow:
+ *
+ * 1. POST /upload-url  - Generates a signed GCS URL for direct browser upload
+ * 2. POST /start-job   - Creates Firestore doc + publishes Pub/Sub message to trigger worker
+ * 3. GET /job-status/:id - Polls Firestore for job status and results
+ *
+ * Flow: Frontend → (signed URL) → GCS → Pub/Sub → worker.py → Vertex AI → Firestore → Frontend polls
+ */
+
 import { Router } from "express";
 import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";

@@ -1,4 +1,17 @@
-# script that lives inside a Docker container, runs on Vertex AI, downloads the data, trains the model, and saves the results
+"""
+Vertex AI Container Entry Point - Runs inside Docker on Vertex AI.
+
+This script is triggered by worker.py and executes the full ML pipeline:
+1. Downloads CSV from GCS bucket
+2. Cleans data (fill NaN, apply "Rule of 9" filter)
+3. Vectorizes categorical columns (one-hot encoding)
+4. Builds and trains an autoencoder (15 epochs)
+5. Calculates reconstruction error for each row
+6. Saves top 100 outliers to Firestore
+
+Usage (called by Vertex AI):
+    python task.py --job-id=abc123 --bucket-name=autoencoder_data --file-path=uploads/abc123/data.csv
+"""
 
 import argparse
 import logging 

@@ -68,3 +68,12 @@ service-account.json
 !package.json
 !tsconfig.json
 !cors.json
+
+# --- Project Specific ---
+uploads/
+cache/
+*.log
+local_test/
+
+# --- Google Cloud ---
+.gcloudignore

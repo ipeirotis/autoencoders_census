@@ -1,3 +1,11 @@
+/**
+ * Frontend API client - calls Express endpoints
+ * 
+ * This orchestrates the 3-step upload:
+ * 1. getUploadUrl()  → POST /api/jobs/upload-url  → Gets signed GCS URL
+ * 2. uploadToGcs()   → PUT to signed URL          → Uploads file directly to GCS
+ * 3. startJob()      → POST /api/jobs/start-job   → Triggers Pub/Sub message
+ */
 export interface DemoResponse {
   message: string;
 }

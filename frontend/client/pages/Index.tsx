@@ -1,3 +1,7 @@
+/**
+ * Main UI - dropzone, preview, results display
+ */
+
 import React, { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
