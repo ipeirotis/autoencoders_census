@@ -18,19 +18,9 @@ Required Environment Variables:
 """
 
 import os
-import io
 import json
-import logging 
-import argparse
-import pandas as pd
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from features.transform import Table2Vector
-from model.loss import CustomCategoricalCrossentropyAE  
-from google.cloud import storage, pubsub_v1, firestore, aiplatform
-from dataset.loader import DataLoader
-from model.autoencoder import AutoencoderModel
+import logging
+from google.cloud import pubsub_v1, firestore, aiplatform
 from dotenv import load_dotenv
 
 # worker.py

@@ -76,4 +76,4 @@ cache/
 local_test/
 
 # --- Google Cloud ---
-.gcloudignore
+.gcloudignore.planning/
