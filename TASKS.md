@@ -572,3 +572,26 @@ The autoencoder needs enough data to learn meaningful patterns. With default arc
 The web frontend requires Google Cloud Storage, Pub/Sub, and Firestore — meaning even evaluating the web product requires a GCP project with billing enabled. For academic adoption, this is prohibitive. For typical survey datasets (1,000-10,000 rows, 50-100 columns), local processing completes in seconds to minutes, making the distributed architecture unnecessary.
 
 **Recommendation**: Add a fully local web mode that processes files in-memory on a single server without any cloud dependencies. The `--mode=local` worker is a step in this direction but still requires GCS for file upload and Firestore for job tracking.
+
+## 10. Chow-Liu Tree Outlier Scoring
+
+### Overview
+
+`chow_liu_rank.py` adds a Chow-Liu tree-based outlier scoring method. It fits a maximum spanning tree of pairwise mutual information on categorical data and computes per-row log-likelihood — rows with low log-likelihood are outliers. This is a fast, non-neural baseline with no training hyperparameters.
+
+### 10.1 Integrate Chow-Liu outlier scoring into the main CLI
+
+`chow_liu_rank.py` contains `CLTree` and `rank_rows_by_chow_liu()` which fit a Chow-Liu tree on categorical data and score rows by log-likelihood. Currently this is a standalone script with hardcoded dataset loading at the bottom of the file. It should be:
+- Integrated as a model option in `main.py` (e.g., `--model_name CL`)
+- The inline script code at the bottom of `chow_liu_rank.py` (lines 251-290) should be removed or moved to a separate runner script
+- The unused imports (`alembic`, `gitdb`) at the top should be removed
+
+### 10.2 Add tests for Chow-Liu tree
+
+No tests exist for the Chow-Liu components. Add:
+- Unit tests for `CLTree.fit()` and `CLTree.log_likelihood()` on synthetic data
+- Test that `rank_rows_by_chow_liu()` produces expected scoring columns (`logp`, `avg_logp`, `gmean_prob`, `rank_desc`, `pct`, `z`)
+
+### 10.3 Benchmark Chow-Liu vs AE for outlier detection
+
+The Chow-Liu tree provides a principled probabilistic baseline for outlier detection. Run comparisons on all built-in datasets using `evaluate_on_condition` to measure whether the tree-based approach (which is much faster and has no training hyperparameters) matches or exceeds the autoencoder for detecting known bad respondents. This directly addresses the concern in 9.2 about lacking baseline comparisons.

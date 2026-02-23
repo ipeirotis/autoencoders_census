@@ -37,12 +37,16 @@ autoencoders_census/
 │   ├── simple_variational_autoencoder.yaml
 │   ├── hp_autoencoder.yaml              # Hyperparameter search space for AE
 │   └── hp_variational_autoencoder.yaml  # Hyperparameter search space for VAE
+├── chow_liu_rank.py         # CLTree: Chow-Liu tree outlier scoring (log-likelihood ranking)
 ├── data/                    # CSV datasets (gitignored except checked-in SADC files)
 ├── tests/                   # Unit tests (pytest/unittest)
 │   ├── model/test_autoencoder.py
 │   ├── model/test_loss.py
 │   ├── features/test_transform.py
-│   └── dataset/test_loader.py
+│   ├── dataset/test_loader.py
+│   ├── test_integration_pipeline.py   # End-to-end pipeline test
+│   └── test_upload_pipeline.py        # Upload pipeline placeholder tests
+├── .github/workflows/ci.yml # GitHub Actions CI pipeline
 ├── notebooks/               # Jupyter notebooks for exploration and analysis
 ├── frontend/                # Full web UI (React + Express + TypeScript)
 │   ├── client/              # React 18 frontend (Vite, Tailwind, shadcn/ui)
@@ -66,6 +70,7 @@ Columns with more than 9 unique values or only 1 unique value are dropped before
 - **AE** (`AutoencoderModel`): Standard autoencoder with per-attribute softmax outputs and `CustomCategoricalCrossentropyAE` loss (with percentile-based loss trimming)
 - **VAE** (`VariationalAutoencoderModel`): Variational autoencoder supporting Gaussian and Gumbel-Softmax priors
 - **PCA** (`LinearAutoencoder`): PCA baseline for comparison
+- **Chow-Liu Tree** (`CLTree` in `chow_liu_rank.py`): Non-neural baseline that fits a Chow-Liu tree (maximum spanning tree of mutual information) on categorical data. Computes per-row log-likelihood under the tree; low-likelihood rows are outliers. Uses Laplace smoothing and Prim's algorithm. Also provides `rank_rows_by_chow_liu()` convenience function.
 
 ### Supported Datasets
 Built-in dataset configs in `main.py` and `utils.py`: `sadc_2017`, `sadc_2015`, `pennycook_1`, `pennycook_2`, `pennycook`, `bot_bot_mturk`, `inattentive`, `attention_check`, `moral_data`, `mturk_ethics`, `public_opinion`, `racial_data`. Custom CSVs can be uploaded via the web frontend.
