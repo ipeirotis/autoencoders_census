@@ -14,13 +14,13 @@ Dataset-specific column configs (`drop_columns`, `rename_columns`, `interest_col
 ### 1.4 Fix broken test_loader.py tests
 `tests/dataset/test_loader.py` references `DataLoader.DATASET_URL_2015` and `DataLoader.DATASET_URL_2017` class attributes and calls `DataLoader()` with no arguments. These no longer match the current `DataLoader.__init__` signature which requires `drop_columns`, `rename_columns`, and `columns_of_interest`. Update the tests to match the current API.
 
-### 1.5 Remove DEBUG print statements
-`main.py` contains multiple `print("DEBUG: ...")` statements (lines 138, 175-176, 195, 210, 217, 238, 480, 529, 565, etc.). Replace these with proper `logger.debug()` calls or remove them before release.
+### ~~1.5 Remove DEBUG print statements~~ DONE
+All `print("DEBUG: ...")` statements in `main.py` have been replaced with proper `logger.debug()`, `logger.warning()`, and `logger.error()` calls. Emoji-prefixed error prints were also cleaned up.
 
 ## 2. Harden the Upload Pipeline (Web UI)
 
-### 2.1 Implement end-to-end upload processing in worker.py
-The `worker.py` `process_upload_job()` function currently only dispatches to Vertex AI. The inline local-processing logic (lines 96-203) is entirely commented out. For a self-contained product, implement a local processing mode that downloads the CSV from GCS, runs the autoencoder pipeline, and writes results to Firestore -- without requiring Vertex AI.
+### ~~2.1 Implement end-to-end upload processing in worker.py~~ DONE
+`worker.py` now has two modes: `--mode=local` (default) processes uploads entirely locally (download from GCS, train autoencoder, score outliers, write to Firestore), and `--mode=vertex` dispatches to Vertex AI. The local mode enables running the demo without any Vertex AI setup. The worker also writes a `"processing"` status to Firestore before starting, so the frontend can show progress.
 
 ### 2.2 Handle arbitrary user CSV uploads robustly
 The current `load_uploaded_csv` path in `DataLoader` calls `prepare_original_dataset()` which bins numeric variables and applies the Rule of 9 filter. Verify this works correctly for CSVs with:
@@ -91,5 +91,158 @@ Include a small anonymized sample CSV in the repo (or a script to generate synth
 ### 6.3 Containerize the full stack
 Create a `docker-compose.yml` that runs the React frontend, Express API, and Python worker together. This enables one-command local deployment without needing three terminals.
 
-### 6.4 Document cloud deployment
-Write deployment instructions for GCP: building and pushing the training container, setting up Pub/Sub topics/subscriptions, configuring Firestore, and deploying the frontend (Netlify config already exists in `frontend/netlify.toml`).
+### ~~6.4 Document cloud deployment~~ DONE
+See section 7 below.
+
+## 7. Cloud Deployment Guide (GCP project: `autoencoders-census`)
+
+Full setup instructions for the demo website on GCP.
+
+### 7.1 GCP APIs to enable
+
+```bash
+gcloud services enable \
+  storage.googleapis.com \
+  firestore.googleapis.com \
+  pubsub.googleapis.com \
+  aiplatform.googleapis.com \
+  artifactregistry.googleapis.com \
+  --project=autoencoders-census
+```
+
+### 7.2 Google Cloud Storage
+
+Create the two required buckets:
+
+```bash
+# Bucket for uploaded CSV files (referenced in frontend/.env as GCS_BUCKET_NAME)
+gsutil mb -p autoencoders-census -l us-central1 gs://autoencoder_data
+
+# Staging bucket for Vertex AI (referenced in worker.py)
+gsutil mb -p autoencoders-census -l us-central1 gs://autoencoders-census-staging
+```
+
+Set CORS on the upload bucket so the browser can upload directly via signed URLs:
+
+```bash
+cat > /tmp/cors.json << 'EOF'
+[{
+  "origin": ["https://YOUR-NETLIFY-DOMAIN.netlify.app", "http://localhost:8080"],
+  "method": ["PUT", "GET"],
+  "responseHeader": ["Content-Type", "x-goog-resumable"],
+  "maxAgeSeconds": 3600
+}]
+EOF
+gsutil cors set /tmp/cors.json gs://autoencoder_data
+```
+
+### 7.3 Firestore
+
+```bash
+gcloud firestore databases create --project=autoencoders-census --location=us-central1
+```
+
+The `jobs` collection is created automatically when the first document is written.
+
+### 7.4 Pub/Sub
+
+```bash
+# Topic: Express server publishes here when a file is uploaded
+gcloud pubsub topics create job-upload-topic --project=autoencoders-census
+
+# Subscription: Python worker listens here
+gcloud pubsub subscriptions create job-upload-topic-sub \
+  --topic=job-upload-topic \
+  --project=autoencoders-census \
+  --ack-deadline=600
+```
+
+### 7.5 Artifact Registry + Docker image (for Vertex AI mode only)
+
+```bash
+# Create the Docker repo
+gcloud artifacts repositories create autoencoder-repo \
+  --repository-format=docker \
+  --location=us-central1 \
+  --project=autoencoders-census
+
+# Build and push the training container
+gcloud auth configure-docker us-central1-docker.pkg.dev
+docker build -t us-central1-docker.pkg.dev/autoencoders-census/autoencoder-repo/trainer:v1 .
+docker push us-central1-docker.pkg.dev/autoencoders-census/autoencoder-repo/trainer:v1
+```
+
+### 7.6 Service account
+
+```bash
+# Create service account for the Express server and Python worker
+gcloud iam service-accounts create autoencoder-web \
+  --display-name="AutoEncoder Web Service" \
+  --project=autoencoders-census
+
+SA=autoencoder-web@autoencoders-census.iam.gserviceaccount.com
+
+# Grant required roles
+gcloud projects add-iam-policy-binding autoencoders-census \
+  --member="serviceAccount:$SA" --role="roles/storage.admin"
+gcloud projects add-iam-policy-binding autoencoders-census \
+  --member="serviceAccount:$SA" --role="roles/datastore.user"
+gcloud projects add-iam-policy-binding autoencoders-census \
+  --member="serviceAccount:$SA" --role="roles/pubsub.editor"
+gcloud projects add-iam-policy-binding autoencoders-census \
+  --member="serviceAccount:$SA" --role="roles/aiplatform.user"
+gcloud projects add-iam-policy-binding autoencoders-census \
+  --member="serviceAccount:$SA" --role="roles/iam.serviceAccountUser"
+
+# Download key for local/server use
+gcloud iam service-accounts keys create frontend/service-account-key.json \
+  --iam-account=$SA
+```
+
+### 7.7 Environment variables
+
+**`frontend/.env`** (for Express API server):
+```env
+GCS_BUCKET_NAME=autoencoder_data
+GOOGLE_CLOUD_PROJECT=autoencoders-census
+PUBSUB_TOPIC_ID=job-upload-topic
+GOOGLE_APPLICATION_CREDENTIALS=service-account-key.json
+```
+
+**Python worker** (shell env or `.env` in repo root):
+```env
+GOOGLE_CLOUD_PROJECT=autoencoders-census
+GCS_BUCKET_NAME=autoencoder_data
+PUBSUB_SUBSCRIPTION_ID=job-upload-topic-sub
+GOOGLE_APPLICATION_CREDENTIALS=frontend/service-account-key.json
+```
+
+### 7.8 Frontend deployment (Netlify)
+
+The `frontend/netlify.toml` is already configured. In Netlify dashboard:
+
+1. Connect the repo, set base directory to `frontend/`
+2. Build command: `npm run build:client`
+3. Publish directory: `dist/spa`
+4. Set the same environment variables from 7.7 in the Netlify UI
+5. The `/api/*` routes are redirected to Netlify Functions via `netlify.toml`
+
+### 7.9 Worker hosting
+
+The Python worker (`worker.py`) is a long-running Pub/Sub subscriber. Options:
+
+| Option | Command | Best for |
+|--------|---------|----------|
+| Local dev | `python worker.py` | Development |
+| Local (Vertex AI) | `python worker.py --mode=vertex` | When you want GCP to do the ML |
+| GCE VM | Deploy on `e2-small` with startup script | Persistent demo |
+| Cloud Run (min-instances=1) | Containerize `worker.py` | Production |
+
+### 7.10 Quick-start (minimal demo, no Vertex AI)
+
+For the simplest possible demo that runs the full pipeline:
+
+1. Complete steps 7.1-7.4 and 7.6-7.7 (skip 7.5 -- no Vertex AI needed)
+2. Terminal 1: `python worker.py` (local mode, default)
+3. Terminal 2: `cd frontend && npm install && npm run dev`
+4. Open `http://localhost:8080`, upload a CSV, see results
