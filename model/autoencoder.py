@@ -1,3 +1,20 @@
+"""
+Autoencoder Model - Neural network for learning compressed representations of tabular data.
+
+Architecture:
+    - Encoder: Input -> Dense layers with dropout/batch norm -> Latent space
+    - Decoder: Latent space -> Dense layers -> Softmax outputs per categorical attribute
+
+Key Features:
+    - Handles categorical data via per-attribute softmax outputs
+    - Uses CustomCategoricalCrossentropyAE loss function
+    - Supports hyperparameter tuning via Keras Tuner (Bayesian optimization)
+    - Configurable via YAML config files
+
+The reconstruction error (difference between input and output) is used
+to identify outliers - rows that are difficult to reconstruct are anomalous.
+"""
+
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras

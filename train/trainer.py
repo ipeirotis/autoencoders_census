@@ -36,7 +36,7 @@ class Trainer:
             batch_size=self.config["batch_size"],
             verbose=1,
             validation_data=(X_test, X_test),
-            callbacks=[early_stopping],
+            callbacks=[early_stopping]
         )
 
         return model, history
