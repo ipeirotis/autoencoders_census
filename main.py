@@ -134,8 +134,7 @@ def train(
     config,
     output,
 ):
-    # --- ADD THIS PRINT ---
-    print("DEBUG: Starting main.py train function...")
+    logger.debug("Starting train function")
     
     # 1. Set Seed
     set_seed(seed)
@@ -172,13 +171,13 @@ def train(
     
     # Attempt to unpack if it's a tuple 
     if isinstance(load_result, tuple):
-        print(f"DEBUG: Unpacking tuple of length {len(load_result)}")
+        logger.debug(f"Unpacking tuple of length {len(load_result)}")
         project_data = load_result[0]
         possible_metadata = load_result[1] # this contains 'ignore_columns' and 'variable_types'
-        
+
         # if the first item is ALSO a tuple (nested), unpack again
         if isinstance(project_data, tuple):
-            print(f"DEBUG: Unpacking nested tuple of length {len(project_data)}")
+            logger.debug(f"Unpacking nested tuple of length {len(project_data)}")
             project_data = project_data[0]
             
         # Extract variable types from metadata dict
@@ -191,8 +190,8 @@ def train(
         project_data = load_result
         metadata = {}
 
-    # 5. Data Cleaning 
-    print(f"DEBUG: Data Shape before cleaning: {project_data.shape}")
+    # 5. Data Cleaning
+    logger.debug(f"Data shape before cleaning: {project_data.shape}")
     project_data = project_data.fillna("missing")
     project_data = project_data.astype(str)
     
@@ -205,29 +204,27 @@ def train(
             # Optional: Print what we're dropping to be safe
             pass
         
-    #print(f"DEBUG: Dropping {len(project_data.columns) - len(cols_to_keep)} columns with >9 unique values.")
     project_data = project_data[cols_to_keep]
-    print(f"DEBUG: Final Data Shape: {project_data.shape}")
+    logger.debug(f"Final data shape: {project_data.shape}")
     
     # Sync variable types
     # reset variable types to match ONLY the surviving columns
     variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
 
     # 6. Vectorization
-    print("DEBUG: Starting vectorization...")
-    logger.info(f"Transforming the data....")
-    
-    # FIX: Safety Net for Missing Types 
+    logger.info("Transforming the data....")
+
+    # Safety Net for Missing Types
     # if variable_types is None or empty, the vectorizer will do nothing.
     # Must force it to treat everything as categorical so it encodes the strings
     if not variable_types:
-        print("WARNING: variable_types is empty! Auto-generating types as 'categorical'...")
+        logger.warning("variable_types is empty, auto-generating types as 'categorical'")
         variable_types = {col: 'categorical' for col in project_data.columns}
     else:
-        # Extra Safety: Ensure all cols exist in data exist in variable_types
+        # Ensure all columns in data exist in variable_types
         missing_cols = [c for c in project_data.columns if c not in variable_types]
         if missing_cols:
-            print(f"DEBUG:FOUND {len(missing_cols)} columns missing from type map. Adding them as 'categorical': {missing_cols}")
+            logger.debug(f"Found {len(missing_cols)} columns missing from type map, adding as 'categorical': {missing_cols}")
             for c in missing_cols:
                 variable_types[c] = 'categorical'
 
@@ -235,17 +232,16 @@ def train(
     vectorized_df = vectorizer.vectorize_table(project_data)
 
     # 7. Float Conversion ("TensorFlow" Fix)
-    print("DEBUG: Converting data to float32...")
+    logger.debug("Converting data to float32")
     try:
         vectorized_df = vectorized_df.astype('float32')
     except Exception as e:
-        print("❌ CRITICAL: Data contains non-numeric values!")
-        # Find the specific column causing the crash
+        logger.error("Data contains non-numeric values after vectorization")
         for col in vectorized_df.columns:
             try:
                 vectorized_df[col].astype('float32')
-            except:
-                print(f"👉 BAD COLUMN: '{col}' contains: {vectorized_df[col].unique()[:5]}")
+            except Exception:
+                logger.error(f"Bad column: '{col}' contains: {vectorized_df[col].unique()[:5]}")
         raise e
 
     # 8. Calculate Cardinalities
@@ -273,7 +269,7 @@ def train(
     logger.info("Saving plots....")
     model_analysis(history, output, model_name)
     
-    print("Done: Training pipeline finished successfully.")
+    logger.info("Training pipeline finished successfully.")
 
 
 @cli.command("search_hyperparameters")
@@ -477,7 +473,7 @@ def find_outliers(
     k,
     output,
 ):
-    print("DEBUG: Starting find_outliers...")
+    logger.debug("Starting find_outliers")
     set_seed(seed)
 
     # 1. Parse Column Arguments 
@@ -526,7 +522,7 @@ def find_outliers(
         variable_types = {}
         
     # 4. Data Cleaning
-    print(f"DEBUG: Data Shape before cleaning: {project_data.shape}")
+    logger.debug(f"Data shape before cleaning: {project_data.shape}")
     project_data = project_data.fillna("missing")
     project_data = project_data.astype(str)
 
@@ -535,11 +531,7 @@ def find_outliers(
     for col in project_data.columns:
         if project_data[col].nunique() > 1 and project_data[col].nunique() <= 9:
             cols_to_keep.append(col)
-        else:
-            # Optional: Print what we're dropping to be safe
-            pass
-        
-    #print(f"DEBUG: Dropping {len(project_data.columns) - len(cols_to_keep)} columns with >9 unique values.")
+
     project_data = project_data[cols_to_keep]
     
     # Sync variable types
@@ -550,7 +542,7 @@ def find_outliers(
     logger.info(f"Transforming the data....")
     
     if not variable_types:
-        print("WARNING: variable_types is empty! Auto-generating types...")
+        logger.warning("variable_types is empty, auto-generating types as 'categorical'")
         variable_types = {col: "categorical" for col in project_data.columns}
     else:
         # Fill in any gaps
@@ -562,11 +554,11 @@ def find_outliers(
     vectorized_df = vectorizer.vectorize_table(project_data)
     
     # 6. Float Conversion (TensorFlow Fix)
-    print("DEBUG: Converting data to float32...")
+    logger.debug("Converting data to float32")
     try:
         vectorized_df = vectorized_df.astype('float32')
     except Exception as e:
-        print("CRITICAL: Vectorization failed to produce numbers.")
+        logger.error("Vectorization failed to produce numeric values")
         raise e
     
     # 7. Load model
@@ -593,7 +585,7 @@ def find_outliers(
     if not os.path.exists(output):
         os.makedirs(output) 
     save_to_csv(error_df, output, "errors")
-    print("DONE: Outliers identified successfully.")
+    logger.info("Outliers identified successfully.")
 
 
 @cli.command("generate")
