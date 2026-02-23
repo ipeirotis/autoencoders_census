@@ -464,7 +464,11 @@ The Rule of 9 drops every column with more than 9 unique values or only 1 unique
 
 What remains is only low-cardinality categoricals — often demographic questions (gender, education bracket, region) rather than the substantive survey items where inattentive responding is most visible. The model may end up detecting demographic outliers (unusual demographic combinations) rather than inattentive responders.
 
-**Recommendation**: Support ordinal and numeric variables natively rather than discarding them. Numeric columns could use MSE reconstruction loss directly; ordinal columns could use an ordered representation. At minimum, report to the user exactly which columns were kept and which were dropped, so they can judge whether the analysis is meaningful for their data.
+Additionally, there is a gap in the binning logic: `convert_to_categorical` in `dataset/loader.py` only bins columns with >20 unique values or float64 type. Integer columns with 10-20 unique values (e.g., a 1-10 satisfaction scale) are neither binned nor pass the Rule of 9 — they are silently dropped.
+
+One-hot encoding also discards ordinality: "Strongly Agree" vs "Agree" contributes the same reconstruction error as "Strongly Agree" vs "Strongly Disagree". A respondent who is slightly off contributes the same error as one who is maximally wrong.
+
+**Recommendation**: Support ordinal and numeric variables natively rather than discarding them. Numeric columns could use MSE reconstruction loss directly; ordinal columns could use an ordered representation or ordinal distance-weighted error. At minimum, report to the user exactly which columns were kept and which were dropped, so they can judge whether the analysis is meaningful for their data.
 
 ### 9.2 No comparison to traditional survey quality methods
 
@@ -478,7 +482,9 @@ Survey methodology has well-established inattentive responding detection methods
 
 The autoencoder approach is interesting because it can detect multivariate patterns that simpler methods miss. But without benchmarking against these baselines, it is hard to know whether the added complexity is justified. Some of these methods (longstring, IRV) are trivial to compute and might catch 80% of the bad respondents that the autoencoder catches.
 
-**Recommendation**: Implement at least longstring analysis and Mahalanobis distance as baseline comparisons. The `evaluate_on_condition` command already compares against ground-truth labels — use it to measure whether the autoencoder adds value over these simpler methods.
+Note that some of the built-in datasets (Pennycook, bot_bot_mturk) include timing data (`time_diff`, `submit_diff` columns), but these are likely dropped by the Rule of 9 because they have too many unique values. The autoencoder never sees the single strongest signal of low-quality responding.
+
+**Recommendation**: Implement at least longstring analysis and Mahalanobis distance as baseline comparisons. The `evaluate_on_condition` command already compares against ground-truth labels — use it to measure whether the autoencoder adds value over these simpler methods. The most impactful improvement may be an **ensemble approach** that combines the autoencoder's reconstruction error with traditional indicators (completion time, straightlining score, attention check failures) into a composite score. Each method has different blind spots; combining them would produce a far more robust quality indicator.
 
 ### 9.3 Evaluation relies on proxy ground truth, not validated labels
 
@@ -490,7 +496,9 @@ There is no evaluation that disentangles:
 - Unusual but genuine respondents (people with uncommon but real demographic/opinion combinations)
 - Data entry errors (typos, miscoded values)
 
-**Recommendation**: Include synthetic contamination experiments — inject known-bad rows (random responses, straight-lined responses, copy-pasted rows) into clean data and measure detection rates. This gives clean, unambiguous ground truth.
+There is also a circularity concern with the SADC evaluation: `find_outlier_data_sadc_2017` in `dataset/loader.py` constructs ground truth by checking whether respondents simultaneously report extreme values across multiple food/body measurement variables. This heuristic is itself an outlier detection rule — the autoencoder is being benchmarked on whether it can replicate a simpler, interpretable rule. The autoencoder's value proposition should be that it discovers patterns that hand-crafted rules cannot, but the evaluation framework cannot measure that.
+
+**Recommendation**: Include synthetic contamination experiments — inject known-bad rows (random responses, straight-lined responses, copy-pasted rows, bot-like patterns) into clean data and measure detection rates by type and severity. This gives clean, unambiguous ground truth and lets you characterize exactly what kinds of data quality issues the autoencoder can and cannot detect.
 
 ### 9.4 Outlier score lacks calibration and interpretability
 
@@ -542,3 +550,25 @@ The VAE (Variational Autoencoder) variant adds significant complexity (Gumbel-So
 For the outlier detection use case, the VAE's generative capabilities (sampling, latent interpolation) are not directly useful — what matters is reconstruction error quality. The VAE's KL regularization may actually *hurt* outlier detection by forcing the encoder to use a smooth latent space that compresses outlier information.
 
 **Recommendation**: Run the benchmarks in task 3.4 before investing further in VAE improvements. If the simpler AE performs comparably, consider making VAE an optional advanced feature rather than a co-equal path.
+
+### 9.10 Default latent space dimension is too small
+
+The default configs (`config/simple_autoencoder.yaml`, `config/simple_variational_autoencoder.yaml`) use `latent_space_dim: 2`. For survey data with potentially 50+ categorical attributes, a 2-dimensional bottleneck is extremely aggressive — the model can only capture the two most dominant patterns of variation. This may catch the grossest outliers (random responders) but will miss subtler forms of data quality issues. The hyperparameter search configs allow up to 16 dimensions, which is more reasonable.
+
+**Recommendation**: Increase the default to at least 8-16 for production use. Reserve `latent_space_dim: 2` for visualization and exploratory analysis.
+
+### 9.11 Survey skip patterns create false positives
+
+Real-world surveys routinely use skip/branching logic: "If you answered Yes to Q12, answer Q13-Q20; otherwise skip to Q21." Respondents who legitimately skipped a block of questions will have many missing values that all perfectly reconstruct (Section 8's problem), or the model sees their "not applicable" pattern as anomalous because the subgroup that took this branch is smaller. The system has no way to represent "this question was not applicable to this respondent" versus "this respondent skipped a question they should have answered."
+
+### 9.12 No minimum sample size guidance
+
+The autoencoder needs enough data to learn meaningful patterns. With default architecture (128-unit layers) and typical survey dimensionality (50 attributes, ~200 one-hot dimensions), the model has substantial parameters relative to typical survey sample sizes. A survey with 200 respondents will not train a useful autoencoder. The project provides no guidance on minimum sample sizes, which means web UI users with small pilot surveys will get meaningless results with no warning.
+
+**Recommendation**: Add a pre-training check that warns users when the dataset is too small relative to the model capacity (e.g., fewer rows than one-hot dimensions, or fewer than 500 rows).
+
+### 9.13 GCP-coupled architecture limits adoption
+
+The web frontend requires Google Cloud Storage, Pub/Sub, and Firestore — meaning even evaluating the web product requires a GCP project with billing enabled. For academic adoption, this is prohibitive. For typical survey datasets (1,000-10,000 rows, 50-100 columns), local processing completes in seconds to minutes, making the distributed architecture unnecessary.
+
+**Recommendation**: Add a fully local web mode that processes files in-memory on a single server without any cloud dependencies. The `--mode=local` worker is a step in this direction but still requires GCS for file upload and Firestore for job tracking.
