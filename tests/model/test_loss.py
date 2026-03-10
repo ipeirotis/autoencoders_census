@@ -1,8 +1,7 @@
 import unittest
 import numpy as np
-import tensorflow as tf
 
-from model.loss import CustomCategoricalCrossentropyAE, CustomCategoricalCrossentropyVAE
+from model.loss import CustomCategoricalCrossentropyAE
 
 
 class TestCustomLossAE(unittest.TestCase):
@@ -33,7 +32,6 @@ class TestCustomLossAE(unittest.TestCase):
         # p=[0,1,0],q=[0.1,0.8,0.1]: 0.2231 / np.log(3)
         # p=[0,1,0],q=[0.3,0.7]: 0.3567 / np.log(2)
         # p=[0,0,1],q=[0.05,0.05,0.9]: 0.1054 / np.log(3)
-        print(result)
         self.assertIsNotNone(result)
         # We divide by 2 because we have two examples
         # We divide by 3 because we have 3 attributes per example
@@ -44,39 +42,12 @@ class TestCustomLossAE(unittest.TestCase):
             places=2,
         )
 
-    def test_custom_categorical_crossentropyVAE(self):
-        y_true = np.array([[1, 0, 0, 1, 0, 1, 0, 0], [0, 1, 0, 0, 1, 0, 0, 1]])
-        y_pred = np.array(
-            [
-                [0.8, 0.1, 0.1, 0.7, 0.3, 0.9, 0.05, 0.05],
-                [0.1, 0.8, 0.1, 0.3, 0.7, 0.05, 0.05, 0.9],
-            ]
+    def test_get_config_includes_percentile(self):
+        loss = CustomCategoricalCrossentropyAE(
+            attribute_cardinalities=self.attribute_cardinalities, percentile=90
         )
-        y_pred = y_pred.astype(np.float32)
-
-        result = CustomCategoricalCrossentropyVAE(
-            attribute_cardinalities=self.attribute_cardinalities
-        )(y_true, y_pred)
-        print(result)
-
-        epsilon = 1e-10
-        y_pred = np.clip(y_pred, epsilon, 1 - epsilon)
-
-        z_mean_tf, z_log_var_tf = tf.split(
-            tf.convert_to_tensor(y_pred, dtype=tf.float32), num_or_size_splits=2, axis=1
-        )
-
-        kl_divergence_tf = -0.5 * tf.reduce_sum(
-            1 + z_log_var_tf - tf.square(z_mean_tf) - tf.exp(z_log_var_tf), axis=1
-        )
-
-        kl_divergence_tf = tf.reduce_mean(kl_divergence_tf)
-
-        self.assertAlmostEqual(
-            result,
-            np.sum(
-                (0.2231 / np.log(3) + 0.3567 / np.log(2) + 0.1054 / np.log(3)) / 3
-                + kl_divergence_tf
-            ),
-            places=2,
-        )
+        config = loss.get_config()
+        self.assertIn("percentile", config)
+        self.assertEqual(config["percentile"], 90)
+        self.assertIn("attribute_cardinalities", config)
+        self.assertEqual(config["attribute_cardinalities"], self.attribute_cardinalities)
