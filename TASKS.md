@@ -2,8 +2,8 @@
 
 ## 1. Stabilize the Core Pipeline
 
-### 1.1 Unify data-loading return format
-The `DataLoader` methods return inconsistent formats -- some return `(df, variable_types)`, others return `(df, metadata_dict)`. The `train` and `find_outliers` commands in `main.py` work around this with nested isinstance checks (lines 174-192, 511-526). Refactor `DataLoader.prepare_original_dataset()` and all `load_*` methods to return a consistent `(DataFrame, dict)` where the dict always has `"variable_types"` and `"ignored_columns"` keys.
+### ~~1.1 Unify data-loading return format~~ DONE
+All `DataLoader` methods now consistently return `(DataFrame, metadata_dict)` where metadata always has `"variable_types"` and `"ignored_columns"` keys. Fixed `load_eval_dataset()` (the only outlier, which returned a nested `((df, base_df), types)` tuple) to use `prepare_original_dataset()` like all other loaders. Removed the isinstance workaround code from both `train()` and `find_outliers()` in `main.py`.
 
 ### 1.2 Extract shared data-cleaning logic
 The data-cleaning pipeline (fillna, astype(str), Rule of 9 filter, vectorization, float32 conversion) is duplicated between the `train` command (main.py lines 196-253), the `find_outliers` command (main.py lines 529-570), and `run_training_pipeline()` (main.py lines 57-91). Extract this into a single reusable function (e.g., `prepare_for_model(df) -> (vectorized_df, variable_types, cardinalities)`) and call it from all three places.
