@@ -69,12 +69,10 @@ class TestIntegrationPipeline(unittest.TestCase):
         trainer = Trainer(ae_model, MINIMAL_CONFIG)
         cls.trained_model, cls.history = trainer.train(cls.vectorized, prior=None)
 
-        filtered_list = [True] * len(cardinalities)
         cls.result_df = get_outliers_list(
             cls.vectorized, cls.trained_model, k=0,
             attr_cardinalities=cardinalities,
             vectorizer=cls.vectorizer, prior=None,
-            filtered_list=filtered_list,
         )
 
     def test_full_pipeline_produces_error_column(self):
