@@ -118,7 +118,7 @@ class VAE(keras.Model):
 
             xent_loss.append(
                 tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-                / np.log(categories)
+                / np.log(categories + 1e-7)
             )
 
             start_idx += categories
