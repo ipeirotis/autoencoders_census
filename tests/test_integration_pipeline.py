@@ -113,12 +113,10 @@ class TestIntegrationPipeline(unittest.TestCase):
         clean_vectorized = vectorized_combined.iloc[:200]
         trained_model, _ = trainer.train(clean_vectorized, prior=None)
 
-        filtered_list = [True] * len(cardinalities)
         result_df = get_outliers_list(
             vectorized_combined, trained_model, k=0,
             attr_cardinalities=cardinalities,
             vectorizer=vectorizer, prior=None,
-            filtered_list=filtered_list,
         )
 
         clean_mean_error = result_df.iloc[:200]["error"].mean()
