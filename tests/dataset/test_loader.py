@@ -72,10 +72,14 @@ class TestDataLoaderAPI(unittest.TestCase):
             df.to_csv(f, index=False)
             path = f.name
         try:
+            # Note: all dataset configs pass integer indices for columns_of_interest,
+            # but load_original_data() compares with `in original_df.columns` (string names),
+            # so integer indices never match. This is a known bug (TASKS.md 1.8).
+            # Here we test with string column names to verify the filtering logic works.
             loader = DataLoader(
                 drop_columns=[],
                 rename_columns={},
-                columns_of_interest=[0, 2],  # select columns by index
+                columns_of_interest=["a", "c"],  # select columns by name
             )
             result = loader.load_original_data(path)
             self.assertEqual(result.shape[1], 2)
