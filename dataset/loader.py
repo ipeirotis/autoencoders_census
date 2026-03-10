@@ -207,9 +207,14 @@ class DataLoader:
 
 
     def load_eval_dataset(self, dataset):
-        df = pd.read_csv(dataset)
-        base_df, types = self.load_2017()
-        return (df, base_df), types
+        """Load an arbitrary CSV for evaluation against the 2017 SADC baseline.
+
+        Returns the same ``(DataFrame, metadata)`` format as all other loaders.
+        The raw evaluation DataFrame is read from *dataset*; preprocessing
+        (binning, Rule-of-9 filtering) is applied via ``prepare_original_dataset``.
+        """
+        df = self.load_original_data(dataset)
+        return self.prepare_original_dataset(df, replacements={})
 
     def load_bot_bot_mturk(self):
         url = "data/Bot_Bot_Bot__MTURK.csv"

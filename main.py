@@ -162,33 +162,9 @@ def train(
         additional_columns_of_interest=additional_interest_columns,
     )
     
-    # 4. Load the raw result from the updated loader
-    # this handles any return format
-    load_result = data_loader.load_data(data)
-    
-    project_data = None
-    variable_types = {}
-    
-    # Attempt to unpack if it's a tuple 
-    if isinstance(load_result, tuple):
-        logger.debug(f"Unpacking tuple of length {len(load_result)}")
-        project_data = load_result[0]
-        possible_metadata = load_result[1] # this contains 'ignore_columns' and 'variable_types'
-
-        # if the first item is ALSO a tuple (nested), unpack again
-        if isinstance(project_data, tuple):
-            logger.debug(f"Unpacking nested tuple of length {len(project_data)}")
-            project_data = project_data[0]
-            
-        # Extract variable types from metadata dict
-        if isinstance(possible_metadata, dict) and "variable_types" in possible_metadata:
-            variable_types = possible_metadata["variable_types"]
-        else:
-            variable_types = possible_metadata
-    else:
-        # It's just a dataframe
-        project_data = load_result
-        metadata = {}
+    # 4. Load data -- all loaders return (DataFrame, metadata_dict)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
     # 5. Data Cleaning
     logger.debug(f"Data shape before cleaning: {project_data.shape}")
@@ -497,29 +473,9 @@ def find_outliers(
         additional_columns_of_interest=additional_interest_columns,
     )
 
-    # 3. Load and Unpakc Data
-    load_result = data_loader.load_data(data)
-    
-    project_data = None
-    variable_types = {}
-    
-    # Hand Tuple/Metadata unpacking 
-    if isinstance(load_result, tuple):
-        project_data = load_result[0]
-        metadata = load_result[1]
-        
-        # If nested tuple, take the first one
-        if isinstance(project_data, tuple):
-            project_data = project_data[0]
-
-        # Extract types from metadata
-        if isinstance(metadata, dict) and "variable_types" in metadata:
-            variable_types = metadata["variable_types"]
-        else:
-            variable_types = metadata
-    else:
-        project_data = load_result
-        variable_types = {}
+    # 3. Load data -- all loaders return (DataFrame, metadata_dict)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
         
     # 4. Data Cleaning
     logger.debug(f"Data shape before cleaning: {project_data.shape}")
