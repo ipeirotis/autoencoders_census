@@ -5,11 +5,11 @@
 ### ~~1.1 Unify data-loading return format~~ DONE
 All `DataLoader` methods now consistently return `(DataFrame, metadata_dict)` where metadata always has `"variable_types"` and `"ignored_columns"` keys. Fixed `load_eval_dataset()` (the only outlier, which returned a nested `((df, base_df), types)` tuple) to use `prepare_original_dataset()` like all other loaders. Removed the isinstance workaround code from both `train()` and `find_outliers()` in `main.py`.
 
-### 1.2 Extract shared data-cleaning logic
-The data-cleaning pipeline (fillna, astype(str), Rule of 9 filter, vectorization, float32 conversion) is duplicated between the `train` command (main.py lines 196-253), the `find_outliers` command (main.py lines 529-570), and `run_training_pipeline()` (main.py lines 57-91). Extract this into a single reusable function (e.g., `prepare_for_model(df) -> (vectorized_df, variable_types, cardinalities)`) and call it from all three places.
+### ~~1.2 Extract shared data-cleaning logic~~ DONE
+Extracted `prepare_for_model(project_data, variable_types)` in `main.py` that performs the full pipeline: fillna("missing") → astype(str) → Rule-of-9 filter → sync variable_types → Table2Vector vectorization → float32 conversion → cardinality computation. Returns `(cleaned_df, vectorized_df, vectorizer, cardinalities)`. Now called from `train()`, `find_outliers()`, and `run_training_pipeline()` — eliminated ~80 lines of duplicated cleaning code.
 
-### 1.3 Consolidate dataset config definitions
-Dataset-specific column configs (`drop_columns`, `rename_columns`, `interest_columns`) are duplicated across `main.py` (in `train`, `find_outliers`, `evaluate_on_condition`, `pca_baseline`) and `utils.py` (`define_necessary_elements`). Move all dataset configs into a single YAML or Python registry to eliminate drift between copies.
+### ~~1.3 Consolidate dataset config definitions~~ DONE
+Replaced the inline dataset config blocks in `evaluate_on_condition` (~340 lines) and `pca_baseline` (~470 lines) with calls to `define_necessary_elements()` from `utils.py` — the single source of truth for all dataset configs. All CLI commands (`train`, `find_outliers`, `evaluate`, `evaluate_on_condition`, `pca_baseline`) now use the same function. Note: the configs that were in `evaluate_on_condition`/`pca_baseline` had slight differences from `utils.py` (documented in task 1.7); those discrepancies should be resolved in task 1.7 by verifying which values are correct.
 
 ### 1.4 Fix broken test_loader.py tests
 `tests/dataset/test_loader.py` references `DataLoader.DATASET_URL_2015` and `DataLoader.DATASET_URL_2017` class attributes and calls `DataLoader()` with no arguments. These no longer match the current `DataLoader.__init__` signature which requires `drop_columns`, `rename_columns`, and `columns_of_interest`. Update the tests to match the current API.
