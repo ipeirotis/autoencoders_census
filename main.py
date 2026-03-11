@@ -295,15 +295,15 @@ def search_hyperparameters(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
     )
-    project_data, variable_types = data_loader.load_data(data)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Transforming the data....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    logger.info("Transforming the data....")
+    project_data, vectorized_df, vectorizer, cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
-    cardinalities = list(project_data.describe().T["unique"].values)
-
-    logger.info(f"Looading model....")
+    logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
     logger.info(f"Loading config from config file....")
@@ -528,14 +528,14 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
     decoder = model.decoder
 
     logger.info(f"Loading data....")
-    data_loader = DataLoader()
-    project_data, variable_types = data_loader.load_data(data)
-
-    attr_cardinalities = list(project_data.describe().T["unique"].values)
+    data_loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Creating the vectorizer....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
     if target_features is not None:
         possible_features = list(project_data.columns)
@@ -669,8 +669,8 @@ def pca_baseline(
     drop_columns,
     rename_columns,
     interest_columns,
-column_to_condition,
-    outlier_value
+    column_to_condition,
+    outlier_value,
 ):
 
     set_seed(seed)

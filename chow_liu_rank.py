@@ -4,9 +4,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-from alembic.ddl.base import drop_column
-from gitdb.util import exists
-
 from dataset.loader import DataLoader
 from utils import define_necessary_elements
 
@@ -248,43 +245,34 @@ def rank_rows_by_chow_liu(df: pd.DataFrame,
     return ranked, cl
 
 
-import pandas as pd
-from chow_liu_rank import rank_rows_by_chow_liu
+if __name__ == "__main__":
+    import os
 
-path = "."
-data = "pennycook_1"
-drop_columns = None
-rename_columns = None
-interest_columns = None
+    path = "."
+    data = "pennycook_1"
 
-(
+    (
         drop_columns,
         rename_columns,
         interest_columns,
         additional_drop_columns,
         additional_rename_columns,
         additional_interest_columns,
-    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+    ) = define_necessary_elements(data, None, None, None)
 
-data_loader = DataLoader(
-    drop_columns,
-    rename_columns,
-    interest_columns,
-    additional_drop_columns=additional_drop_columns,
-    additional_rename_columns=additional_rename_columns,
-    additional_columns_of_interest=additional_interest_columns,
-)
-df, variable_types = data_loader.load_data(data)
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+    df, metadata = data_loader.load_data(data)
 
-# df: your DataFrame, all columns categorical (strings). Keep 'nan' as literal if needed.
-ranked_df, cl_model = rank_rows_by_chow_liu(df, alpha=1.0, mi_subsample=10000)
+    ranked_df, cl_model = rank_rows_by_chow_liu(df, alpha=1.0, mi_subsample=10000)
 
-ranked_df.rename(columns={
-    "pct": "error",
-}, inplace=True)
+    ranked_df.rename(columns={"pct": "error"}, inplace=True)
 
-import os
-# create the directory if it doesn't exist
-os.makedirs(f"{path}/{data}_cl", exist_ok=True)
-
-ranked_df.to_csv(f"{path}/{data}_cl/errors.csv", index=False)
+    os.makedirs(f"{path}/{data}_cl", exist_ok=True)
+    ranked_df.to_csv(f"{path}/{data}_cl/errors.csv", index=False)
