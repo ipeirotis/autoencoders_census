@@ -6,19 +6,21 @@ Commands:
     search_hyperparameters - Run Bayesian hyperparameter optimization
     evaluate               - Evaluate model reconstruction accuracy
     find_outliers          - Detect outliers using reconstruction error
+    chow_liu_outliers      - Detect outliers using Chow-Liu tree log-likelihood
     generate               - Generate synthetic samples from a trained VAE
 
 Example Usage:
     python main.py train --model_name AE --data sadc_2017
     python main.py find_outliers --model_path cache/simple_model/autoencoder
+    python main.py chow_liu_outliers --data sadc_2017
     python main.py search_hyperparameters --model_name VAE
 
 Pipeline Steps:
     1. Load data via DataLoader (handles multiple dataset formats)
     2. Clean data (fill NaN, apply "Rule of 9" filter for cardinality)
-    3. Vectorize categorical data via Table2Vector (one-hot encoding)
-    4. Train/load autoencoder model
-    5. Calculate reconstruction error for outlier detection
+    3. Vectorize categorical data via Table2Vector (one-hot encoding) [AE only]
+    4. Train/load autoencoder model OR fit Chow-Liu tree
+    5. Calculate reconstruction error / log-likelihood for outlier detection
 """
 
 import logging
@@ -36,6 +38,7 @@ from evaluate.generator import Generator
 from evaluate.outliers import get_outliers_list
 from features.transform import Table2Vector
 from model.factory import get_model
+from chow_liu_rank import rank_rows_by_chow_liu
 from train.trainer import Trainer
 from utils import (
     set_seed,
@@ -53,6 +56,29 @@ from utils import (
 logger = logging.Logger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+
+
+def prepare_for_categorical(project_data):
+    """Clean data for categorical-only models (Chow-Liu tree, etc.).
+
+    Steps:
+        1. Fill NaN with "missing" and cast to string
+        2. Apply Rule-of-9 filter (keep columns with 2-9 unique values)
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+
+    Returns:
+        cleaned_df: DataFrame with only low-cardinality categorical columns.
+    """
+    project_data = project_data.fillna("missing")
+    project_data = project_data.astype(str)
+
+    cols_to_keep = [
+        col for col in project_data.columns
+        if 1 < project_data[col].nunique() <= 9
+    ]
+    return project_data[cols_to_keep]
 
 
 def prepare_for_model(project_data, variable_types=None):
@@ -77,16 +103,8 @@ def prepare_for_model(project_data, variable_types=None):
     if variable_types is None:
         variable_types = {}
 
-    # 1. Fill missing + cast to string
-    project_data = project_data.fillna("missing")
-    project_data = project_data.astype(str)
-
-    # 2. Rule-of-9 filter
-    cols_to_keep = [
-        col for col in project_data.columns
-        if 1 < project_data[col].nunique() <= 9
-    ]
-    project_data = project_data[cols_to_keep]
+    # 1-2. Clean data (fillna, Rule-of-9)
+    project_data = prepare_for_categorical(project_data)
 
     # 3. Sync variable_types to surviving columns
     variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
@@ -492,6 +510,94 @@ def find_outliers(
         os.makedirs(output) 
     save_to_csv(error_df, output, "errors")
     logger.info("Outliers identified successfully.")
+
+
+@cli.command("chow_liu_outliers")
+@click.option("--seed", help="seed for reproducibility", type=int, default=2)
+@click.option("--data", help="data to train on", type=str, default="sadc_2017")
+@click.option(
+    "--drop_columns", help="columns to drop from the data", type=str, default=None
+)
+@click.option(
+    "--rename_columns", help="columns to rename from the data", type=str, default=None
+)
+@click.option(
+    "--interest_columns", help="columns to merge from the data", type=str, default=None
+)
+@click.option("--alpha", help="Laplace smoothing parameter for CLTree", type=float, default=1.0)
+@click.option("--mi_subsample", help="Subsample size for mutual information computation (speeds up large datasets)", type=int, default=None)
+@click.option(
+    "--output",
+    help="output path for saving the outlier scores",
+    type=str,
+    default="cache/predictions/",
+)
+def chow_liu_outliers(
+    seed,
+    data,
+    drop_columns,
+    rename_columns,
+    interest_columns,
+    alpha,
+    mi_subsample,
+    output,
+):
+    """Detect outliers using Chow-Liu tree log-likelihood scoring.
+
+    Fits a maximum spanning tree of pairwise mutual information on
+    categorical data and scores each row by its log-likelihood under
+    the learned tree distribution. Rows with low log-likelihood
+    (high error) are outliers.
+    """
+    set_seed(seed)
+
+    # 1. Parse Column Arguments
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+
+    # 2. Initialize Loader
+    logger.info("Loading data...")
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+
+    # 3. Load data
+    project_data, metadata = data_loader.load_data(data)
+
+    # 4. Clean data (fillna + Rule-of-9, no vectorization needed)
+    logger.info("Cleaning the data...")
+    cleaned_df = prepare_for_categorical(project_data)
+    logger.info(f"Cleaned data: {cleaned_df.shape[0]} rows, {cleaned_df.shape[1]} columns")
+
+    # 5. Fit Chow-Liu tree and score rows
+    logger.info("Fitting Chow-Liu tree...")
+    ranked_df, cl_model = rank_rows_by_chow_liu(cleaned_df, alpha=alpha, mi_subsample=mi_subsample)
+
+    # 6. Map to error column (1 - pct: higher = more anomalous)
+    ranked_df["error"] = 1.0 - ranked_df["pct"]
+
+    # 7. Log tree edges
+    edges = cl_model.edges()
+    logger.info(f"Chow-Liu tree has {len(edges)} edges")
+    for u, v, mi in sorted(edges, key=lambda e: -e[2])[:5]:
+        logger.info(f"  {u} -> {v}  (MI={mi:.4f})")
+
+    # 8. Save
+    if not os.path.exists(output):
+        os.makedirs(output)
+    save_to_csv(ranked_df, output, "errors")
+    logger.info(f"Outlier scores saved to {output}errors.csv")
 
 
 @cli.command("generate")

@@ -586,33 +586,28 @@ The web frontend requires Google Cloud Storage, Pub/Sub, and Firestore — meani
 
 `chow_liu_rank.py` adds a Chow-Liu tree-based outlier scoring method. It fits a maximum spanning tree of pairwise mutual information on categorical data and computes per-row log-likelihood — rows with low log-likelihood are outliers. This is a fast, non-neural baseline with no training hyperparameters.
 
-### 10.1 Clean up `chow_liu_rank.py`
+### ~~10.1 Clean up `chow_liu_rank.py`~~ DONE
+Moved `DataLoader` and `define_necessary_elements` imports from module level into `if __name__ == "__main__"` block so the module is a clean, standalone library. The module now only depends on numpy, pandas, typing, and dataclasses. Fixed the `__main__` block to use `error = 1 - pct` (higher = more anomalous) instead of using `pct` directly as error (which was inverted).
 
-The file has issues that need fixing before integration:
-- **Unused imports**: `alembic.ddl.base.drop_column` and `gitdb.util.exists` (lines 7-8) — remove them
-- **Inline script code**: Lines 251-290 contain hardcoded dataset loading and CSV output that should be removed (this logic will move into the CLI)
-- **Old metadata unpacking**: Line 277 uses `df, variable_types = data_loader.load_data(data)` which should be `df, metadata = ...` per task 1.1
+### ~~10.2 Integrate Chow-Liu as a CLI command~~ DONE
+Added `chow_liu_outliers` CLI command in `main.py` that:
+- Uses the same `define_necessary_elements()` → `DataLoader` → `load_data()` pipeline as all other commands
+- Calls `prepare_for_categorical()` (new helper extracted from `prepare_for_model()`) for cleaning: fillna("missing") → astype(str) → Rule-of-9 — no vectorization needed since CLTree operates on raw categorical data
+- Fits CLTree via `rank_rows_by_chow_liu()` with configurable `--alpha` (Laplace smoothing) and `--mi_subsample` options
+- Outputs `errors.csv` with `error = 1 - pct` column, compatible with `evaluate_on_condition`
+- Logs the top-5 strongest tree edges (highest mutual information) for interpretability
 
-### 10.2 Integrate Chow-Liu as a CLI command
+Also extracted `prepare_for_categorical()` from `prepare_for_model()` to avoid duplicating the cleaning logic. `prepare_for_model()` now calls `prepare_for_categorical()` internally for its first two steps.
 
-Add a `chow_liu` (or similar) CLI command in `main.py` that:
-- Uses the same data loading/cleaning pipeline as `train`/`find_outliers` (`define_necessary_elements` → `DataLoader` → `prepare_for_model`)
-- Fits a `CLTree` on the cleaned categorical data (before vectorization — the tree works on raw categories, not one-hot vectors)
-- Outputs `errors.csv` with the same format as `find_outliers` (row-level scores sorted by anomaly), so downstream evaluation via `evaluate_on_condition` works identically
-- Maps the Chow-Liu `pct` score (or `1 - pct`) to the `error` column for compatibility
+### ~~10.3 Add Chow-Liu to the model factory (optional)~~ DONE (decided against)
+Decision: Keep as a separate CLI command (`chow_liu_outliers`). The tree has a fundamentally different API (no `fit`/`predict` in the Keras sense, no config YAML, no vectorization step), so forcing it through the autoencoder pipeline would add complexity without benefit.
 
-The Chow-Liu tree does not need vectorization or a neural model — it operates directly on the categorical DataFrame. This means it should call `prepare_for_model` only for the cleaning steps (fillna, Rule-of-9), or have its own lighter cleaning path.
-
-### 10.3 Add Chow-Liu to the model factory (optional)
-
-Consider whether `CLTree` should be registered in `model/factory.py` as `--model_name CL` alongside AE. The tree has a very different API (no `fit`/`predict` in the Keras sense, no config YAML), so it may be cleaner to keep it as a separate CLI command rather than forcing it through the autoencoder pipeline.
-
-### 10.4 Add tests for Chow-Liu tree
-
-No tests exist for the Chow-Liu components. Add:
-- Unit tests for `CLTree.fit()` and `CLTree.log_likelihood()` on synthetic data
-- Test that `rank_rows_by_chow_liu()` produces expected scoring columns (`logp`, `avg_logp`, `gmean_prob`, `rank_desc`, `pct`, `z`)
-- Test that injected random rows score lower (more anomalous) than clean rows
+### ~~10.4 Add tests for Chow-Liu tree~~ DONE
+Added `tests/test_chow_liu.py` with 26 tests across 4 test classes:
+- **`TestCLTreeFit`** (9 tests): schema building, tree structure (correct number of edges, parent/child relationships), root selection, marginal distributions sum to 1, CPT rows sum to 1, explicit root, mi_subsample
+- **`TestCLTreeLogLikelihood`** (4 tests): correct output length, all values negative, no NaN/inf, training data scores higher than random data
+- **`TestRankRowsByChowLiu`** (9 tests): scoring columns present, original columns preserved, rank is valid permutation, pct/gmean_prob in [0,1], z-scores centered at 0, logp/avg_logp consistency
+- **`TestChowLiuOutlierDetection`** (4 tests): injected random rows score lower than correlated rows, error column compatible with evaluate_on_condition, NaN handling, single-column edge case
 
 ### 10.5 Benchmark Chow-Liu vs AE for outlier detection
 

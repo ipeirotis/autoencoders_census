@@ -4,8 +4,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-from dataset.loader import DataLoader
-from utils import define_necessary_elements
 
 
 # -------------------------
@@ -247,6 +245,8 @@ def rank_rows_by_chow_liu(df: pd.DataFrame,
 
 if __name__ == "__main__":
     import os
+    from dataset.loader import DataLoader
+    from utils import define_necessary_elements
 
     path = "."
     data = "pennycook_1"
@@ -272,7 +272,7 @@ if __name__ == "__main__":
 
     ranked_df, cl_model = rank_rows_by_chow_liu(df, alpha=1.0, mi_subsample=10000)
 
-    ranked_df.rename(columns={"pct": "error"}, inplace=True)
+    ranked_df["error"] = 1.0 - ranked_df["pct"]
 
     os.makedirs(f"{path}/{data}_cl", exist_ok=True)
     ranked_df.to_csv(f"{path}/{data}_cl/errors.csv", index=False)
