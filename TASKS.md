@@ -25,17 +25,8 @@ Fixed all CLI commands to use the same `prepare_for_model()` cleaning pipeline a
 - **`evaluate_on_condition`**: Added same None guard for required options. This command doesn't vectorize data (it reads pre-computed errors.csv), so no cleaning pipeline change needed
 - Also fixed bare `except:` clause in `find_outliers` to `except Exception:`
 
-### 1.7 Fix dataset config inconsistencies across duplicated blocks
-The column configs in `evaluate_on_condition` / `pca_baseline` (main.py) differ from `define_necessary_elements` (utils.py) for almost every dataset:
-- `moral_data`: `range(12, 78)` vs `range(12, 77)`
-- `public_opinion`: `range(21, 176)` vs `range(21, 175)`
-- `mturk_ethics`: includes `+ [107, 108]` vs omits them
-- `racial_data`: includes `+ [74,75,76]` vs omits them
-- `bot_bot_mturk`: `range(20, 35)` vs `range(20, 34)` (and 35 appears twice in the main.py version)
-- `inattentive`: includes `3` vs omits it
-- `attention_check`: includes `+ [2]` vs omits it
-
-These produce silently different results depending on which CLI command is used. Blocked by 1.3 (consolidate configs).
+### ~~1.7 Fix dataset config inconsistencies across duplicated blocks~~ DONE
+The column configs in `evaluate_on_condition` / `pca_baseline` previously differed from `define_necessary_elements` (utils.py) because the evaluation blocks included extra attention-check / screening columns as gold labels. These columns are intentionally excluded from COLUMNS_OF_INTEREST in `define_necessary_elements` (they would leak ground truth into training). The fix: modified `find_outlier_data()` and `find_outlier_data_sadc_2017()` in `dataset/loader.py` to temporarily disable COLUMNS_OF_INTEREST filtering when loading data for evaluation, so attention-check columns are always accessible regardless of the training config.
 
 ### 1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch
 `COLUMNS_OF_INTEREST` is set as a list of integer indices in all dataset configs, but `DataLoader.load_original_data()` (loader.py:333-336) filters with `if c in original_df.columns`, comparing integers to string column names. The filter never matches, producing an empty DataFrame. The logic should use `iloc` for integer indices or convert configs to column names.

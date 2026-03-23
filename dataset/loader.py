@@ -473,17 +473,35 @@ class DataLoader:
 
     def find_outlier_data(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Load dataset and extract gold-label columns for evaluation.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        attention-check / screening columns are available even though
+        they are intentionally excluded from the training config.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         return df[outlier_column]
 
     def find_outlier_data_sadc_2017(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Find outlier data in the SADC 2017 dataset.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        all columns (including those used to build the composite
+        outlier indicator) are available.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         # now I want the samples of the above characteristics CONCURRENTLY to have a new outlier column equal to 1 and the rest 0
         df[outlier_column] = 0
