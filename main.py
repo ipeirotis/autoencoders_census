@@ -395,8 +395,10 @@ def evaluate(
     variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Transforming the data....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    project_data, vectorized_df, vectorizer, _ = prepare_for_model(
+        project_data, variable_types
+    )
+    variable_types = {c: "categorical" for c in project_data.columns}
 
     evaluator = Evaluator(model)
 
@@ -495,7 +497,7 @@ def find_outliers(
     try:
         from tensorflow.keras.models import load_model as keras_load_model
         model = keras_load_model(model_path)
-    except:
+    except Exception:
         model = load_model(model_path)
 
     # 6. Get Outliers
@@ -729,6 +731,10 @@ def evaluate_on_condition(
         additional_columns_of_interest=additional_interest_columns,
     )
 
+    if column_to_condition is None or outlier_value is None:
+        logger.error("--column_to_condition and --outlier_value are required for evaluate_on_condition")
+        return
+
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")
 
@@ -799,6 +805,9 @@ def pca_baseline(
         additional_columns_of_interest=additional_interest_columns,
     )
 
+    if column_to_condition is None or outlier_value is None:
+        logger.error("--column_to_condition and --outlier_value are required for pca_baseline")
+        return
 
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")
@@ -812,19 +821,19 @@ def pca_baseline(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    # drop conditioning column before vectorization
-    if column_to_condition is not None:
-        project_data = project_data.drop(columns=column_to_condition, errors="ignore")
-        variable_types = {
-            k: v for k, v in variable_types.items() if k not in column_to_condition
-        }
+    # drop conditioning column before cleaning/vectorization
+    project_data = project_data.drop(columns=column_to_condition, errors="ignore")
+    variable_types = {
+        k: v for k, v in variable_types.items() if k not in column_to_condition
+    }
 
     logger.info("Transforming the data....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    project_data, vectorized_df, vectorizer, _ = prepare_for_model(
+        project_data, variable_types
+    )
+    variable_types = {c: "categorical" for c in project_data.columns}
 
     from sklearn.decomposition import PCA
-    from sklearn.metrics import mean_squared_error
     import numpy as np
 
     # Step 1: Fit PCA

@@ -146,7 +146,11 @@ class TestDataLoaderSADCRegression(unittest.TestCase):
         )
 
     def test_load_2017_succeeds(self):
-        project_data, var_types = self.loader.load_2017()
+        project_data, metadata = self.loader.load_2017()
         self.assertGreater(len(project_data), 0)
+        self.assertIsInstance(metadata, dict)
+        self.assertIn("variable_types", metadata)
+        self.assertIn("ignored_columns", metadata)
+        var_types = metadata["variable_types"]
         self.assertIsInstance(var_types, dict)
         self.assertTrue(all(v in ("numeric", "categorical") for v in var_types.values()))

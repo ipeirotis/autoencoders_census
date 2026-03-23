@@ -11,20 +11,19 @@ Extracted `prepare_for_model(project_data, variable_types)` in `main.py` that pe
 ### ~~1.3 Consolidate dataset config definitions~~ DONE
 Replaced the inline dataset config blocks in `evaluate_on_condition` (~340 lines) and `pca_baseline` (~470 lines) with calls to `define_necessary_elements()` from `utils.py` — the single source of truth for all dataset configs. All CLI commands (`train`, `find_outliers`, `evaluate`, `evaluate_on_condition`, `pca_baseline`) now use the same function. Note: the configs that were in `evaluate_on_condition`/`pca_baseline` had slight differences from `utils.py` (documented in task 1.7); those discrepancies should be resolved in task 1.7 by verifying which values are correct.
 
-### 1.4 Fix broken test_loader.py tests
-`tests/dataset/test_loader.py` references `DataLoader.DATASET_URL_2015` and `DataLoader.DATASET_URL_2017` class attributes and calls `DataLoader()` with no arguments. These no longer match the current `DataLoader.__init__` signature which requires `drop_columns`, `rename_columns`, and `columns_of_interest`. Update the tests to match the current API.
+### ~~1.4 Fix broken test_loader.py tests~~ DONE
+The `TestDataLoaderAPI` tests were already rewritten in the prior PR to use the current `DataLoader` API with synthetic data. The remaining issue was the `TestDataLoaderSADCRegression` test which unpacked `load_2017()` as `(df, var_types)` instead of `(df, metadata)` — fixed to use `metadata["variable_types"]` and added assertions for both `variable_types` and `ignored_columns` keys.
 
-### 1.5 Fix broken test_loss.py tests
-`tests/model/test_loss.py` imports `CustomCategoricalCrossentropyVAE` which does not exist in `model/loss.py`. All tests in this file fail with `ImportError`. Fix the import and update tests to match the current loss API.
+### ~~1.5 Fix broken test_loss.py tests~~ DONE
+Fixed in a prior PR: removed the nonexistent `CustomCategoricalCrossentropyVAE` import, rewrote tests to only use `CustomCategoricalCrossentropyAE`, and added `test_get_config_includes_percentile` to verify the serialization fix from task 1.11.
 
-### 1.6 Fix CLI commands that skip data cleaning
-Several CLI commands bypass the `fillna` / `astype(str)` / Rule-of-9 pipeline that `train` and `find_outliers` apply, meaning data seen during evaluation is preprocessed differently from training:
-- `search_hyperparameters` (main.py:334-340)
-- `evaluate` (main.py:411-412)
-- `evaluate_on_condition` (main.py:1056-1073)
-- `pca_baseline` (main.py:1592 — also crashes on `None.split(",")`)
-
-Additionally, these commands use `describe().T["unique"]` to get cardinalities, which raises `KeyError` on numeric columns. The `train`/`find_outliers` commands correctly use `nunique()` instead.
+### ~~1.6 Fix CLI commands that skip data cleaning~~ DONE
+Fixed all CLI commands to use the same `prepare_for_model()` cleaning pipeline as `train`/`find_outliers`:
+- **`search_hyperparameters`**: Already fixed in prior refactoring (uses `prepare_for_model`)
+- **`evaluate`**: Replaced manual `Table2Vector` + `vectorize_table` with `prepare_for_model()` call, ensuring the same fillna/astype(str)/Rule-of-9 pipeline as training
+- **`pca_baseline`**: Same fix — uses `prepare_for_model()` after dropping conditioning columns. Also added None guard for `--column_to_condition` and `--outlier_value` to prevent `None.split(",")` crash
+- **`evaluate_on_condition`**: Added same None guard for required options. This command doesn't vectorize data (it reads pre-computed errors.csv), so no cleaning pipeline change needed
+- Also fixed bare `except:` clause in `find_outliers` to `except Exception:`
 
 ### 1.7 Fix dataset config inconsistencies across duplicated blocks
 The column configs in `evaluate_on_condition` / `pca_baseline` (main.py) differ from `define_necessary_elements` (utils.py) for almost every dataset:
