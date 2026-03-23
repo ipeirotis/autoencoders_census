@@ -34,8 +34,8 @@ Fixed `load_original_data()` to handle both integer positional indices and strin
 ### ~~1.9 Fix `run_training_pipeline` typo~~ DONE
 Fixed typo: `"guassian"` → `"gaussian"` in the default parameter of `run_training_pipeline()`.
 
-### 1.10 Fix `generate` command (LOW PRIORITY)
-`generate` (main.py:656-657) accesses `model.get_config()["prior_means"]` and `["prior_log_vars"]`, but the VAE's `get_config()` does not include these keys. The command crashes with `KeyError`. VAE generation is not actively used.
+### ~~1.10 Fix `generate` command~~ DONE
+Fixed `KeyError` on `prior_means`/`prior_log_vars` — the VAE's `get_config()` never included these keys. Now computes latent-space statistics by running the encoder on the training data (`tf.reduce_mean` of `z_mean`/`z_log_var` across all rows).
 
 ### 1.11 Fix `CustomCategoricalCrossentropyAE.get_config` missing `percentile`
 `model/loss.py:143-144` omits the `percentile` parameter from `get_config()`. When a model is saved and reloaded, the percentile reverts to the default (80) regardless of the value used during training.

@@ -659,6 +659,18 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
         ]
 
     logger.info(f"Generating samples....")
+
+    # Compute latent-space statistics from the encoder on training data
+    # (the VAE's get_config() does not store prior_means / prior_log_vars)
+    import tensorflow as tf
+    if prior == "gaussian":
+        z_mean, z_log_var = model.encoder(vectorized_df.values.astype("float32"))
+        prior_means = tf.reduce_mean(z_mean, axis=0)
+        prior_log_vars = tf.reduce_mean(z_log_var, axis=0)
+    else:
+        prior_means = None
+        prior_log_vars = None
+
     generator = Generator(
         decoder,
         number_samples,
@@ -666,8 +678,8 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
         len(attr_cardinalities),
         model.get_config()["temperature"],
         vectorized_df.columns,
-        model.get_config()["prior_means"][2],
-        model.get_config()["prior_log_vars"][2],
+        prior_means,
+        prior_log_vars,
     )
     samples = generator.generate(
         vectorizer, target_features, len(list(vectorized_df.columns))
