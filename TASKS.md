@@ -37,8 +37,8 @@ Fixed typo: `"guassian"` → `"gaussian"` in the default parameter of `run_train
 ### ~~1.10 Fix `generate` command~~ DONE
 Fixed `KeyError` on `prior_means`/`prior_log_vars` — the VAE's `get_config()` never included these keys. Now computes latent-space statistics by running the encoder on the training data (`tf.reduce_mean` of `z_mean`/`z_log_var` across all rows).
 
-### 1.11 Fix `CustomCategoricalCrossentropyAE.get_config` missing `percentile`
-`model/loss.py:143-144` omits the `percentile` parameter from `get_config()`. When a model is saved and reloaded, the percentile reverts to the default (80) regardless of the value used during training.
+### ~~1.11 Fix `CustomCategoricalCrossentropyAE.get_config` missing `percentile`~~ DONE
+Fixed in a prior PR: `get_config()` now includes `percentile` in its return dict, ensuring the value is preserved across model save/load cycles. Test coverage added in `test_get_config_includes_percentile`.
 
 ### ~~1.12 Remove DEBUG print statements~~ DONE
 All `print("DEBUG: ...")` statements in `main.py` have been replaced with proper `logger.debug()`, `logger.warning()`, and `logger.error()` calls. Emoji-prefixed error prints were also cleaned up.
