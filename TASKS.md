@@ -31,8 +31,8 @@ The column configs in `evaluate_on_condition` / `pca_baseline` previously differ
 ### ~~1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch~~ DONE
 Fixed `load_original_data()` to handle both integer positional indices and string column names in COLUMNS_OF_INTEREST. Integer indices now use positional lookup (`original_df.columns[valid]`) while string names use membership check. Previously, integer indices were compared against string column names and never matched, making the filter a no-op.
 
-### 1.9 Fix `run_training_pipeline` typo
-Default prior is `"guassian"` (main.py:57) but the VAE checks `if prior == "gaussian"`. The misspelling causes the function to always raise `ValueError("Invalid prior")`. (Low priority — VAE path is not actively used.)
+### ~~1.9 Fix `run_training_pipeline` typo~~ DONE
+Fixed typo: `"guassian"` → `"gaussian"` in the default parameter of `run_training_pipeline()`.
 
 ### 1.10 Fix `generate` command (LOW PRIORITY)
 `generate` (main.py:656-657) accesses `model.get_config()["prior_means"]` and `["prior_log_vars"]`, but the VAE's `get_config()` does not include these keys. The command crashes with `KeyError`. VAE generation is not actively used.

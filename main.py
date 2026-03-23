@@ -124,7 +124,7 @@ def prepare_for_model(project_data, variable_types=None):
     return project_data, vectorized_df, vectorizer, cardinalities
 
 
-def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="guassian"):
+def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="gaussian"):
     """
     Reusable training logic that accepts a DataFrame directly.
     Used by both the CLI and the Cloud Worker
