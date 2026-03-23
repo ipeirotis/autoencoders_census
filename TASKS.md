@@ -28,8 +28,8 @@ Fixed all CLI commands to use the same `prepare_for_model()` cleaning pipeline a
 ### ~~1.7 Fix dataset config inconsistencies across duplicated blocks~~ DONE
 The column configs in `evaluate_on_condition` / `pca_baseline` previously differed from `define_necessary_elements` (utils.py) because the evaluation blocks included extra attention-check / screening columns as gold labels. These columns are intentionally excluded from COLUMNS_OF_INTEREST in `define_necessary_elements` (they would leak ground truth into training). The fix: modified `find_outlier_data()` and `find_outlier_data_sadc_2017()` in `dataset/loader.py` to temporarily disable COLUMNS_OF_INTEREST filtering when loading data for evaluation, so attention-check columns are always accessible regardless of the training config.
 
-### 1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch
-`COLUMNS_OF_INTEREST` is set as a list of integer indices in all dataset configs, but `DataLoader.load_original_data()` (loader.py:333-336) filters with `if c in original_df.columns`, comparing integers to string column names. The filter never matches, producing an empty DataFrame. The logic should use `iloc` for integer indices or convert configs to column names.
+### ~~1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch~~ DONE
+Fixed `load_original_data()` to handle both integer positional indices and string column names in COLUMNS_OF_INTEREST. Integer indices now use positional lookup (`original_df.columns[valid]`) while string names use membership check. Previously, integer indices were compared against string column names and never matched, making the filter a no-op.
 
 ### 1.9 Fix `run_training_pipeline` typo
 Default prior is `"guassian"` (main.py:57) but the VAE checks `if prior == "gaussian"`. The misspelling causes the function to always raise `ValueError("Invalid prior")`. (Low priority — VAE path is not actively used.)

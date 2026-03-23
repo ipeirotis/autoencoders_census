@@ -336,9 +336,19 @@ class DataLoader:
             original_df = original_df.drop(columns=self.DROP_COLUMNS, errors='ignore')
 
         if self.COLUMNS_OF_INTEREST:
-            # only select columns that actually exist in the dataframe
-            existing_cols = [c for c in self.COLUMNS_OF_INTEREST if c in original_df.columns]
-            original_df = original_df[existing_cols]
+            # COLUMNS_OF_INTEREST may contain integer positional indices
+            # or string column names — handle both.
+            int_indices = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, int)]
+            str_names = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, str)]
+
+            selected = []
+            if int_indices:
+                valid = [i for i in int_indices if i < len(original_df.columns)]
+                selected.extend(original_df.columns[valid].tolist())
+            if str_names:
+                selected.extend([c for c in str_names if c in original_df.columns])
+
+            original_df = original_df[selected]
 
         if self.RENAME_COLUMNS:
             original_df = original_df.rename(columns=self.RENAME_COLUMNS)
