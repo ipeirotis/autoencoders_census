@@ -14,12 +14,12 @@
 
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import multer from "multer";
 import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
+import { corsConfig, helmetConfig } from "./middleware/security";
 import path from "path";
 
 // --- Configuration ---
@@ -42,7 +42,10 @@ const upload = multer({
 export function createServer() {
   const app = express();
 
-  app.use(cors());
+  // Security middleware - apply BEFORE routes
+  app.use(corsConfig);
+  app.use(helmetConfig);
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
