@@ -33,7 +33,15 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 6. CORS configuration blocks requests from domains outside approved frontend origin
 7. Worker fails fast at startup if critical environment variables are missing
 
-**Plans**: TBD
+**Plans:** 6 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Env validation, logging, error handling infrastructure
+- [ ] 01-02-PLAN.md — CORS whitelist and security headers (helmet)
+- [ ] 01-03-PLAN.md — Email/password authentication with Passport.js
+- [ ] 01-04-PLAN.md — Per-endpoint rate limiting (upload, poll, download)
+- [ ] 01-05-PLAN.md — Input validation and file security (CSV, path traversal)
+- [ ] 01-06-PLAN.md — Wire security stack into routes, integration tests
 
 ---
 
@@ -97,7 +105,7 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Security Foundation | 0/TBD | Not started | - |
+| 1. Security Foundation | 0/6 | Planned | - |
 | 2. Worker Reliability | 0/TBD | Not started | - |
 | 3. Frontend Production | 0/TBD | Not started | - |
 | 4. Operational Features | 0/TBD | Not started | - |
@@ -119,4 +127,4 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 ---
 
 *Roadmap created: 2026-03-24*
-*Last updated: 2026-03-24*
+*Last updated: 2026-03-25*
