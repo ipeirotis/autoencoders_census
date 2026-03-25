@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.0.0",
+    "@google-cloud/logging-winston": "^6.0.1",
     "@google-cloud/pubsub": "^5.2.0",
     "@google-cloud/storage": "^7.18.0",
     "@radix-ui/react-label": "^2.1.8",
@@ -36,7 +37,8 @@
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^3.4.19",
     "tailwindcss-animate": "^1.0.7",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
