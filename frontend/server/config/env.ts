@@ -1,17 +1,39 @@
 /**
- * Environment configuration
- * Centralizes environment variable access with type safety
+ * Environment variable validation using envalid
+ * Validates required environment variables at startup and provides type-safe access
  */
 
-export const env = {
-  // Frontend origin for CORS whitelist
-  FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
+import { cleanEnv, str, port } from 'envalid';
 
-  // Google Cloud config
-  GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || 'your-project-id',
-  GCS_BUCKET_NAME: process.env.GCS_BUCKET_NAME || 'your-bucket-name',
+/**
+ * Validated environment variables
+ * Server will fail fast at startup if any required variables are missing
+ */
+export const env = cleanEnv(process.env, {
+  // Required GCP configuration
+  GOOGLE_CLOUD_PROJECT: str({
+    desc: 'Google Cloud project ID',
+  }),
+  GCS_BUCKET_NAME: str({
+    desc: 'Google Cloud Storage bucket name for file uploads',
+  }),
 
-  // Server config
-  PORT: parseInt(process.env.PORT || '5001', 10),
-  NODE_ENV: process.env.NODE_ENV || 'development',
-};
+  // Required security configuration
+  SESSION_SECRET: str({
+    desc: 'Secret key for session signing (min 32 characters)',
+  }),
+  FRONTEND_URL: str({
+    desc: 'Frontend origin URL for CORS whitelist',
+  }),
+
+  // Optional configuration with defaults
+  PORT: port({
+    default: 5001,
+    desc: 'Port for Express server',
+  }),
+  NODE_ENV: str({
+    default: 'development',
+    choices: ['development', 'test', 'production'],
+    desc: 'Node environment',
+  }),
+});
