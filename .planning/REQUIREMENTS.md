@@ -173,15 +173,83 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEC-01 | TBD | Pending |
-| SEC-02 | TBD | Pending |
-| ... | TBD | Pending |
+| SEC-01 | Phase 1 | Pending |
+| SEC-02 | Phase 1 | Pending |
+| SEC-03 | Phase 1 | Pending |
+| SEC-04 | Phase 1 | Pending |
+| SEC-05 | Phase 1 | Pending |
+| SEC-06 | Phase 1 | Pending |
+| SEC-07 | Phase 1 | Pending |
+| SEC-08 | Phase 1 | Pending |
+| SEC-09 | Phase 1 | Pending |
+| SEC-10 | Phase 1 | Pending |
+| SEC-11 | Phase 1 | Pending |
+| SEC-12 | Phase 1 | Pending |
+| SEC-13 | Phase 1 | Pending |
+| SEC-14 | Phase 1 | Pending |
+| SEC-15 | Phase 1 | Pending |
+| SEC-16 | Phase 1 | Pending |
+| WORK-01 | Phase 2 | Pending |
+| WORK-02 | Phase 2 | Pending |
+| WORK-03 | Phase 2 | Pending |
+| WORK-04 | Phase 2 | Pending |
+| WORK-05 | Phase 2 | Pending |
+| WORK-06 | Phase 2 | Pending |
+| WORK-07 | Phase 2 | Pending |
+| WORK-08 | Phase 2 | Pending |
+| WORK-09 | Phase 2 | Pending |
+| WORK-10 | Phase 2 | Pending |
+| WORK-11 | Phase 2 | Pending |
+| WORK-12 | Phase 2 | Pending |
+| WORK-13 | Phase 2 | Pending |
+| WORK-14 | Phase 2 | Pending |
+| FE-01 | Phase 3 | Pending |
+| FE-02 | Phase 3 | Pending |
+| FE-03 | Phase 3 | Pending |
+| FE-04 | Phase 3 | Pending |
+| FE-05 | Phase 3 | Pending |
+| FE-06 | Phase 3 | Pending |
+| FE-07 | Phase 3 | Pending |
+| FE-08 | Phase 3 | Pending |
+| FE-09 | Phase 3 | Pending |
+| FE-10 | Phase 3 | Pending |
+| FE-11 | Phase 3 | Pending |
+| FE-12 | Phase 3 | Pending |
+| FE-13 | Phase 3 | Pending |
+| FE-14 | Phase 3 | Pending |
+| FE-15 | Phase 3 | Pending |
+| FE-16 | Phase 3 | Pending |
+| FE-17 | Phase 3 | Pending |
+| FE-18 | Phase 3 | Pending |
+| FE-19 | Phase 3 | Pending |
+| FE-20 | Phase 3 | Pending |
+| FE-21 | Phase 3 | Pending |
+| FE-22 | Phase 3 | Pending |
+| OPS-01 | Phase 4 | Pending |
+| OPS-02 | Phase 4 | Pending |
+| OPS-03 | Phase 4 | Pending |
+| OPS-04 | Phase 4 | Pending |
+| OPS-05 | Phase 4 | Pending |
+| OPS-06 | Phase 4 | Pending |
+| OPS-07 | Phase 4 | Pending |
+| OPS-08 | Phase 4 | Pending |
+| OPS-09 | Phase 4 | Pending |
+| OPS-10 | Phase 4 | Pending |
+| OPS-11 | Phase 4 | Pending |
+| OPS-12 | Phase 4 | Pending |
+| OPS-13 | Phase 4 | Pending |
+| OPS-14 | Phase 4 | Pending |
+| GH-01 | Phase 4 | Pending |
+| GH-02 | Phase 4 | Pending |
+| GH-03 | Phase 4 | Pending |
+| GH-04 | Phase 4 | Pending |
+| GH-05 | Phase 4 | Pending |
 
 **Coverage:**
 - v1.0 requirements: 71 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 71 ⚠️
+- Mapped to phases: 71 (100%)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-24*
-*Last updated: 2026-03-24 after initial definition*
+*Last updated: 2026-03-24 after roadmap creation*
