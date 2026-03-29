@@ -20,11 +20,11 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [ ] **SEC-09**: Path traversal protection canonicalizes all file paths
 - [ ] **SEC-10**: Input validation sanitizes all user inputs with express-validator
 - [ ] **SEC-11**: Input validation provides clear error messages for invalid inputs
-- [ ] **SEC-12**: Environment variable validation runs at worker startup (fails fast if missing)
-- [ ] **SEC-13**: Error handling never exposes stack traces in production responses
+- [x] **SEC-12**: Environment variable validation runs at worker startup (fails fast if missing)
+- [x] **SEC-13**: Error handling never exposes stack traces in production responses
 - [x] **SEC-14**: Helmet middleware applies security headers (CSP, X-Frame-Options, etc.)
 - [ ] **SEC-15**: Rate limiting uses version 8.0.2+ to avoid CVE-2026-30827 (IPv6 bypass)
-- [ ] **SEC-16**: Hardcoded GCP identifiers replaced with environment variables
+- [x] **SEC-16**: Hardcoded GCP identifiers replaced with environment variables
 
 ### Worker Reliability
 
@@ -184,11 +184,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-09 | Phase 1 | Pending |
 | SEC-10 | Phase 1 | Pending |
 | SEC-11 | Phase 1 | Pending |
-| SEC-12 | Phase 1 | Pending |
-| SEC-13 | Phase 1 | Pending |
+| SEC-12 | Phase 1 | Complete (01-01) |
+| SEC-13 | Phase 1 | Complete (01-01) |
 | SEC-14 | Phase 1 | Complete |
 | SEC-15 | Phase 1 | Pending |
-| SEC-16 | Phase 1 | Pending |
+| SEC-16 | Phase 1 | Complete (01-01) |
 | WORK-01 | Phase 2 | Pending |
 | WORK-02 | Phase 2 | Pending |
 | WORK-03 | Phase 2 | Pending |
