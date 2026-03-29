@@ -10,7 +10,7 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 ### Security Hardening
 
 - [ ] **SEC-01**: API implements authentication layer (session-based for UI, API keys for service-to-server)
-- [ ] **SEC-02**: CORS restricts requests to actual frontend domain (no wildcard on authenticated endpoints)
+- [x] **SEC-02**: CORS restricts requests to actual frontend domain (no wildcard on authenticated endpoints)
 - [ ] **SEC-03**: Rate limiting applied to upload endpoint (5 uploads per 15 minutes per user)
 - [ ] **SEC-04**: Rate limiting applied to polling endpoint (60 status checks per minute per user)
 - [ ] **SEC-05**: Rate limiting applied to download endpoint (10 downloads per hour per user)
@@ -22,7 +22,7 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [ ] **SEC-11**: Input validation provides clear error messages for invalid inputs
 - [ ] **SEC-12**: Environment variable validation runs at worker startup (fails fast if missing)
 - [ ] **SEC-13**: Error handling never exposes stack traces in production responses
-- [ ] **SEC-14**: Helmet middleware applies security headers (CSP, X-Frame-Options, etc.)
+- [x] **SEC-14**: Helmet middleware applies security headers (CSP, X-Frame-Options, etc.)
 - [ ] **SEC-15**: Rate limiting uses version 8.0.2+ to avoid CVE-2026-30827 (IPv6 bypass)
 - [ ] **SEC-16**: Hardcoded GCP identifiers replaced with environment variables
 
@@ -174,7 +174,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SEC-01 | Phase 1 | Pending |
-| SEC-02 | Phase 1 | Pending |
+| SEC-02 | Phase 1 | Complete |
 | SEC-03 | Phase 1 | Pending |
 | SEC-04 | Phase 1 | Pending |
 | SEC-05 | Phase 1 | Pending |
@@ -186,7 +186,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-11 | Phase 1 | Pending |
 | SEC-12 | Phase 1 | Pending |
 | SEC-13 | Phase 1 | Pending |
-| SEC-14 | Phase 1 | Pending |
+| SEC-14 | Phase 1 | Complete |
 | SEC-15 | Phase 1 | Pending |
 | SEC-16 | Phase 1 | Pending |
 | WORK-01 | Phase 2 | Pending |
