@@ -24,6 +24,7 @@ Required Environment Variables:
 
 import argparse
 import os
+import sys
 import json
 import logging
 import numpy as np
@@ -46,6 +47,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 db = firestore.Client(project=PROJECT_ID)
+
+
+def validate_environment():
+    """Validate required environment variables. Exits if any are missing."""
+    # Read environment variables fresh each time (for testability)
+    required_vars = {
+        'GOOGLE_CLOUD_PROJECT': os.getenv("GOOGLE_CLOUD_PROJECT"),
+        'GCS_BUCKET_NAME': os.getenv("GCS_BUCKET_NAME"),
+        'PUBSUB_SUBSCRIPTION_ID': os.getenv("PUBSUB_SUBSCRIPTION_ID"),
+    }
+
+    missing = [name for name, value in required_vars.items() if not value]
+
+    if missing:
+        logger.error(f"Missing required environment variables: {', '.join(missing)}")
+        logger.error("Set these variables before starting the worker.")
+        sys.exit(1)
+
+    logger.info("Environment validation passed.")
+    return True
 
 
 def process_upload_local(job_id, bucket_name, file_path):
@@ -245,6 +266,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     _processing_mode = args.mode
+
+    # Fail fast if required env vars are missing
+    validate_environment()
 
     subscriber = pubsub_v1.SubscriberClient()
     subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_ID)

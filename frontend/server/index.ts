@@ -20,11 +20,16 @@ import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { corsConfig, helmetConfig } from "./middleware/security";
+import { errorHandler } from "./middleware/errorHandler";
+import { env } from "./config/env";
+import { logger } from "./config/logger";
 import path from "path";
 
 // --- Configuration ---
-const GCS_BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name"; // TODO: Set in .env
-const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || "your-project-id"; // TODO: Set in .env
+// Environment variables are validated at startup via env module import above
+// Server will fail fast with clear error message if required vars are missing
+const GCS_BUCKET_NAME = env.GCS_BUCKET_NAME;
+const PROJECT_ID = env.GOOGLE_CLOUD_PROJECT;
 const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens to
 
 // --- Google Cloud Clients ---
@@ -66,7 +71,7 @@ export function createServer() {
       const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       const safeFilename = `uploads/${uniqueId}/${originalName}`;
 
-      console.log(`🚀 Starting upload job: ${uniqueId}`);
+      logger.info(`Starting upload job: ${uniqueId}`);
 
       // 1. Stream file to Google Cloud Storage
       const bucket = storage.bucket(GCS_BUCKET_NAME);
@@ -77,7 +82,7 @@ export function createServer() {
         resumable: false, // Simple upload for small/medium files
       });
 
-      console.log(`✅ File saved to GCS: ${safeFilename}`);
+      logger.info(`File saved to GCS: ${safeFilename}`);
 
       // 2. Create Firestore Document (Job Metadata)
       const jobMetadata = {
@@ -90,7 +95,7 @@ export function createServer() {
       };
 
       await firestore.collection("jobs").doc(uniqueId).set(jobMetadata);
-      console.log(`✅ Firestore document created: jobs/${uniqueId}`);
+      logger.info(`Firestore document created: jobs/${uniqueId}`);
 
       // 3. Publish Pub/Sub Message (Trigger the Worker)
       const messageBuffer = Buffer.from(JSON.stringify({
@@ -101,9 +106,9 @@ export function createServer() {
 
       try {
         await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: messageBuffer });
-        console.log(`✅ Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
+        logger.info(`Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
       } catch (pubError) {
-        console.warn("⚠️ Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", pubError);
+        logger.warn("Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", { error: pubError });
         // We don't fail the request here, just warn, so you can test upload without PubSub initially
       }
 
@@ -114,7 +119,7 @@ export function createServer() {
       });
 
     } catch (error) {
-      console.error("❌ Upload failed:", error);
+      logger.error("Upload failed", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({
         error: error instanceof Error ? error.message : "Internal Server Error",
       });
@@ -135,10 +140,15 @@ export function createServer() {
       const data = doc.data();
       res.json(data); // Returns { status: 'complete', outliers: [...] }
     } catch (error) {
-      console.error("Error checking status:", error);
+      logger.error("Error checking status", { error: error instanceof Error ? error.message : String(error) });
       res.status(500).json({ error: "Failed to check status" });
     }
   });
+
+  // --- Error Handler Middleware (MUST be last) ---
+  // Catches all unhandled errors from routes above
+  // Logs full details server-side, returns generic message in production
+  app.use(errorHandler);
 
   return app;
 }
