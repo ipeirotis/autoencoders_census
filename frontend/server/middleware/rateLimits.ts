@@ -7,6 +7,15 @@
  */
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import type { Request } from 'express';
+
+/**
+ * Key generator for rate limiting
+ * Uses user ID if authenticated, otherwise falls back to IP with proper IPv6 handling
+ */
+const userOrIpKeyGenerator = (req: Request): string => {
+  return (req as any).user?.id || ipKeyGenerator(req);
+};
 
 /**
  * Upload rate limiter
@@ -16,10 +25,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 export const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5,
-  keyGenerator: (req) => {
-    // Use user ID if authenticated, otherwise fallback to IP with proper IPv6 handling
-    return (req as any).user?.id || ipKeyGenerator(req);
-  },
+  keyGenerator: userOrIpKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Upload limit exceeded. Try again in 15 minutes.' },
@@ -33,10 +39,7 @@ export const uploadLimiter = rateLimit({
 export const pollLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 60,
-  keyGenerator: (req) => {
-    // Use user ID if authenticated, otherwise fallback to IP with proper IPv6 handling
-    return (req as any).user?.id || ipKeyGenerator(req);
-  },
+  keyGenerator: userOrIpKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many status checks. Slow down polling.' },
@@ -50,10 +53,7 @@ export const pollLimiter = rateLimit({
 export const downloadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 10,
-  keyGenerator: (req) => {
-    // Use user ID if authenticated, otherwise fallback to IP with proper IPv6 handling
-    return (req as any).user?.id || ipKeyGenerator(req);
-  },
+  keyGenerator: userOrIpKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Download limit exceeded. Try again in an hour.' },
