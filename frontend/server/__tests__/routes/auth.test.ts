@@ -80,5 +80,25 @@ describe('Authentication routes', () => {
       );
       expect(verifyEmailRoute).toBeDefined();
     });
+
+    it('should have POST /request-reset endpoint', async () => {
+      const authRoutesModule = await import('../../routes/auth');
+      const router = authRoutesModule.authRouter;
+
+      const requestResetRoute = router.stack.find((layer: any) =>
+        layer.route && layer.route.path === '/request-reset' && layer.route.methods.post
+      );
+      expect(requestResetRoute).toBeDefined();
+    });
+
+    it('should have POST /reset-password endpoint', async () => {
+      const authRoutesModule = await import('../../routes/auth');
+      const router = authRoutesModule.authRouter;
+
+      const resetPasswordRoute = router.stack.find((layer: any) =>
+        layer.route && layer.route.path === '/reset-password' && layer.route.methods.post
+      );
+      expect(resetPasswordRoute).toBeDefined();
+    });
   });
 });
