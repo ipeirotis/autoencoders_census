@@ -176,6 +176,21 @@ export async function updatePassword(userId: string, newPassword: string): Promi
 }
 
 /**
+ * Create or regenerate verification token for user
+ * @param userId - User's ID
+ * @returns Verification token
+ */
+export async function createVerificationToken(userId: string): Promise<string> {
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+
+  await firestore.collection(USERS_COLLECTION).doc(userId).update({
+    verificationToken,
+  });
+
+  return verificationToken;
+}
+
+/**
  * Get user by verification token
  * @param token - Email verification token
  * @returns User object or null if token invalid

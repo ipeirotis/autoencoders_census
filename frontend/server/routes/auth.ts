@@ -5,8 +5,14 @@
 
 import { Router, Request, Response } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
-import { createUser } from '../models/user';
+import {
+  createUser,
+  createVerificationToken,
+  getUserByVerificationToken,
+  setEmailVerified,
+} from '../models/user';
 import { logger } from '../config/logger';
+import { env } from '../config/env';
 
 const router = Router();
 
@@ -107,6 +113,64 @@ router.get('/me', requireAuth, (req: Request, res: Response) => {
   const user = req.user as any;
   const { passwordHash, ...userPublic } = user;
   res.json({ user: userPublic });
+});
+
+/**
+ * POST /api/auth/send-verification
+ * Send email verification link
+ * Email sending is stubbed (logs to console) in v1
+ */
+router.post('/send-verification', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user as any;
+
+    if (user.emailVerified) {
+      return res.status(400).json({ error: 'Email already verified' });
+    }
+
+    // Generate or regenerate verification token
+    const token = user.verificationToken || await createVerificationToken(user.id);
+
+    // STUB: In production, send actual email. For v1, log only.
+    const verificationUrl = `${env.FRONTEND_URL}/verify-email?token=${token}`;
+    logger.info('[EMAIL STUB] Verification link', { url: verificationUrl, userId: user.id });
+
+    res.json({ message: 'Verification email sent' });
+  } catch (error) {
+    logger.error('Send verification failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(500).json({ error: 'Failed to send verification email' });
+  }
+});
+
+/**
+ * GET /api/auth/verify-email?token=xxx
+ * Verify email with token
+ */
+router.get('/verify-email', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.query;
+
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Token required' });
+    }
+
+    const user = await getUserByVerificationToken(token);
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired token' });
+    }
+
+    await setEmailVerified(user.id);
+
+    logger.info('Email verified', { userId: user.id, email: user.email });
+    res.json({ message: 'Email verified successfully' });
+  } catch (error) {
+    logger.error('Email verification failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
 });
 
 export const authRouter = router;
