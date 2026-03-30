@@ -26,12 +26,12 @@ progress:
 ## Current Position
 
 **Phase:** 1 - Security Foundation
-**Plan:** 04 of 6 (Rate Limiting Implementation)
+**Plan:** 05 of 6 (Input Validation & File Security)
 **Status:** Executing
 
-**Progress:** [███████░░░] 67%
+**Progress:** [████████░░] 83%
 
-**Last Plan Completed:** 01-04 (Rate Limiting Implementation)
+**Last Plan Completed:** 01-05 (Input Validation & File Security)
 
 ## Performance Metrics
 
@@ -49,7 +49,7 @@ progress:
 
 ### Plans
 - Total plans: 6 (Phase 1 planned)
-- Completed: 4
+- Completed: 5
 - In progress: 0
 - Blocked: 0
 
@@ -60,6 +60,7 @@ progress:
 | 01 | 02 | CORS & Security Headers | 38m | 4/4 | 6 | 2026-03-29 |
 | 01 | 03 | Authentication | 139m | 8/8 | 10 | 2026-03-30 |
 | 01 | 04 | Rate Limiting | 23m | 4/4 | 4 | 2026-03-30 |
+| 01 | 05 | Input Validation & File Security | 25m | 5/5 | 6 | 2026-03-30 |
 
 ## Accumulated Context
 
@@ -75,6 +76,12 @@ progress:
 5. **Use envalid for environment validation** (2026-03-29): Type-safe validation with clear error messages, validates at module import time for fail-fast behavior. Alternative manual checks considered but envalid provides better DX and catches errors earlier.
 
 6. **Use ipKeyGenerator helper for IPv6-safe rate limiting** (2026-03-30): express-rate-limit 8.0.2+ provides ipKeyGenerator to prevent CVE-2026-30827 IPv6 bypass vulnerability. IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) incorrectly grouped under /56 subnet in older versions. Using helper ensures proper IPv6 normalization.
+
+7. **Use express-validator for input validation** (2026-03-30): Industry-standard library with built-in sanitization, clear error messages, and composable validation chains. Alternatives considered: manual validation, Joi, Yup. express-validator chosen for Express.js integration and declarative syntax.
+
+8. **Use file-type library for binary file detection** (2026-03-30): Detects file types by magic bytes, not extensions. Prevents binary files renamed to .csv from being processed. More secure than extension-only checking.
+
+9. **UUID v4 for all uploaded filenames** (2026-03-30): Eliminates path traversal via filename, prevents filename collisions, no user-controlled input in paths. User-provided filenames are discarded entirely.
 
 ### Active Todos
 - [ ] Run `/gsd:plan-phase 1` to decompose Security Foundation phase into executable plans

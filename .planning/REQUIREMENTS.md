@@ -14,12 +14,12 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **SEC-03**: Rate limiting applied to upload endpoint (5 uploads per 15 minutes per user)
 - [x] **SEC-04**: Rate limiting applied to polling endpoint (60 status checks per minute per user)
 - [x] **SEC-05**: Rate limiting applied to download endpoint (10 downloads per hour per user)
-- [ ] **SEC-06**: File type validation checks magic bytes (not just extension)
-- [ ] **SEC-07**: File type validation restricts to .csv MIME types only
-- [ ] **SEC-08**: Path traversal protection uses UUID filenames (discards user-provided names)
-- [ ] **SEC-09**: Path traversal protection canonicalizes all file paths
-- [ ] **SEC-10**: Input validation sanitizes all user inputs with express-validator
-- [ ] **SEC-11**: Input validation provides clear error messages for invalid inputs
+- [x] **SEC-06**: File type validation checks magic bytes (not just extension)
+- [x] **SEC-07**: File type validation restricts to .csv MIME types only
+- [x] **SEC-08**: Path traversal protection uses UUID filenames (discards user-provided names)
+- [x] **SEC-09**: Path traversal protection canonicalizes all file paths
+- [x] **SEC-10**: Input validation sanitizes all user inputs with express-validator
+- [x] **SEC-11**: Input validation provides clear error messages for invalid inputs
 - [x] **SEC-12**: Environment variable validation runs at worker startup (fails fast if missing)
 - [x] **SEC-13**: Error handling never exposes stack traces in production responses
 - [x] **SEC-14**: Helmet middleware applies security headers (CSP, X-Frame-Options, etc.)
@@ -178,12 +178,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-03 | Phase 1 | Complete |
 | SEC-04 | Phase 1 | Complete |
 | SEC-05 | Phase 1 | Complete |
-| SEC-06 | Phase 1 | Pending |
-| SEC-07 | Phase 1 | Pending |
-| SEC-08 | Phase 1 | Pending |
-| SEC-09 | Phase 1 | Pending |
-| SEC-10 | Phase 1 | Pending |
-| SEC-11 | Phase 1 | Pending |
+| SEC-06 | Phase 1 | Complete |
+| SEC-07 | Phase 1 | Complete |
+| SEC-08 | Phase 1 | Complete |
+| SEC-09 | Phase 1 | Complete |
+| SEC-10 | Phase 1 | Complete |
+| SEC-11 | Phase 1 | Complete |
 | SEC-12 | Phase 1 | Complete (01-01) |
 | SEC-13 | Phase 1 | Complete (01-01) |
 | SEC-14 | Phase 1 | Complete |
