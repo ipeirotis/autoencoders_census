@@ -19,8 +19,11 @@ import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
+import { authRouter } from "./routes/auth";
 import { corsConfig, helmetConfig } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
+import { sessionConfig } from "./config/session";
+import { passport } from "./middleware/auth";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import path from "path";
@@ -54,9 +57,16 @@ export function createServer() {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
+  // Session and authentication middleware
+  app.use(sessionConfig);
+  app.use(passport.initialize());
+  app.use(passport.session());
+
   // Health Check
   app.get("/api/ping", (_req, res) => res.json({ message: "pong" }));
 
+  // Routes
+  app.use("/api/auth", authRouter);
   app.use("/api/jobs", jobsRouter);
 
   // --- The Main Upload Route ---
