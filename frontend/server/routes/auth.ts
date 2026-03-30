@@ -5,6 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
+import { validateSignup, validateLogin } from '../middleware/validation';
 import {
   createUser,
   createVerificationToken,
@@ -24,20 +25,11 @@ const router = Router();
  * POST /api/auth/signup
  * Create a new user account
  */
-router.post('/signup', async (req: Request, res: Response) => {
+router.post('/signup', validateSignup, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
-
-    // Create user
+    // Create user (validation already handled by middleware)
     const user = await createUser(email, password);
 
     // Log the user in
@@ -64,7 +56,7 @@ router.post('/signup', async (req: Request, res: Response) => {
  * POST /api/auth/login
  * Authenticate user with email and password
  */
-router.post('/login', (req: Request, res: Response, next) => {
+router.post('/login', validateLogin, (req: Request, res: Response, next) => {
   passport.authenticate('local', (err: any, user: any, info: any) => {
     if (err) {
       logger.error('Login error', { error: err });
