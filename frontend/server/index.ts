@@ -22,6 +22,9 @@ import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
 import { corsConfig, helmetConfig } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
+import { requireAuth } from "./middleware/auth";
+import { uploadLimiter } from "./middleware/rateLimits";
+import { validateCSVContent, generateSafeFilename } from "./utils/fileValidation";
 import { sessionConfig } from "./config/session";
 import { passport } from "./middleware/auth";
 import { env } from "./config/env";
@@ -71,17 +74,33 @@ export function createServer() {
 
   // --- The Main Upload Route ---
   // (keep this as a fallback, but new frontend uses the 'jobsRouter' endpoints instead)
-  app.post("/api/upload", upload.single("file"), async (req, res) => {
+  app.post("/api/upload", requireAuth, uploadLimiter, upload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
+      // Validate CSV content
+      const validation = await validateCSVContent(req.file.buffer);
+      if (!validation.valid) {
+        logger.warn('CSV validation failed', {
+          reason: validation.reason,
+          userId: (req as any).user?.id
+        });
+        return res.status(400).json({ error: 'Invalid CSV file format' });
+        // Don't expose validation.reason to client (logged server-side)
+      }
+
       const originalName = req.file.originalname;
       const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      const safeFilename = `uploads/${uniqueId}/${originalName}`;
 
-      logger.info(`Starting upload job: ${uniqueId}`);
+      // Generate safe filename (discard user-provided name)
+      const safeFilename = generateSafeFilename((req as any).user.id);
+
+      logger.info(`Starting upload job: ${uniqueId}`, {
+        userId: (req as any).user.id,
+        originalFilename: originalName
+      });
 
       // 1. Stream file to Google Cloud Storage
       const bucket = storage.bucket(GCS_BUCKET_NAME);
@@ -102,6 +121,7 @@ export function createServer() {
         bucket: GCS_BUCKET_NAME,
         status: "uploaded", // Initial status
         createdAt: new Date().toISOString(),
+        userId: (req as any).user.id,
       };
 
       await firestore.collection("jobs").doc(uniqueId).set(jobMetadata);
@@ -129,10 +149,7 @@ export function createServer() {
       });
 
     } catch (error) {
-      logger.error("Upload failed", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({
-        error: error instanceof Error ? error.message : "Internal Server Error",
-      });
+      next(error); // Pass to error handler
     }
   });
 
