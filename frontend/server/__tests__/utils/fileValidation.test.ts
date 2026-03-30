@@ -4,7 +4,12 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { validateCSVContent } from '../../utils/fileValidation';
+import path from 'path';
+import {
+  validateCSVContent,
+  generateSafeFilename,
+  sanitizePath,
+} from '../../utils/fileValidation';
 
 describe('CSV content validation', () => {
   describe('validateCSVContent', () => {
@@ -109,6 +114,111 @@ describe('CSV content validation', () => {
       const result = await validateCSVContent(csvWithQuotes);
 
       expect(result.valid).toBe(true);
+    });
+  });
+});
+
+describe('Path traversal protection', () => {
+  describe('generateSafeFilename', () => {
+    it('should return UUID-based path', () => {
+      const userId = 'user123';
+      const filename = generateSafeFilename(userId);
+
+      expect(filename).toMatch(/^uploads\/user123\/[a-f0-9-]{36}\.csv$/);
+    });
+
+    it('should ignore user-provided filename (not passed to function)', () => {
+      // generateSafeFilename only takes userId, generates its own UUID
+      const userId = 'user456';
+      const filename1 = generateSafeFilename(userId);
+      const filename2 = generateSafeFilename(userId);
+
+      // Different UUIDs each time
+      expect(filename1).not.toBe(filename2);
+      expect(filename1).toMatch(/^uploads\/user456\//);
+      expect(filename2).toMatch(/^uploads\/user456\//);
+    });
+
+    it('should always use .csv extension', () => {
+      const userId = 'user789';
+      const filename = generateSafeFilename(userId);
+
+      expect(filename).toMatch(/\.csv$/);
+    });
+
+    it('should include userId in path', () => {
+      const userId = 'test-user';
+      const filename = generateSafeFilename(userId);
+
+      expect(filename).toContain('uploads/test-user/');
+    });
+  });
+
+  describe('sanitizePath', () => {
+    it('should reject "../" in path', () => {
+      const uploadDir = '/var/uploads';
+      const maliciousPath = '../etc/passwd';
+
+      const result = sanitizePath(uploadDir, maliciousPath);
+
+      expect(result).toBeNull();
+    });
+
+    it('should reject absolute paths outside upload dir', () => {
+      const uploadDir = '/var/uploads';
+      const absolutePath = '/etc/passwd';
+
+      const result = sanitizePath(uploadDir, absolutePath);
+
+      expect(result).toBeNull();
+    });
+
+    it('should normalize path with path.resolve', () => {
+      const uploadDir = '/var/uploads';
+      const safePath = 'user123/file.csv';
+
+      const result = sanitizePath(uploadDir, safePath);
+
+      expect(result).toBe(path.resolve(uploadDir, safePath));
+      expect(result).toBe('/var/uploads/user123/file.csv');
+    });
+
+    it('should return null for traversal attempts', () => {
+      const uploadDir = '/var/uploads';
+      const traversalPaths = [
+        '../../etc/passwd',
+        '../../../root/.ssh/id_rsa',
+        'user/../../../etc/passwd',
+      ];
+
+      traversalPaths.forEach((maliciousPath) => {
+        const result = sanitizePath(uploadDir, maliciousPath);
+        expect(result).toBeNull();
+      });
+    });
+
+    it('should accept safe relative paths', () => {
+      const uploadDir = '/var/uploads';
+      const safePath = 'user123/data/file.csv';
+
+      const result = sanitizePath(uploadDir, safePath);
+
+      expect(result).not.toBeNull();
+      expect(result).toContain('/var/uploads/');
+    });
+
+    it('should handle Windows-style paths (on Unix)', () => {
+      const uploadDir = '/var/uploads';
+      const windowsPath = 'user123\\..\\..\\etc\\passwd';
+
+      const result = sanitizePath(uploadDir, windowsPath);
+
+      // On Unix, backslashes are valid filename characters
+      // But the path should still be within uploadDir
+      expect(result).not.toBeNull();
+      if (result) {
+        expect(result.startsWith(path.resolve(uploadDir))).toBe(true);
+      }
     });
   });
 });

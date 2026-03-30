@@ -4,6 +4,8 @@
  */
 
 import { fileTypeFromBuffer } from 'file-type';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
 
 /**
  * Validates that a buffer contains valid CSV content
@@ -48,4 +50,36 @@ export async function validateCSVContent(
   }
 
   return { valid: true };
+}
+
+/**
+ * Generates a safe filename using UUID
+ * User-provided filenames are never used - only UUID is used
+ * Format: uploads/{userId}/{uuid}.csv
+ *
+ * @param userId - User ID for path organization
+ * @returns Safe filename path
+ */
+export function generateSafeFilename(userId: string): string {
+  const fileId = uuidv4();
+  return `uploads/${userId}/${fileId}.csv`;
+}
+
+/**
+ * Sanitizes a file path to prevent path traversal attacks
+ * Ensures the resolved path stays within the upload directory
+ *
+ * @param uploadDir - Base upload directory (absolute path)
+ * @param unsafePath - User-provided path (may contain traversal attempts)
+ * @returns Sanitized absolute path if safe, null if traversal detected
+ */
+export function sanitizePath(uploadDir: string, unsafePath: string): string | null {
+  const resolved = path.resolve(uploadDir, unsafePath);
+
+  // Verify resolved path is within upload directory
+  if (!resolved.startsWith(path.resolve(uploadDir))) {
+    return null; // Path traversal attempt
+  }
+
+  return resolved;
 }
