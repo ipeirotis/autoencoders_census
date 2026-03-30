@@ -30,6 +30,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.1",
     "express-session": "^1.19.0",
+    "express-validator": "^7.3.1",
+    "file-type": "^21.3.4",
     "firestore-store": "^2.0.2",
     "lucide-react": "^0.562.0",
     "multer": "^2.0.2",
