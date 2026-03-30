@@ -60,5 +60,25 @@ describe('Authentication routes', () => {
       );
       expect(meRoute).toBeDefined();
     });
+
+    it('should have POST /send-verification endpoint', async () => {
+      const authRoutesModule = await import('../../routes/auth');
+      const router = authRoutesModule.authRouter;
+
+      const sendVerificationRoute = router.stack.find((layer: any) =>
+        layer.route && layer.route.path === '/send-verification' && layer.route.methods.post
+      );
+      expect(sendVerificationRoute).toBeDefined();
+    });
+
+    it('should have GET /verify-email endpoint', async () => {
+      const authRoutesModule = await import('../../routes/auth');
+      const router = authRoutesModule.authRouter;
+
+      const verifyEmailRoute = router.stack.find((layer: any) =>
+        layer.route && layer.route.path === '/verify-email' && layer.route.methods.get
+      );
+      expect(verifyEmailRoute).toBeDefined();
+    });
   });
 });
