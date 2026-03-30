@@ -10,6 +10,10 @@ import {
   createVerificationToken,
   getUserByVerificationToken,
   setEmailVerified,
+  getUserByEmail,
+  createPasswordResetToken,
+  getUserByResetToken,
+  updatePassword,
 } from '../models/user';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
@@ -170,6 +174,74 @@ router.get('/verify-email', async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : String(error),
     });
     res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+/**
+ * POST /api/auth/request-reset
+ * Request password reset link
+ * Email sending is stubbed (logs to console) in v1
+ * Always returns success to prevent email enumeration
+ */
+router.post('/request-reset', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await getUserByEmail(email);
+    if (user) {
+      const token = await createPasswordResetToken(user.id);
+
+      // STUB: In production, send actual email. For v1, log only.
+      const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`;
+      logger.info('[EMAIL STUB] Password reset link', { url: resetUrl, userId: user.id });
+    }
+
+    // Always return success to prevent email enumeration
+    res.json({
+      message: 'If an account exists with that email, a reset link has been sent',
+    });
+  } catch (error) {
+    logger.error('Request reset failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * Reset password with token
+ */
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: 'Token and new password required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const user = await getUserByResetToken(token);
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    await updatePassword(user.id, newPassword);
+
+    logger.info('Password reset successful', { userId: user.id, email: user.email });
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    logger.error('Password reset failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
