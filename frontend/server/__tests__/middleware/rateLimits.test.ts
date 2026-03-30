@@ -25,45 +25,67 @@ describe('Rate Limiting middleware', () => {
   });
 
   describe('uploadLimiter', () => {
-    beforeEach(() => {
-      // Mock authentication middleware that sets req.user
-      app.use((req, _res, next) => {
-        (req as any).user = { id: 'user-1' };
+    it('should allow first 5 upload requests within 15 minutes', async () => {
+      // Use unique user ID for this test
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'upload-test-1' };
         next();
       });
-      app.post('/upload', uploadLimiter, (_req, res) => {
+      testApp.post('/upload', uploadLimiter, (_req, res) => {
         res.status(200).json({ success: true });
       });
-    });
 
-    it('should allow first 5 upload requests within 15 minutes', async () => {
       for (let i = 0; i < 5; i++) {
-        const response = await request(app).post('/upload');
+        const response = await request(testApp).post('/upload');
         expect(response.status).toBe(200);
         expect(response.body).toEqual({ success: true });
       }
     });
 
     it('should return 429 on 6th upload request', async () => {
+      // Use unique user ID for this test
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'upload-test-2' };
+        next();
+      });
+      testApp.post('/upload', uploadLimiter, (_req, res) => {
+        res.status(200).json({ success: true });
+      });
+
       // First 5 succeed
       for (let i = 0; i < 5; i++) {
-        await request(app).post('/upload');
+        await request(testApp).post('/upload');
       }
 
       // 6th should fail
-      const response = await request(app).post('/upload');
+      const response = await request(testApp).post('/upload');
       expect(response.status).toBe(429);
       expect(response.body).toHaveProperty('error');
       expect(response.body.error).toContain('Upload limit exceeded');
     });
 
     it('should include correct error message in 429 response', async () => {
+      // Use unique user ID for this test
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'upload-test-3' };
+        next();
+      });
+      testApp.post('/upload', uploadLimiter, (_req, res) => {
+        res.status(200).json({ success: true });
+      });
+
       // Exceed limit
       for (let i = 0; i < 5; i++) {
-        await request(app).post('/upload');
+        await request(testApp).post('/upload');
       }
 
-      const response = await request(app).post('/upload');
+      const response = await request(testApp).post('/upload');
       expect(response.status).toBe(429);
       expect(response.body).toEqual({
         error: 'Upload limit exceeded. Try again in 15 minutes.',
@@ -75,7 +97,8 @@ describe('Rate Limiting middleware', () => {
       const appMultiUser = express();
       appMultiUser.use(express.json());
 
-      let currentUserId = 'user-1';
+      // Use unique user IDs for this test
+      let currentUserId = 'upload-test-multi-1';
       appMultiUser.use((req, _res, next) => {
         (req as any).user = { id: currentUserId };
         next();
@@ -85,7 +108,7 @@ describe('Rate Limiting middleware', () => {
       });
 
       // User 1: use all 5 requests
-      currentUserId = 'user-1';
+      currentUserId = 'upload-test-multi-1';
       for (let i = 0; i < 5; i++) {
         const response = await request(appMultiUser).post('/upload');
         expect(response.status).toBe(200);
@@ -96,15 +119,26 @@ describe('Rate Limiting middleware', () => {
       expect(user1ExtraResponse.status).toBe(429);
 
       // User 2: should still have full quota
-      currentUserId = 'user-2';
+      currentUserId = 'upload-test-multi-2';
       const user2Response = await request(appMultiUser).post('/upload');
       expect(user2Response.status).toBe(200);
     });
 
     it('should use req.user.id when authenticated', async () => {
+      // Use unique user ID for this test
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'upload-test-auth' };
+        next();
+      });
+      testApp.post('/upload', uploadLimiter, (_req, res) => {
+        res.status(200).json({ success: true });
+      });
+
       // This is implicitly tested by the other tests,
       // but we verify the keyGenerator is using user ID
-      const response = await request(app).post('/upload');
+      const response = await request(testApp).post('/upload');
       expect(response.status).toBe(200);
       // If it were using IP, all tests would share a limit
     });
@@ -124,32 +158,42 @@ describe('Rate Limiting middleware', () => {
   });
 
   describe('pollLimiter', () => {
-    beforeEach(() => {
-      app.use((req, _res, next) => {
-        (req as any).user = { id: 'user-poll' };
+    it('should allow 60 poll requests within 1 minute', async () => {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'poll-test-1' };
         next();
       });
-      app.get('/status', pollLimiter, (_req, res) => {
+      testApp.get('/status', pollLimiter, (_req, res) => {
         res.status(200).json({ status: 'running' });
       });
-    });
 
-    it('should allow 60 poll requests within 1 minute', async () => {
       for (let i = 0; i < 60; i++) {
-        const response = await request(app).get('/status');
+        const response = await request(testApp).get('/status');
         expect(response.status).toBe(200);
         expect(response.body).toEqual({ status: 'running' });
       }
     });
 
     it('should return 429 on 61st poll request', async () => {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'poll-test-2' };
+        next();
+      });
+      testApp.get('/status', pollLimiter, (_req, res) => {
+        res.status(200).json({ status: 'running' });
+      });
+
       // First 60 succeed
       for (let i = 0; i < 60; i++) {
-        await request(app).get('/status');
+        await request(testApp).get('/status');
       }
 
       // 61st should fail
-      const response = await request(app).get('/status');
+      const response = await request(testApp).get('/status');
       expect(response.status).toBe(429);
       expect(response.body).toHaveProperty('error');
       expect(response.body.error).toContain('Too many status checks');
@@ -163,32 +207,42 @@ describe('Rate Limiting middleware', () => {
   });
 
   describe('downloadLimiter', () => {
-    beforeEach(() => {
-      app.use((req, _res, next) => {
-        (req as any).user = { id: 'user-download' };
+    it('should allow 10 download requests within 1 hour', async () => {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'download-test-1' };
         next();
       });
-      app.get('/download', downloadLimiter, (_req, res) => {
+      testApp.get('/download', downloadLimiter, (_req, res) => {
         res.status(200).json({ file: 'data.csv' });
       });
-    });
 
-    it('should allow 10 download requests within 1 hour', async () => {
       for (let i = 0; i < 10; i++) {
-        const response = await request(app).get('/download');
+        const response = await request(testApp).get('/download');
         expect(response.status).toBe(200);
         expect(response.body).toEqual({ file: 'data.csv' });
       }
     });
 
     it('should return 429 on 11th download request', async () => {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).user = { id: 'download-test-2' };
+        next();
+      });
+      testApp.get('/download', downloadLimiter, (_req, res) => {
+        res.status(200).json({ file: 'data.csv' });
+      });
+
       // First 10 succeed
       for (let i = 0; i < 10; i++) {
-        await request(app).get('/download');
+        await request(testApp).get('/download');
       }
 
       // 11th should fail
-      const response = await request(app).get('/download');
+      const response = await request(testApp).get('/download');
       expect(response.status).toBe(429);
       expect(response.body).toHaveProperty('error');
       expect(response.body.error).toContain('Download limit exceeded');
