@@ -28,6 +28,7 @@
     "dotenv": "^17.2.3",
     "envalid": "^8.1.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
     "express-session": "^1.19.0",
     "firestore-store": "^2.0.2",
     "lucide-react": "^0.562.0",
