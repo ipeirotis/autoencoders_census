@@ -9,11 +9,11 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### Security Hardening
 
-- [ ] **SEC-01**: API implements authentication layer (session-based for UI, API keys for service-to-server)
+- [x] **SEC-01**: API implements authentication layer (session-based for UI, API keys for service-to-server)
 - [x] **SEC-02**: CORS restricts requests to actual frontend domain (no wildcard on authenticated endpoints)
-- [ ] **SEC-03**: Rate limiting applied to upload endpoint (5 uploads per 15 minutes per user)
-- [ ] **SEC-04**: Rate limiting applied to polling endpoint (60 status checks per minute per user)
-- [ ] **SEC-05**: Rate limiting applied to download endpoint (10 downloads per hour per user)
+- [x] **SEC-03**: Rate limiting applied to upload endpoint (5 uploads per 15 minutes per user)
+- [x] **SEC-04**: Rate limiting applied to polling endpoint (60 status checks per minute per user)
+- [x] **SEC-05**: Rate limiting applied to download endpoint (10 downloads per hour per user)
 - [ ] **SEC-06**: File type validation checks magic bytes (not just extension)
 - [ ] **SEC-07**: File type validation restricts to .csv MIME types only
 - [ ] **SEC-08**: Path traversal protection uses UUID filenames (discards user-provided names)
@@ -23,7 +23,7 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **SEC-12**: Environment variable validation runs at worker startup (fails fast if missing)
 - [x] **SEC-13**: Error handling never exposes stack traces in production responses
 - [x] **SEC-14**: Helmet middleware applies security headers (CSP, X-Frame-Options, etc.)
-- [ ] **SEC-15**: Rate limiting uses version 8.0.2+ to avoid CVE-2026-30827 (IPv6 bypass)
+- [x] **SEC-15**: Rate limiting uses version 8.0.2+ to avoid CVE-2026-30827 (IPv6 bypass)
 - [x] **SEC-16**: Hardcoded GCP identifiers replaced with environment variables
 
 ### Worker Reliability
@@ -173,11 +173,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEC-01 | Phase 1 | Pending |
+| SEC-01 | Phase 1 | Complete |
 | SEC-02 | Phase 1 | Complete |
-| SEC-03 | Phase 1 | Pending |
-| SEC-04 | Phase 1 | Pending |
-| SEC-05 | Phase 1 | Pending |
+| SEC-03 | Phase 1 | Complete |
+| SEC-04 | Phase 1 | Complete |
+| SEC-05 | Phase 1 | Complete |
 | SEC-06 | Phase 1 | Pending |
 | SEC-07 | Phase 1 | Pending |
 | SEC-08 | Phase 1 | Pending |
@@ -187,7 +187,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-12 | Phase 1 | Complete (01-01) |
 | SEC-13 | Phase 1 | Complete (01-01) |
 | SEC-14 | Phase 1 | Complete |
-| SEC-15 | Phase 1 | Pending |
+| SEC-15 | Phase 1 | Complete |
 | SEC-16 | Phase 1 | Complete (01-01) |
 | WORK-01 | Phase 2 | Pending |
 | WORK-02 | Phase 2 | Pending |
