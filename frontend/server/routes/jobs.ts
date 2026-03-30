@@ -13,6 +13,10 @@ import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
+import { requireAuth } from '../middleware/auth';
+import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
+import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
+import { generateSafeFilename } from '../utils/fileValidation';
 
 const router = Router();
 const storage = new Storage();
@@ -24,11 +28,13 @@ const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
 // 1. Get Signed URL for Upload
-router.post("/upload-url", async (req, res) => {
+router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req, res) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
-    const gcsFileName = `uploads/${jobId}/${filename}`;
+
+    // Use safe filename - discard user-provided filename for storage path
+    const gcsFileName = generateSafeFilename((req as any).user.id);
 
     const [url] = await storage
       .bucket(BUCKET_NAME)
@@ -37,10 +43,10 @@ router.post("/upload-url", async (req, res) => {
         version: "v4",
         action: "write",
         expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType,
+        contentType: contentType || 'text/csv',
       });
 
-    res.json({ url, jobId, gcsFileName });
+    res.json({ url, jobId, gcsFileName, originalFilename: filename });
   } catch (error) {
     console.error("Error generating signed URL:", error);
     res.status(500).json({ error: "Failed to generate upload URL" });
@@ -48,7 +54,7 @@ router.post("/upload-url", async (req, res) => {
 });
 
 // 2. Start Processing (Trigger Pub/Sub)
-router.post("/start-job", async (req, res) => {
+router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req, res) => {
   try {
     const { jobId, gcsFileName } = req.body;
 
@@ -66,6 +72,7 @@ router.post("/start-job", async (req, res) => {
     await firestore.collection("jobs").doc(jobId).set({
       status: "uploading", // Initial state
       createdAt: new Date(),
+      userId: (req as any).user.id,
     });
 
     res.json({ success: true, message: "Job started" });
@@ -76,7 +83,7 @@ router.post("/start-job", async (req, res) => {
 });
 
 // 3. Check Job Status
-router.get("/job-status/:id", async (req, res) => {
+router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req, res) => {
   try {
     const { id } = req.params;
     const doc = await firestore.collection("jobs").doc(id).get();
