@@ -17,6 +17,7 @@ import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
+import { logger } from '../config/logger';
 
 const router = Router();
 const storage = new Storage();
@@ -48,7 +49,10 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
 
     res.json({ url, jobId, gcsFileName, originalFilename: filename });
   } catch (error) {
-    console.error("Error generating signed URL:", error);
+    logger.error("Error generating signed URL", {
+      error: error instanceof Error ? error.message : String(error),
+      userId: (req as any).user?.id
+    });
     res.status(500).json({ error: "Failed to generate upload URL" });
   }
 });
@@ -77,7 +81,11 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 
     res.json({ success: true, message: "Job started" });
   } catch (error) {
-    console.error("Error starting job:", error);
+    logger.error("Error starting job", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.body.jobId,
+      userId: (req as any).user?.id
+    });
     res.status(500).json({ error: "Failed to start job" });
   }
 });
@@ -95,7 +103,11 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
     const data = doc.data();
     res.json(data);
   } catch (error) {
-    console.error("Error checking status:", error);
+    logger.error("Error checking status", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
     res.status(500).json({ error: "Failed to check status" });
   }
 });
