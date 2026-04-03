@@ -31,10 +31,10 @@ import numpy as np
 import pandas as pd
 from google.cloud import pubsub_v1, firestore, storage
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field, ValidationError
 
 from dataset.loader import DataLoader
 from features.transform import Table2Vector
-from model.autoencoder import AutoencoderModel
 
 load_dotenv()
 
@@ -47,6 +47,88 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 db = firestore.Client(project=PROJECT_ID)
+
+
+class PubSubMessage(BaseModel):
+    """Pydantic model for validating Pub/Sub message payload."""
+    jobId: str = Field(..., min_length=1, description="Firestore job document ID")
+    bucket: str = Field(..., min_length=1, description="GCS bucket name")
+    file: str = Field(..., min_length=1, description="GCS file path")
+
+
+def validate_message(data: dict) -> PubSubMessage:
+    """
+    Validate message fields, raise ValueError with clear error.
+
+    Args:
+        data: Dictionary containing message payload
+
+    Returns:
+        PubSubMessage: Validated message object
+
+    Raises:
+        ValueError: If validation fails with description of missing/invalid fields
+    """
+    try:
+        return PubSubMessage(**data)
+    except ValidationError as e:
+        errors = '; '.join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
+        raise ValueError(f"Invalid message format: {errors}")
+
+
+# Job Status State Machine (WORK-08)
+from enum import Enum
+
+class JobStatus(str, Enum):
+    """Job status values with explicit state machine."""
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    TRAINING = "training"
+    SCORING = "scoring"
+    COMPLETE = "complete"
+    ERROR = "error"
+    CANCELED = "canceled"
+
+
+# Define allowed transitions (WORK-08)
+ALLOWED_TRANSITIONS = {
+    JobStatus.QUEUED: [JobStatus.PROCESSING, JobStatus.ERROR, JobStatus.CANCELED],
+    JobStatus.PROCESSING: [JobStatus.TRAINING, JobStatus.ERROR, JobStatus.CANCELED],
+    JobStatus.TRAINING: [JobStatus.SCORING, JobStatus.ERROR, JobStatus.CANCELED],
+    JobStatus.SCORING: [JobStatus.COMPLETE, JobStatus.ERROR, JobStatus.CANCELED],
+    JobStatus.COMPLETE: [],  # Terminal state
+    JobStatus.ERROR: [],     # Terminal state
+    JobStatus.CANCELED: []   # Terminal state
+}
+
+
+def is_valid_transition(current_status, new_status):
+    """
+    Validate state transition is allowed.
+
+    Args:
+        current_status: Current job status (JobStatus enum, string, or None)
+        new_status: New job status (JobStatus enum or string)
+
+    Returns:
+        bool: True if transition is valid, False otherwise
+    """
+    if current_status is None:
+        # First status update must be QUEUED
+        try:
+            new = JobStatus(new_status)
+            return new == JobStatus.QUEUED
+        except ValueError:
+            return False
+
+    try:
+        current = JobStatus(current_status)
+        new = JobStatus(new_status)
+    except ValueError:
+        # Unknown status value
+        return False
+
+    return new in ALLOWED_TRANSITIONS.get(current, [])
 
 
 def validate_environment():
@@ -74,6 +156,9 @@ def process_upload_local(job_id, bucket_name, file_path):
     Process the uploaded CSV locally: download from GCS, train autoencoder,
     score outliers, and write results to Firestore.
     """
+    # Lazy import to avoid tensorflow dependency for tests
+    from model.autoencoder import AutoencoderModel
+
     try:
         logger.info(f"Starting local processing for job {job_id}")
         db.collection('jobs').document(job_id).set(
@@ -241,9 +326,18 @@ def callback(message):
         logger.info(f"Received message: {message.data}")
         data = json.loads(message.data.decode("utf-8"))
 
-        job_id = data.get("jobId")
-        bucket = data.get("bucket")
-        file_path = data.get("file")
+        # WORK-01/02/03: Validate required fields
+        try:
+            validated = validate_message(data)
+        except ValueError as e:
+            logger.error(f"Message validation failed: {e}")
+            message.nack()  # Reject invalid message
+            return
+
+        # Use validated fields
+        job_id = validated.jobId
+        bucket = validated.bucket
+        file_path = validated.file
 
         if _processing_mode == "vertex":
             process_upload_vertex(job_id, bucket, file_path)
