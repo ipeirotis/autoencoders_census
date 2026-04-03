@@ -153,25 +153,6 @@ export function createServer() {
     }
   });
 
-  // --- NEW: Job Status Route ---
-  app.get("/api/jobs/job-status/:jobId", async (req, res) => {
-    try {
-      const { jobId } = req.params;
-      const doc = await firestore.collection("jobs").doc(jobId).get();
-
-      if (!doc.exists) {
-        // If the doc doesn't exist yet, it might be just starting
-        return res.json({ status: "uploading" });
-      }
-
-      const data = doc.data();
-      res.json(data); // Returns { status: 'complete', outliers: [...] }
-    } catch (error) {
-      logger.error("Error checking status", { error: error instanceof Error ? error.message : String(error) });
-      res.status(500).json({ error: "Failed to check status" });
-    }
-  });
-
   // --- Error Handler Middleware (MUST be last) ---
   // Catches all unhandled errors from routes above
   // Logs full details server-side, returns generic message in production
