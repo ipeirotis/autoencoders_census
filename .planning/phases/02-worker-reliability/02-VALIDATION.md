@@ -1,8 +1,8 @@
 ---
 phase: 2
 slug: worker-reliability
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-04-03
 ---
@@ -38,20 +38,29 @@ created: 2026-04-03
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | TBD | TBD | TBD | TBD | TBD | ⬜ pending |
+| 02-01-01 | 02-01 | 1 | WORK-01,02,03 | unit | `python -m pytest tests/test_message_validation.py -x` | ❌ W0 | ⬜ pending |
+| 02-01-02 | 02-01 | 1 | WORK-04 | integration | `python -m pytest tests/test_idempotency.py -x` | ❌ W0 | ⬜ pending |
+| 02-01-03 | 02-01 | 1 | WORK-05,06 | integration | `python -m pytest tests/test_ack_extension.py -x` | ❌ W0 | ⬜ pending |
+| 02-02-01 | 02-02 | 1 | WORK-08 | unit | `python -m pytest tests/test_status_transitions.py -x` | ❌ W0 | ⬜ pending |
+| 02-02-02 | 02-02 | 1 | WORK-07 | integration | `python -m pytest tests/test_firestore_transactions.py -x` | ❌ W0 | ⬜ pending |
+| 02-03-01 | 02-03 | 2 | WORK-09-14 | integration | `python -m pytest tests/test_csv_validation.py -x` | ❌ W0 | ⬜ pending |
+| 02-03-02 | 02-03 | 2 | WORK-12 | unit | `npm test -- routes/jobs.test.ts` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
-
-*This table will be populated during planning when task IDs are assigned.*
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_worker_reliability.py` — test stubs for WORK-01 through WORK-14
-- [ ] pytest configuration validated — ensure pytest.ini exists and is configured
+- [ ] `tests/test_message_validation.py` — Pydantic message model tests
+- [ ] `tests/test_idempotency.py` — Firestore idempotency tracking tests
+- [ ] `tests/test_ack_extension.py` — Threading-based ack deadline extension tests
+- [ ] `tests/test_status_transitions.py` — State machine validation tests
+- [ ] `tests/test_firestore_transactions.py` — Transaction decorator tests
+- [ ] `tests/test_csv_validation.py` — CSV encoding/structure/edge case tests
+- [ ] `frontend/server/__tests__/routes/jobs.test.ts` — Express layer CSV validation tests
 
-*Wave 0 creates test infrastructure before implementation begins.*
+*Wave 0 creates test infrastructure per TDD approach before implementation begins.*
 
 ---
 
@@ -68,11 +77,11 @@ created: 2026-04-03
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-04-03
