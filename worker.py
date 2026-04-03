@@ -76,6 +76,43 @@ def validate_message(data: dict) -> PubSubMessage:
         raise ValueError(f"Invalid message format: {errors}")
 
 
+def check_idempotency(message_id: str, job_id: str) -> bool:
+    """
+    Check if message already processed using Firestore transaction.
+    Returns True if already processed, False if first time.
+
+    This prevents duplicate processing when Pub/Sub redelivers messages
+    (at-least-once delivery guarantee). Uses Firestore transactions to
+    handle race conditions when multiple workers check same message.
+
+    Args:
+        message_id: Unique Pub/Sub message ID
+        job_id: Job ID from message payload (for logging/cleanup)
+
+    Returns:
+        bool: True if message was already processed, False if first time
+    """
+    processed_ref = db.collection('processed_messages').document(message_id)
+
+    @firestore.transactional
+    def mark_processed(transaction, ref):
+        """Transactional read-modify-write to prevent race conditions."""
+        snapshot = ref.get(transaction=transaction)
+        if snapshot.exists:
+            return True  # Already processed
+
+        # Mark as processed with metadata for cleanup
+        transaction.set(ref, {
+            'jobId': job_id,
+            'processedAt': firestore.SERVER_TIMESTAMP,
+            'expiresAt': firestore.SERVER_TIMESTAMP  # For manual cleanup (7-day TTL)
+        })
+        return False
+
+    transaction = db.transaction()
+    return mark_processed(transaction, processed_ref)
+
+
 # Job Status State Machine (WORK-08)
 from enum import Enum
 
@@ -338,6 +375,12 @@ def callback(message):
         job_id = validated.jobId
         bucket = validated.bucket
         file_path = validated.file
+
+        # WORK-04: Check if already processed
+        if check_idempotency(message.message_id, job_id):
+            logger.info(f"Message {message.message_id} already processed, skipping")
+            message.ack()  # Ack duplicate message
+            return
 
         if _processing_mode == "vertex":
             process_upload_vertex(job_id, bucket, file_path)
