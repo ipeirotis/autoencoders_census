@@ -10,7 +10,7 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 
 ## Phases
 
-- [ ] **Phase 1: Security Foundation** - Block deployment vulnerabilities before public access
+- [x] **Phase 1: Security Foundation** - Block deployment vulnerabilities before public access
 - [ ] **Phase 2: Worker Reliability** - Prevent race conditions and quota waste in async processing
 - [ ] **Phase 3: Frontend Production** - Enable graceful error handling and user feedback for long jobs
 - [ ] **Phase 4: Operational Features** - Add export, cleanup, and GitHub workflow capabilities
@@ -33,15 +33,15 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 6. CORS configuration blocks requests from domains outside approved frontend origin
 7. Worker fails fast at startup if critical environment variables are missing
 
-**Plans:** 6 plans (1 completed, 5 remaining)
+**Plans:** 6 plans (6 completed, 0 remaining)
 
 Plans:
 - [x] 01-01-PLAN.md — Env validation, logging, error handling infrastructure (COMPLETE - 2026-03-29)
-- [ ] 01-02-PLAN.md — CORS whitelist and security headers (helmet)
-- [ ] 01-03-PLAN.md — Email/password authentication with Passport.js
-- [ ] 01-04-PLAN.md — Per-endpoint rate limiting (upload, poll, download)
-- [ ] 01-05-PLAN.md — Input validation and file security (CSV, path traversal)
-- [ ] 01-06-PLAN.md — Wire security stack into routes, integration tests
+- [x] 01-02-PLAN.md — CORS whitelist and security headers (helmet) (COMPLETE - 2026-03-29)
+- [x] 01-03-PLAN.md — Email/password authentication with Passport.js (COMPLETE - 2026-03-30)
+- [x] 01-04-PLAN.md — Per-endpoint rate limiting (upload, poll, download) (COMPLETE - 2026-03-30)
+- [x] 01-05-PLAN.md — Input validation and file security (CSV, path traversal) (COMPLETE - 2026-03-30)
+- [x] 01-06-PLAN.md — Wire security stack into routes, integration tests (COMPLETE - 2026-04-02)
 
 ---
 
