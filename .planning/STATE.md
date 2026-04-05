@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-last_updated: "2026-04-03T11:51:32.325Z"
+last_updated: "2026-04-05T22:24:46.040Z"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+  total_plans: 10
+  completed_plans: 8
+  percent: 80
 ---
 
 # Project State: AutoEncoder Outlier Detection Platform
@@ -25,13 +25,13 @@ progress:
 
 ## Current Position
 
-**Phase:** 1 - Security Foundation
-**Plan:** 6 of 6 (Wire Security Stack)
-**Status:** Ready to plan
+**Phase:** 02 - Worker Reliability
+**Plan:** 1 of 3 (Message Validation & Idempotency)
+**Status:** Complete
 
-**Progress:** [██████████] 100%
+**Progress:** [████████░░] 80%
 
-**Last Plan Completed:** 01-06 (Wire Security Stack)
+**Last Plan Completed:** 02-01 (Message Validation & Idempotency)
 
 ## Performance Metrics
 
@@ -63,6 +63,7 @@ progress:
 | 01 | 05 | Input Validation & File Security | 25m | 5/5 | 6 | 2026-03-30 |
 | 01 | 06 | Wire Security Stack | 1m | 5/5 | 4 | 2026-04-02 |
 | Phase 01 P07 | 1 | 3 tasks | 0 files |
+| Phase 02 P01 | 3 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,14 @@ progress:
 8. **Use file-type library for binary file detection** (2026-03-30): Detects file types by magic bytes, not extensions. Prevents binary files renamed to .csv from being processed. More secure than extension-only checking.
 
 9. **UUID v4 for all uploaded filenames** (2026-03-30): Eliminates path traversal via filename, prevents filename collisions, no user-controlled input in paths. User-provided filenames are discarded entirely.
+
+10. **Use Pydantic for Pub/Sub message validation** (2026-04-05): Provides clear error messages and type safety vs manual dict checks. Field-level validation with min_length enforcement catches malformed messages before processing.
+
+11. **Use Firestore transactions for idempotency** (2026-04-05): Atomic read-modify-write prevents race conditions when multiple workers process same message simultaneously. Handles Pub/Sub at-least-once delivery semantics correctly.
+
+12. **Use threading.Timer for ack extension** (2026-04-05): Simpler cleanup and cancellation than dedicated background thread. Periodic extension every 60 seconds with 70-second deadline (10-second buffer) prevents timeout for 10-15 minute jobs.
+
+13. **Move message.ack() to after processing completes** (2026-04-05): Prevents work loss on worker crash mid-processing. Message only acknowledged when job successfully saved to Firestore, ensuring Pub/Sub redelivers on failure.
 
 ### Active Todos
 - [ ] Run `/gsd:plan-phase 1` to decompose Security Foundation phase into executable plans

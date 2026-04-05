@@ -28,12 +28,12 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### Worker Reliability
 
-- [ ] **WORK-01**: Pub/Sub message validation requires jobId field
-- [ ] **WORK-02**: Pub/Sub message validation requires bucket field
-- [ ] **WORK-03**: Pub/Sub message validation requires file field
-- [ ] **WORK-04**: Idempotent processing tracks processed message IDs in Firestore
-- [ ] **WORK-05**: Ack deadline extended during long-running Vertex AI jobs (10-15 min)
-- [ ] **WORK-06**: Message acknowledged only after processing completes successfully
+- [x] **WORK-01**: Pub/Sub message validation requires jobId field
+- [x] **WORK-02**: Pub/Sub message validation requires bucket field
+- [x] **WORK-03**: Pub/Sub message validation requires file field
+- [x] **WORK-04**: Idempotent processing tracks processed message IDs in Firestore
+- [x] **WORK-05**: Ack deadline extended during long-running Vertex AI jobs (10-15 min)
+- [x] **WORK-06**: Message acknowledged only after processing completes successfully
 - [ ] **WORK-07**: Firestore status updates use transactions (prevent race conditions)
 - [ ] **WORK-08**: Status transition validation prevents backward state changes
 - [ ] **WORK-09**: CSV streaming validates file encoding before processing
@@ -189,12 +189,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-14 | Phase 1 | Complete |
 | SEC-15 | Phase 1 | Complete |
 | SEC-16 | Phase 1 | Complete (01-01) |
-| WORK-01 | Phase 2 | Pending |
-| WORK-02 | Phase 2 | Pending |
-| WORK-03 | Phase 2 | Pending |
-| WORK-04 | Phase 2 | Pending |
-| WORK-05 | Phase 2 | Pending |
-| WORK-06 | Phase 2 | Pending |
+| WORK-01 | Phase 2 | Complete |
+| WORK-02 | Phase 2 | Complete |
+| WORK-03 | Phase 2 | Complete |
+| WORK-04 | Phase 2 | Complete |
+| WORK-05 | Phase 2 | Complete |
+| WORK-06 | Phase 2 | Complete |
 | WORK-07 | Phase 2 | Pending |
 | WORK-08 | Phase 2 | Pending |
 | WORK-09 | Phase 2 | Pending |
