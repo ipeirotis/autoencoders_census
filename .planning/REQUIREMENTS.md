@@ -34,8 +34,8 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **WORK-04**: Idempotent processing tracks processed message IDs in Firestore
 - [x] **WORK-05**: Ack deadline extended during long-running Vertex AI jobs (10-15 min)
 - [x] **WORK-06**: Message acknowledged only after processing completes successfully
-- [ ] **WORK-07**: Firestore status updates use transactions (prevent race conditions)
-- [ ] **WORK-08**: Status transition validation prevents backward state changes
+- [x] **WORK-07**: Firestore status updates use transactions (prevent race conditions)
+- [x] **WORK-08**: Status transition validation prevents backward state changes
 - [ ] **WORK-09**: CSV streaming validates file encoding before processing
 - [ ] **WORK-10**: CSV streaming validates file structure (headers, row consistency)
 - [ ] **WORK-11**: CSV streaming enforces size limits with clear error messages
@@ -195,8 +195,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WORK-04 | Phase 2 | Complete |
 | WORK-05 | Phase 2 | Complete |
 | WORK-06 | Phase 2 | Complete |
-| WORK-07 | Phase 2 | Pending |
-| WORK-08 | Phase 2 | Pending |
+| WORK-07 | Phase 2 | Complete |
+| WORK-08 | Phase 2 | Complete |
 | WORK-09 | Phase 2 | Pending |
 | WORK-10 | Phase 2 | Pending |
 | WORK-11 | Phase 2 | Pending |
