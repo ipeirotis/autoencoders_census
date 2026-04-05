@@ -26,12 +26,12 @@ progress:
 ## Current Position
 
 **Phase:** 02 - Worker Reliability
-**Plan:** 1 of 3 (Message Validation & Idempotency)
+**Plan:** 3 of 3 (CSV Validation)
 **Status:** Complete
 
-**Progress:** [█████████░] 90%
+**Progress:** [██████████] 100%
 
-**Last Plan Completed:** 02-01 (Message Validation & Idempotency)
+**Last Plan Completed:** 02-03 (CSV Validation)
 
 ## Performance Metrics
 
@@ -65,6 +65,7 @@ progress:
 | Phase 01 P07 | 1 | 3 tasks | 0 files |
 | Phase 02 P01 | 3 | 3 tasks | 4 files |
 | Phase 02 P02 | 3 | 2 tasks | 3 files |
+| Phase 02 P03 | 5m | 2 tasks | 2 files | 2026-04-05 |
 
 ## Accumulated Context
 
@@ -94,6 +95,14 @@ progress:
 12. **Use threading.Timer for ack extension** (2026-04-05): Simpler cleanup and cancellation than dedicated background thread. Periodic extension every 60 seconds with 70-second deadline (10-second buffer) prevents timeout for 10-15 minute jobs.
 
 13. **Move message.ack() to after processing completes** (2026-04-05): Prevents work loss on worker crash mid-processing. Message only acknowledged when job successfully saved to Firestore, ensuring Pub/Sub redelivers on failure.
+
+14. **Use chardet for encoding detection with <0.7 confidence fallback to UTF-8** (2026-04-05): Handles Windows-1252, Latin-1, and other encodings commonly found in CSV exports. Low confidence fallback prevents failures on ambiguous content.
+
+15. **Use pandas python engine without on_bad_lines parameter for structure validation** (2026-04-05): Python engine provides better error messages and automatically fills missing columns with None (graceful degradation). Truly malformed CSVs still raise ParserError.
+
+16. **Validate at both Express and Worker layers (defense-in-depth)** (2026-04-05): Express layer provides fast feedback on obvious errors (.csv extension). Worker layer catches deep issues (encoding, structure) after GCS upload. Cannot check file size at Express layer before upload completes.
+
+17. **Set 100MB file size limit** (2026-04-05): Balances memory constraints (pandas loads chunks into memory) with practical CSV sizes. Larger files should use database imports or streaming pipelines.
 
 ### Active Todos
 - [ ] Run `/gsd:plan-phase 1` to decompose Security Foundation phase into executable plans
@@ -134,27 +143,27 @@ None currently. Roadmap complete and ready for phase planning.
 ### Session Continuity
 
 **What Just Happened:**
-- Completed Phase 01 Plan 04: Rate Limiting Implementation
-- Implemented per-user rate limiting for upload (5/15min), poll (60/min), download (10/hr) endpoints
-- Installed express-rate-limit@8.3.1 with CVE-2026-30827 IPv6 bypass fix
-- Used ipKeyGenerator helper for IPv6-safe IP fallback when user not authenticated
-- All tests passing (11 rate limiter tests, 100% pass rate)
-- Rate limiters ready for integration into routes (Plan 05)
+- Completed Phase 02 Plan 03: CSV Validation
+- Implemented validate_csv() function with chardet encoding detection, pandas streaming validation, 100MB size limits
+- Defense-in-depth validation: Express layer (quick checks) + Worker layer (deep validation)
+- Handles edge cases: unicode characters, mostly-missing values, wide datasets (>100 columns)
+- Failed validation updates job status to ERROR with errorType: 'validation'
+- All tests passing (12 CSV validation tests, 100% pass rate)
+- Phase 02 (Worker Reliability) complete
 
 **Next Steps:**
-1. Continue Phase 1 execution: Plan 05 (Input Validation & Sanitization)
-2. Plan 06 (Security Testing & Validation)
-3. Integrate rate limiters into routes/jobs.ts (likely Plan 05 or 06)
+1. Move to Phase 03 or Phase 04 (Frontend Polish or Testing)
+2. All Phase 02 requirements (WORK-01 through WORK-14) complete
 
 **Open Questions:**
-- None. Plan 04 completed successfully with no blockers.
+- None. Plan 03 completed successfully with no blockers.
 
 **Context for Next Agent:**
-- Rate limiters exported from `frontend/server/middleware/rateLimits.ts`
-- Three limiters available: uploadLimiter, pollLimiter, downloadLimiter
-- All use per-user limiting via req.user.id (requires authentication from Plan 03)
-- IPv6-safe IP fallback using ipKeyGenerator helper
-- Ready to apply to routes: POST /jobs/upload, GET /jobs/:id/status, GET /jobs/:id/results
+- validate_csv() exported from worker.py
+- Validates encoding (chardet), structure (pandas streaming), size (100MB limit)
+- Integrated into process_upload_local() before data loading
+- Express layer validates .csv extension and logs content-type mismatches
+- Validation errors set errorType: 'validation' in Firestore for frontend display
 
 ---
 

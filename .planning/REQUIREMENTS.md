@@ -36,12 +36,12 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **WORK-06**: Message acknowledged only after processing completes successfully
 - [x] **WORK-07**: Firestore status updates use transactions (prevent race conditions)
 - [x] **WORK-08**: Status transition validation prevents backward state changes
-- [ ] **WORK-09**: CSV streaming validates file encoding before processing
-- [ ] **WORK-10**: CSV streaming validates file structure (headers, row consistency)
-- [ ] **WORK-11**: CSV streaming enforces size limits with clear error messages
-- [ ] **WORK-12**: CSV validation occurs at both Express layer and Worker layer (defense-in-depth)
-- [ ] **WORK-13**: Worker handles arbitrary CSV formats (mixed types, unicode, special chars)
-- [ ] **WORK-14**: Worker handles edge cases (mostly-missing values, very wide datasets)
+- [x] **WORK-09**: CSV streaming validates file encoding before processing
+- [x] **WORK-10**: CSV streaming validates file structure (headers, row consistency)
+- [x] **WORK-11**: CSV streaming enforces size limits with clear error messages
+- [x] **WORK-12**: CSV validation occurs at both Express layer and Worker layer (defense-in-depth)
+- [x] **WORK-13**: Worker handles arbitrary CSV formats (mixed types, unicode, special chars)
+- [x] **WORK-14**: Worker handles edge cases (mostly-missing values, very wide datasets)
 
 ### Frontend Production
 
@@ -197,12 +197,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WORK-06 | Phase 2 | Complete |
 | WORK-07 | Phase 2 | Complete |
 | WORK-08 | Phase 2 | Complete |
-| WORK-09 | Phase 2 | Pending |
-| WORK-10 | Phase 2 | Pending |
-| WORK-11 | Phase 2 | Pending |
-| WORK-12 | Phase 2 | Pending |
-| WORK-13 | Phase 2 | Pending |
-| WORK-14 | Phase 2 | Pending |
+| WORK-09 | Phase 2 | Complete |
+| WORK-10 | Phase 2 | Complete |
+| WORK-11 | Phase 2 | Complete |
+| WORK-12 | Phase 2 | Complete |
+| WORK-13 | Phase 2 | Complete |
+| WORK-14 | Phase 2 | Complete |
 | FE-01 | Phase 3 | Pending |
 | FE-02 | Phase 3 | Pending |
 | FE-03 | Phase 3 | Pending |
