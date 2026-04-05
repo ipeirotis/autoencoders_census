@@ -293,9 +293,16 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
     try:
         logger.info(f"Starting local processing for job {job_id}")
-        db.collection('jobs').document(job_id).set(
-            {"status": "processing"}, merge=True
-        )
+
+        # Update status to processing using transaction (WORK-07)
+        transaction = db.transaction()
+        job_ref = db.collection('jobs').document(job_id)
+        try:
+            update_job_status(transaction, job_ref, JobStatus.PROCESSING)
+        except ValueError as e:
+            logger.warning(f"Failed to update status: {e}")
+            # Job may have been canceled or already completed, skip processing
+            return
 
         # 1. Download from GCS
         storage_client = storage.Client()
@@ -384,22 +391,28 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
         outliers_data = top_outliers.to_dict(orient='records')
 
-        # 10. Save to Firestore
-        db.collection('jobs').document(job_id).set({
-            "status": "complete",
-            "stats": stats,
-            "outliers": outliers_data,
-            "processedAt": firestore.SERVER_TIMESTAMP
-        }, merge=True)
+        # 10. Save to Firestore with transactional status update (WORK-07)
+        transaction = db.transaction()
+        job_ref = db.collection('jobs').document(job_id)
+        update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
+            'stats': stats,
+            'outliers': outliers_data,
+            'processedAt': firestore.SERVER_TIMESTAMP
+        })
 
         logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
 
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
-        db.collection('jobs').document(job_id).set({
-            "status": "error",
-            "error": str(e)
-        }, merge=True)
+
+        # Update status to error using transaction (WORK-07)
+        transaction = db.transaction()
+        job_ref = db.collection('jobs').document(job_id)
+        try:
+            update_job_status(transaction, job_ref, JobStatus.ERROR, {'error': str(e)})
+        except ValueError:
+            # Job may be in terminal state already, error logged anyway
+            logger.error(f"Job {job_id} failed but could not update status: {e}")
     finally:
         # WORK-05/06: Stop ack extension in finally block
         extender.stop()
@@ -453,10 +466,15 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
 
     except Exception as e:
         logger.error(f"Failed to launch Vertex AI job: {e}")
-        db.collection('jobs').document(job_id).set({
-            "status": "error",
-            "error": str(e)
-        }, merge=True)
+
+        # Update status to error using transaction (WORK-07)
+        transaction = db.transaction()
+        job_ref = db.collection('jobs').document(job_id)
+        try:
+            update_job_status(transaction, job_ref, JobStatus.ERROR, {'error': str(e)})
+        except ValueError:
+            # Job may be in terminal state already, error logged anyway
+            logger.error(f"Job {job_id} failed but could not update status: {e}")
     finally:
         # WORK-05/06: Stop ack extension in finally block
         extender.stop()
