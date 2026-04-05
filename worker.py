@@ -27,6 +27,7 @@ import os
 import sys
 import json
 import logging
+import threading
 import numpy as np
 import pandas as pd
 from google.cloud import pubsub_v1, firestore, storage
@@ -113,6 +114,56 @@ def check_idempotency(message_id: str, job_id: str) -> bool:
     return mark_processed(transaction, processed_ref)
 
 
+class AckExtender:
+    """
+    Periodically extends Pub/Sub message ack deadline during long-running jobs.
+
+    Prevents message timeout and redelivery for jobs that take 10-15 minutes
+    (longer than the default 10-second ack deadline). Uses threading.Timer
+    to extend deadline every 60 seconds.
+
+    WORK-05: Ack deadline extension pattern
+    """
+    def __init__(self, message, interval_seconds=60):
+        """
+        Initialize AckExtender.
+
+        Args:
+            message: Pub/Sub message object with modify_ack_deadline() method
+            interval_seconds: How often to extend deadline (default: 60 seconds)
+        """
+        self.message = message
+        self.interval = interval_seconds
+        self.timer = None
+        self.stopped = False
+
+    def extend(self):
+        """Extend deadline and schedule next extension."""
+        if not self.stopped:
+            try:
+                # Extend deadline by interval + 10 second buffer
+                self.message.modify_ack_deadline(self.interval + 10)
+                logger.info(f"Extended ack deadline for message {self.message.message_id}")
+            except Exception as e:
+                # CONTEXT.md: Log warning and continue (rely on idempotency)
+                logger.warning(f"Failed to extend ack deadline: {e}")
+
+            # Schedule next extension
+            self.timer = threading.Timer(self.interval, self.extend)
+            self.timer.daemon = True
+            self.timer.start()
+
+    def start(self):
+        """Start periodic extension."""
+        self.extend()
+
+    def stop(self):
+        """Stop extension and cancel timer."""
+        self.stopped = True
+        if self.timer:
+            self.timer.cancel()
+
+
 # Job Status State Machine (WORK-08)
 from enum import Enum
 
@@ -168,6 +219,40 @@ def is_valid_transition(current_status, new_status):
     return new in ALLOWED_TRANSITIONS.get(current, [])
 
 
+@firestore.transactional
+def update_job_status(transaction, job_ref, new_status, additional_fields=None):
+    """
+    Atomically update job status with validation.
+    Firestore automatically retries on contention.
+
+    Args:
+        transaction: Firestore transaction object
+        job_ref: DocumentReference to job document
+        new_status: New status value (JobStatus enum or string)
+        additional_fields: Optional dict of additional fields to update
+
+    Raises:
+        ValueError: If job not found or invalid transition
+    """
+    snapshot = job_ref.get(transaction=transaction)
+
+    if not snapshot.exists:
+        raise ValueError(f"Job {job_ref.id} not found")
+
+    current_status = snapshot.get('status')
+
+    # WORK-08: Validate state transitions
+    if not is_valid_transition(current_status, new_status):
+        raise ValueError(f"Invalid transition: {current_status} -> {new_status}")
+
+    update_data = {'status': new_status}
+    if additional_fields:
+        update_data.update(additional_fields)
+
+    transaction.update(job_ref, update_data)
+    logger.info(f"Job {job_ref.id} status: {current_status} -> {new_status}")
+
+
 def validate_environment():
     """Validate required environment variables. Exits if any are missing."""
     # Read environment variables fresh each time (for testability)
@@ -188,13 +273,23 @@ def validate_environment():
     return True
 
 
-def process_upload_local(job_id, bucket_name, file_path):
+def process_upload_local(job_id, bucket_name, file_path, message):
     """
     Process the uploaded CSV locally: download from GCS, train autoencoder,
     score outliers, and write results to Firestore.
+
+    Args:
+        job_id: Firestore job document ID
+        bucket_name: GCS bucket name
+        file_path: GCS file path
+        message: Pub/Sub message object for ack deadline extension
     """
     # Lazy import to avoid tensorflow dependency for tests
     from model.autoencoder import AutoencoderModel
+
+    # WORK-05/06: Start ack deadline extension
+    extender = AckExtender(message, interval_seconds=60)
+    extender.start()
 
     try:
         logger.info(f"Starting local processing for job {job_id}")
@@ -305,13 +400,26 @@ def process_upload_local(job_id, bucket_name, file_path):
             "status": "error",
             "error": str(e)
         }, merge=True)
+    finally:
+        # WORK-05/06: Stop ack extension in finally block
+        extender.stop()
 
 
-def process_upload_vertex(job_id, bucket_name, file_path):
+def process_upload_vertex(job_id, bucket_name, file_path, message):
     """
     Dispatch processing to a Vertex AI CustomContainerTrainingJob.
+
+    Args:
+        job_id: Firestore job document ID
+        bucket_name: GCS bucket name
+        file_path: GCS file path
+        message: Pub/Sub message object for ack deadline extension
     """
     from google.cloud import aiplatform
+
+    # WORK-05/06: Start ack deadline extension
+    extender = AckExtender(message, interval_seconds=60)
+    extender.start()
 
     try:
         logger.info(f"Starting Vertex AI job {job_id}")
@@ -349,6 +457,9 @@ def process_upload_vertex(job_id, bucket_name, file_path):
             "status": "error",
             "error": str(e)
         }, merge=True)
+    finally:
+        # WORK-05/06: Stop ack extension in finally block
+        extender.stop()
 
 
 # Module-level processing mode, set from __main__
@@ -382,11 +493,13 @@ def callback(message):
             message.ack()  # Ack duplicate message
             return
 
+        # WORK-05/06: Process with ack extension, ack AFTER processing completes
         if _processing_mode == "vertex":
-            process_upload_vertex(job_id, bucket, file_path)
+            process_upload_vertex(job_id, bucket, file_path, message)
         else:
-            process_upload_local(job_id, bucket, file_path)
+            process_upload_local(job_id, bucket, file_path, message)
 
+        # WORK-06: Ack only after processing completes successfully
         message.ack()
         logger.info(f"Message {message.message_id} processed and acknowledged.")
 
