@@ -29,10 +29,33 @@ const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
 // 1. Get Signed URL for Upload
+// WORK-12: Defense-in-depth CSV validation
+// Express layer (quick checks):
+//   - File extension validation (.csv only) - handled by validateUploadUrl middleware
+//   - Content-Type validation (warn on unexpected types, allow for browser compatibility)
+// Worker layer (deep checks):
+//   - Encoding detection and validation (chardet)
+//   - Structure validation (pandas streaming, min rows/cols)
+//   - Size limit enforcement (>100MB rejection)
+//   - Edge case handling (unicode, missing values)
+// Note: File size validation (WORK-11) happens at Worker layer via validate_csv()
+// Express layer cannot reliably check size before GCS upload completes
+// GCS bucket has 100MB object size limit configured separately
 router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req, res) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
+
+    // WORK-12: Content-Type validation (defensive, not strict)
+    // Some browsers send different MIME types for CSV files
+    if (contentType && contentType !== 'text/csv' && contentType !== 'application/vnd.ms-excel') {
+      logger.warn('Unexpected content type for CSV upload', {
+        contentType,
+        filename,
+        userId: (req as any).user.id
+      });
+      // Allow but log - browser MIME type detection is inconsistent
+    }
 
     // Use safe filename - discard user-provided filename for storage path
     const gcsFileName = generateSafeFilename((req as any).user.id);
@@ -44,7 +67,7 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
         version: "v4",
         action: "write",
         expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType: contentType || 'text/csv',
+        contentType: 'text/csv',  // Force CSV content type for GCS
       });
 
     res.json({ url, jobId, gcsFileName, originalFilename: filename });
