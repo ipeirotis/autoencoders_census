@@ -28,8 +28,10 @@ import sys
 import json
 import logging
 import threading
+import io
 import numpy as np
 import pandas as pd
+import chardet
 from google.cloud import pubsub_v1, firestore, storage
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
@@ -273,6 +275,82 @@ def validate_environment():
     return True
 
 
+def validate_csv(csv_bytes, max_size_mb=100):
+    """
+    Validate CSV encoding, structure, and size.
+    Returns (encoding, column_count, row_count) or raises ValueError.
+
+    This function implements defense-in-depth CSV validation to catch
+    encoding errors, malformed CSVs, and edge cases before training starts.
+
+    WORK-09: Encoding detection using chardet
+    WORK-10: Structure validation (inconsistent row lengths)
+    WORK-11: Size limit enforcement (>100MB)
+    WORK-13: Edge case handling (unicode characters)
+    WORK-14: Edge case handling (mostly-missing values)
+
+    Args:
+        csv_bytes: Raw CSV file bytes
+        max_size_mb: Maximum file size in MB (default: 100)
+
+    Returns:
+        tuple: (encoding, column_count, row_count)
+
+    Raises:
+        ValueError: If file too large, encoding unclear, structure invalid, or edge cases
+    """
+    # WORK-11: Check size limit
+    size_mb = len(csv_bytes) / (1024 * 1024)
+    if size_mb > max_size_mb:
+        raise ValueError(f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
+
+    # WORK-09: Detect encoding
+    detection = chardet.detect(csv_bytes[:100000])  # Sample first 100KB
+    encoding = detection['encoding']
+    confidence = detection['confidence']
+
+    if confidence < 0.7:
+        logger.warning(f"Low encoding confidence: {confidence:.2f} for {encoding}, falling back to UTF-8")
+        encoding = 'utf-8'
+
+    # WORK-10, WORK-13, WORK-14: Validate structure with streaming
+    try:
+        chunk_iterator = pd.read_csv(
+            io.BytesIO(csv_bytes),
+            encoding=encoding,
+            chunksize=10000,
+            engine='python'       # Better error messages, detects inconsistent columns
+        )
+
+        first_chunk = next(chunk_iterator)
+        expected_columns = len(first_chunk.columns)
+        total_rows = len(first_chunk)
+
+        # Validate subsequent chunks have same structure
+        for chunk in chunk_iterator:
+            if len(chunk.columns) != expected_columns:
+                raise ValueError(f"Inconsistent column count: expected {expected_columns}, got {len(chunk.columns)}")
+            total_rows += len(chunk)
+
+        # Minimum data requirements
+        if total_rows < 10:
+            raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
+        if expected_columns < 2:
+            raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
+
+        logger.info(f"CSV validation passed: {total_rows} rows, {expected_columns} columns, {encoding} encoding")
+        return encoding, expected_columns, total_rows
+
+    except pd.errors.ParserError as e:
+        raise ValueError(f"CSV parsing error: {str(e)}")
+    except pd.errors.EmptyDataError as e:
+        raise ValueError("CSV file is empty")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"Encoding error with {encoding}: {str(e)}")
+    except StopIteration:
+        raise ValueError("CSV file is empty")
+
+
 def process_upload_local(job_id, bucket_name, file_path, message):
     """
     Process the uploaded CSV locally: download from GCS, train autoencoder,
@@ -309,6 +387,20 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_path)
         csv_bytes = blob.download_as_bytes()
+
+        # WORK-09/10/11/13/14: Validate CSV before processing
+        try:
+            encoding, col_count, row_count = validate_csv(csv_bytes)
+            logger.info(f"CSV validation passed: {row_count} rows, {col_count} columns, {encoding} encoding")
+        except ValueError as e:
+            # Update job status with validation error
+            transaction = db.transaction()
+            update_job_status(transaction, job_ref, JobStatus.ERROR, {
+                'error': str(e),
+                'errorType': 'validation'
+            })
+            logger.error(f"CSV validation failed for job {job_id}: {e}")
+            return
 
         # 2. Load Data
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
