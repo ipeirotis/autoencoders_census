@@ -48,13 +48,13 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **FE-01**: React error boundary wraps App component (catches render errors)
 - [x] **FE-02**: React error boundary wraps high-risk components (Preview, Results)
 - [x] **FE-03**: Error boundaries display recovery UI (not blank screen)
-- [ ] **FE-04**: Progress indicator shows multi-stage status (Queued → Preprocessing → Training → Scoring)
-- [ ] **FE-05**: Progress indicator displays percent complete for each stage
+- [x] **FE-04**: Progress indicator shows multi-stage status (Queued → Preprocessing → Training → Scoring)
+- [x] **FE-05**: Progress indicator displays percent complete for each stage
 - [ ] **FE-06**: Job cancellation UI provides cancel button on job status page
 - [ ] **FE-07**: Job cancellation confirms with user before canceling
-- [ ] **FE-08**: Polling interval cleanup prevents memory leaks on unmount
-- [ ] **FE-09**: Polling stops when job completes (completed/failed/canceled states)
-- [ ] **FE-10**: Polling useEffect dependencies fixed (no stale closures with toast)
+- [x] **FE-08**: Polling interval cleanup prevents memory leaks on unmount
+- [x] **FE-09**: Polling stops when job completes (completed/failed/canceled states)
+- [x] **FE-10**: Polling useEffect dependencies fixed (no stale closures with toast)
 - [x] **FE-11**: Missing dependency lib/utils.ts created (cn utility for shadcn/ui)
 - [x] **FE-12**: Missing dependency react-router-dom added to package.json
 - [x] **FE-13**: Missing dependency serverless-http added to package.json
@@ -206,13 +206,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FE-01 | Phase 3 | Complete |
 | FE-02 | Phase 3 | Complete |
 | FE-03 | Phase 3 | Complete |
-| FE-04 | Phase 3 | Pending |
-| FE-05 | Phase 3 | Pending |
+| FE-04 | Phase 3 | Complete |
+| FE-05 | Phase 3 | Complete |
 | FE-06 | Phase 3 | Pending |
 | FE-07 | Phase 3 | Pending |
-| FE-08 | Phase 3 | Pending |
-| FE-09 | Phase 3 | Pending |
-| FE-10 | Phase 3 | Pending |
+| FE-08 | Phase 3 | Complete |
+| FE-09 | Phase 3 | Complete |
+| FE-10 | Phase 3 | Complete |
 | FE-11 | Phase 3 | Complete |
 | FE-12 | Phase 3 | Complete |
 | FE-13 | Phase 3 | Complete |
