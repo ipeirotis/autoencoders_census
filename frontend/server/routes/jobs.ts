@@ -18,6 +18,7 @@ import { generateSafeFilename } from '../utils/fileValidation';
 import { sanitizeFormulaInjection } from '../utils/csvSanitization';
 import { logger } from '../config/logger';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
+import { cancelVertexAIJob } from '../services/vertexAi';
 
 const router = Router();
 
@@ -178,6 +179,59 @@ router.get("/jobs/:id/export", requireAuth, downloadLimiter, validateJobId, asyn
       userId: (req as any).user?.id
     });
     res.status(500).json({ error: "Failed to export CSV" });
+  }
+});
+
+// 5. Cancel Job with Full Resource Cleanup
+router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch job to get GCS file path
+    const doc = await firestore.collection("jobs").doc(id).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = doc.data();
+    const gcsFileName = job.gcsFileName || job.file; // Check both possible fields
+
+    // 1. Delete GCS uploaded file (best-effort)
+    try {
+      if (gcsFileName) {
+        await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
+        logger.info('Deleted GCS file for canceled job', { jobId: id, file: gcsFileName });
+      }
+    } catch (error) {
+      logger.warn('Failed to delete GCS file (continuing cleanup)', {
+        jobId: id,
+        file: gcsFileName,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      // Continue with other cleanup steps
+    }
+
+    // 2. Cancel Vertex AI job (best-effort, async)
+    // Note: May not stop job if already running, cancellation is best-effort
+    await cancelVertexAIJob(id);
+
+    // 3. Update Firestore status to "canceled"
+    await firestore.collection("jobs").doc(id).update({
+      status: 'canceled',
+      canceledAt: new Date()
+    });
+
+    logger.info('Job canceled successfully', { jobId: id, userId: (req as any).user?.id });
+
+    res.json({ success: true, message: 'Job canceled and resources cleaned up' });
+  } catch (error) {
+    logger.error("Error canceling job", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to cancel job" });
   }
 });
 
