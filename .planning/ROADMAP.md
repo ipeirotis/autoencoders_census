@@ -103,7 +103,9 @@ Plans:
 
 **Depends on**: Phase 3 (export and cancellation features integrate with frontend UI)
 
-**Requirements**: OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, OPS-10, OPS-11, OPS-12, OPS-13, OPS-14, GH-01, GH-02, GH-03, GH-04, GH-05 (19 requirements)
+**Requirements**: OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, OPS-10, OPS-12, OPS-13, OPS-14, GH-01, GH-02, GH-03, GH-04, GH-05 (18 requirements in v1.0)
+
+**Deferred to v1.1**: OPS-11 (failed-rows CSV export with per-row error descriptions)
 
 **Success Criteria** (what must be TRUE):
 1. User can download outlier results as CSV file without Excel formula injection risk
@@ -120,7 +122,7 @@ Plans:
 - [ ] 04-03-PLAN.md — GCS lifecycle rules & expired job handling (Wave 1: OPS-07, OPS-08, OPS-13)
 - [ ] 04-04-PLAN.md — Per-column contribution scores backend (Wave 1: OPS-09, OPS-10, OPS-14)
 - [ ] 04-05-PLAN.md — Per-column contribution scores UI (Wave 2: OPS-09, OPS-10)
-- [ ] 04-06-PLAN.md — Enhanced error messages & manual file deletion (Wave 2: OPS-11, OPS-12)
+- [ ] 04-06-PLAN.md — Expired job UI & manual file deletion (Wave 2: OPS-12)
 - [ ] 04-07-PLAN.md — GitHub collaboration workflow documentation (Wave 1: GH-01, GH-02, GH-03, GH-04, GH-05)
 
 ---
@@ -138,15 +140,15 @@ Plans:
 
 ## Coverage Validation
 
-**Total v1.0 requirements**: 71
+**Total v1.0 requirements**: 70 (OPS-11 deferred to v1.1)
 - Security Hardening (SEC): 16 requirements → Phase 1
 - Worker Reliability (WORK): 14 requirements → Phase 2
 - Frontend Production (FE): 22 requirements → Phase 3
-- Operational Features (OPS): 14 requirements → Phase 4
+- Operational Features (OPS): 13 requirements → Phase 4 (OPS-11 deferred)
 - GitHub Best Practices (GH): 5 requirements → Phase 4
 
-**Mapped to phases**: 71/71 (100%)
-**Unmapped**: 0
+**Mapped to v1.0 phases**: 70/70 (100%)
+**Deferred to v1.1**: 1 (OPS-11)
 
 ---
 

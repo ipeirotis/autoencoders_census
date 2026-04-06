@@ -116,7 +116,11 @@ Users can export outlier results as CSV files with formula injection protection,
 <deferred>
 ## Deferred Ideas
 
-None — discussion stayed within phase scope. Job cancellation cleanup scope (GCS + Vertex AI) was not discussed in detail but is part of phase requirements.
+**OPS-11: Failed-rows CSV export** — Deferred to v1.1 release
+- Export CSV containing rows that failed validation with per-row error descriptions
+- Current implementation marks job as 'failed' with error message in Firestore
+- Future enhancement: generate failed-rows CSV with detailed per-row diagnostics (encoding issue at row X, missing value in column Y at row Z)
+- Rationale: Phase 4 focuses on successful job workflows (export results, cleanup files, show contribution scores). Failed-job analysis is valuable but out of scope for v1.0.
 
 </deferred>
 

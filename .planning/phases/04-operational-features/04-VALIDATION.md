@@ -1,9 +1,9 @@
 ---
 phase: 04
 slug: operational-features
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: ready
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-04-06
 ---
 
@@ -46,10 +46,10 @@ Tasks will be defined during planning. Examples:
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_export.py` — stubs for OPS-01 through OPS-04 (CSV export)
-- [ ] `tests/test_lifecycle.py` — stubs for OPS-09 through OPS-11 (GCS lifecycle)
-- [ ] `tests/test_cancellation.py` — stubs for OPS-05 through OPS-08 (job cancellation cleanup)
-- [ ] `frontend/client/components/__tests__/PerColumnScores.test.tsx` — stubs for OPS-12, OPS-13 (UI display)
+- [x] `tests/test_export.py` — stubs for OPS-01 through OPS-04 (CSV export)
+- [x] `tests/test_lifecycle.py` — stubs for OPS-07, OPS-08, OPS-13 (GCS lifecycle)
+- [x] `tests/test_cancellation.py` — stubs for OPS-05 through OPS-08 (job cancellation cleanup)
+- [x] `frontend/client/components/__tests__/PerColumnScores.test.tsx` — stubs for OPS-09, OPS-10 (UI display)
 
 ---
 
@@ -64,11 +64,11 @@ Tasks will be defined during planning. Examples:
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** Wave 0 complete (plan 04-00 creates test stubs)
