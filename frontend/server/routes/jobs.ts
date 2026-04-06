@@ -10,10 +10,12 @@
 
 import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import { format } from 'fast-csv';
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
+import { sanitizeFormulaInjection } from '../utils/csvSanitization';
 import { logger } from '../config/logger';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
 
@@ -127,6 +129,55 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
       userId: (req as any).user?.id
     });
     res.status(500).json({ error: "Failed to check status" });
+  }
+});
+
+// 4. Export Outlier Results as CSV
+router.get("/jobs/:id/export", requireAuth, downloadLimiter, validateJobId, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch job from Firestore
+    const doc = await firestore.collection("jobs").doc(id).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = doc.data();
+
+    // Only export completed jobs
+    if (job.status !== 'complete') {
+      return res.status(400).json({ error: 'Job not complete' });
+    }
+
+    const outliers = job.outliers || [];
+
+    // Set CSV download headers
+    res.attachment(`outliers-${id}.csv`);
+
+    // Stream CSV with sanitization
+    const csvStream = format({ headers: true });
+    csvStream.pipe(res);
+
+    outliers.forEach((row: any) => {
+      const sanitizedRow = Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [
+          key,
+          sanitizeFormulaInjection(value)
+        ])
+      );
+      csvStream.write(sanitizedRow);
+    });
+
+    csvStream.end();
+  } catch (error) {
+    logger.error("Error exporting CSV", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to export CSV" });
   }
 });
 
