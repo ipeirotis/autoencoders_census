@@ -85,15 +85,16 @@ Plans:
 5. Application builds successfully with all dependencies installed (no missing lib/utils.ts, react-router-dom, serverless-http)
 6. TypeScript strict mode catches type errors at compile time without unsafe assertions
 
-**Plans**: 6 plans (split from original 4 to meet 200-line limit)
+**Plans**: 7 plans (6 original + 1 gap closure)
 
 Plans:
 - [ ] 03-01-PLAN.md — Build infrastructure and GCP client consolidation (Wave 1)
 - [ ] 03-02-PLAN.md — React error boundaries for graceful error recovery (Wave 1)
 - [ ] 03-03A-PLAN.md — Multi-stage progress tracking (Wave 2)
-- [ ] 03-03B-PLAN.md — Job cancellation UI and API (Wave 2)
+- [ ] 03-03B-PLAN.md — Job cancellation UI and API (Wave 3)
 - [ ] 03-04A-PLAN.md — TypeScript strict mode (noImplicitAny) (Wave 1)
 - [x] 03-04B-PLAN.md — Streaming CSV parser with Papa Parse and unified file validation (Wave 1) (COMPLETE - 2026-04-06)
+- [ ] 03-05-PLAN.md — Close build failure gap (missing @radix-ui/react-alert-dialog) (Wave 4)
 
 ---
 
@@ -121,7 +122,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Security Foundation | 6/7 | In Progress | - |
 | 2. Worker Reliability | 3/3 | Complete | 2026-04-05 |
-| 3. Frontend Production | 1/6 | In Progress | - |
+| 3. Frontend Production | 1/7 | In Progress | - |
 | 4. Operational Features | 0/TBD | Not started | - |
 
 ---
