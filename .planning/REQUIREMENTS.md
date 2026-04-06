@@ -55,16 +55,16 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [ ] **FE-08**: Polling interval cleanup prevents memory leaks on unmount
 - [ ] **FE-09**: Polling stops when job completes (completed/failed/canceled states)
 - [ ] **FE-10**: Polling useEffect dependencies fixed (no stale closures with toast)
-- [ ] **FE-11**: Missing dependency lib/utils.ts created (cn utility for shadcn/ui)
-- [ ] **FE-12**: Missing dependency react-router-dom added to package.json
-- [ ] **FE-13**: Missing dependency serverless-http added to package.json
-- [ ] **FE-14**: Missing npm script build:client added to package.json
-- [ ] **FE-15**: Missing npm script dev:server added to package.json
+- [x] **FE-11**: Missing dependency lib/utils.ts created (cn utility for shadcn/ui)
+- [x] **FE-12**: Missing dependency react-router-dom added to package.json
+- [x] **FE-13**: Missing dependency serverless-http added to package.json
+- [x] **FE-14**: Missing npm script build:client added to package.json
+- [x] **FE-15**: Missing npm script dev:server added to package.json
 - [ ] **FE-16**: TypeScript strict mode enabled (incremental: noImplicitAny → strictNullChecks → strict)
 - [ ] **FE-17**: TypeScript strict mode violations fixed without type assertions
-- [ ] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
-- [ ] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
-- [ ] **FE-20**: Port mismatch fixed (server uses documented port)
+- [x] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
+- [x] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
+- [x] **FE-20**: Port mismatch fixed (server uses documented port)
 - [x] **FE-21**: CSV parser uses streaming for preview (prevents memory crash on large files)
 - [x] **FE-22**: File type validation added to click-upload path (not just drag-and-drop)
 
@@ -213,16 +213,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FE-08 | Phase 3 | Pending |
 | FE-09 | Phase 3 | Pending |
 | FE-10 | Phase 3 | Pending |
-| FE-11 | Phase 3 | Pending |
-| FE-12 | Phase 3 | Pending |
-| FE-13 | Phase 3 | Pending |
-| FE-14 | Phase 3 | Pending |
-| FE-15 | Phase 3 | Pending |
+| FE-11 | Phase 3 | Complete |
+| FE-12 | Phase 3 | Complete |
+| FE-13 | Phase 3 | Complete |
+| FE-14 | Phase 3 | Complete |
+| FE-15 | Phase 3 | Complete |
 | FE-16 | Phase 3 | Pending |
 | FE-17 | Phase 3 | Pending |
-| FE-18 | Phase 3 | Pending |
-| FE-19 | Phase 3 | Pending |
-| FE-20 | Phase 3 | Pending |
+| FE-18 | Phase 3 | Complete |
+| FE-19 | Phase 3 | Complete |
+| FE-20 | Phase 3 | Complete |
 | FE-21 | Phase 3 | Complete |
 | FE-22 | Phase 3 | Complete |
 | OPS-01 | Phase 4 | Pending |
