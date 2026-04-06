@@ -87,11 +87,11 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### GitHub Best Practices
 
-- [ ] **GH-01**: Understand PR workflow (branch strategy, naming conventions)
-- [ ] **GH-02**: Understand commit message conventions (used in this repository)
-- [ ] **GH-03**: Understand code review process (how to request reviews, address feedback)
-- [ ] **GH-04**: Analyze IliasTriant's PR patterns (structure, descriptions, commits)
-- [ ] **GH-05**: Practice creating well-structured PRs for v1.0 features
+- [x] **GH-01**: Understand PR workflow (branch strategy, naming conventions)
+- [x] **GH-02**: Understand commit message conventions (used in this repository)
+- [x] **GH-03**: Understand code review process (how to request reviews, address feedback)
+- [x] **GH-04**: Analyze IliasTriant's PR patterns (structure, descriptions, commits)
+- [x] **GH-05**: Practice creating well-structured PRs for v1.0 features
 
 ## v2.0 Requirements
 
@@ -239,11 +239,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-12 | Phase 4 | Pending |
 | OPS-13 | Phase 4 | Pending |
 | OPS-14 | Phase 4 | Pending |
-| GH-01 | Phase 4 | Pending |
-| GH-02 | Phase 4 | Pending |
-| GH-03 | Phase 4 | Pending |
-| GH-04 | Phase 4 | Pending |
-| GH-05 | Phase 4 | Pending |
+| GH-01 | Phase 4 | Complete |
+| GH-02 | Phase 4 | Complete |
+| GH-03 | Phase 4 | Complete |
+| GH-04 | Phase 4 | Complete |
+| GH-05 | Phase 4 | Complete |
 
 **Coverage:**
 - v1.0 requirements: 71 total
