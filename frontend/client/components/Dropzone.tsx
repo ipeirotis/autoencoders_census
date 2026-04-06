@@ -7,10 +7,36 @@
 import React, { useState, useRef } from "react";
 import { Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { fileTypeFromBuffer } from 'file-type';
+import { useToast } from "@/hooks/use-toast";
 
 interface DropzoneProps {
   onFileSelect: (file: File) => void;
   disabled?: boolean;
+}
+
+/**
+ * Validate file for CSV upload
+ * Checks both extension and magic bytes to prevent binary files disguised as CSV
+ */
+async function validateFile(file: File): Promise<{ valid: boolean; error?: string }> {
+  // Check extension
+  if (!file.name.endsWith('.csv')) {
+    return { valid: false, error: 'Only CSV files are allowed' };
+  }
+
+  // Check magic bytes (prevents .exe renamed to .csv)
+  const buffer = await file.arrayBuffer();
+  const type = await fileTypeFromBuffer(new Uint8Array(buffer));
+
+  // CSV files are text/plain or text/csv, may not have magic bytes
+  // If fileTypeFromBuffer returns undefined (text file), that's OK for CSV
+  // If it returns a type, ensure it's NOT a binary format
+  if (type && !['text/csv', 'text/plain'].includes(type.mime)) {
+    return { valid: false, error: `Invalid file type: ${type.mime}. Only CSV files allowed.` };
+  }
+
+  return { valid: true };
 }
 
 export const Dropzone: React.FC<DropzoneProps> = ({
@@ -19,6 +45,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({
 }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
 
   const handleDrag = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -33,7 +60,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({
     }
   };
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
 
@@ -44,18 +71,39 @@ export const Dropzone: React.FC<DropzoneProps> = ({
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       const file = files[0];
-      if (file.type === "text/csv" || file.name.endsWith(".csv")) {
-        onFileSelect(file);
-      } else {
-        alert("Please drop a CSV file");
+
+      // Validate file with shared validation function
+      const validation = await validateFile(file);
+      if (!validation.valid) {
+        toast({
+          title: 'Invalid File',
+          description: validation.error,
+          variant: 'destructive'
+        });
+        return;
       }
+
+      onFileSelect(file);
     }
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.currentTarget.files;
     if (files && files.length > 0) {
-      onFileSelect(files[0]);
+      const file = files[0];
+
+      // Validate file with shared validation function
+      const validation = await validateFile(file);
+      if (!validation.valid) {
+        toast({
+          title: 'Invalid File',
+          description: validation.error,
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      onFileSelect(file);
     }
   };
 
