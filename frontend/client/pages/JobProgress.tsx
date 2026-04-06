@@ -1,0 +1,106 @@
+import { useParams } from 'react-router-dom';
+import { useJobPolling } from '@/hooks/useJobPolling';
+import { useJobCancellation } from '@/hooks/useJobCancellation';
+import { StageIndicator } from '@/components/progress/StageIndicator';
+import { DualProgressBar } from '@/components/progress/DualProgressBar';
+import { JobMetadata } from '@/components/progress/JobMetadata';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+
+/**
+ * Dedicated progress page at /job/:id route.
+ *
+ * Features:
+ * - Displays job progress with all components from 03-03A
+ * - Shows elapsed time, estimated remaining time, file info
+ * - Cancel button with confirmation dialog (FE-07)
+ * - Polling stops on terminal states (complete/error/canceled)
+ * - Terminal state messages displayed
+ *
+ * Per user decision: Dedicated page (not modal), shows additional info,
+ * cancel button with confirmation.
+ */
+export default function JobProgress() {
+  const { id } = useParams();
+  const { data: job, isLoading, error } = useJobPolling(id || null);
+  const { mutate: cancelJob } = useJobCancellation();
+
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  if (error) return <div className="min-h-screen flex items-center justify-center">Error loading job status</div>;
+  if (!job) return <div className="min-h-screen flex items-center justify-center">Job not found</div>;
+
+  const handleCancel = () => {
+    cancelJob(id!);
+  };
+
+  const isActive = job.status !== 'complete' && job.status !== 'error' && job.status !== 'canceled';
+
+  return (
+    <div className="min-h-screen bg-slate-50 py-8 px-4">
+      <div className="max-w-3xl mx-auto">
+        <Card>
+          <CardHeader>
+            <CardTitle>Job Progress</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <StageIndicator currentStage={job.status} />
+
+            <DualProgressBar
+              stageProgress={job.stageProgress || 0}
+              overallProgress={job.overallProgress || 0}
+              stageName={job.status.charAt(0).toUpperCase() + job.status.slice(1)}
+            />
+
+            <JobMetadata
+              startTime={new Date(job.createdAt)}
+              estimatedDuration={15 * 60 * 1000} // 15 minutes
+              fileName={job.fileName || 'Unknown'}
+              fileSize={job.fileSize || 0}
+            />
+
+            {isActive && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive">Cancel Job</Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Cancel Job?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will stop the job and you won't receive results. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleCancel}>Cancel Job</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+
+            {job.status === 'complete' && (
+              <div className="p-4 bg-green-50 border border-green-200 rounded-md">
+                <p className="text-green-800 font-semibold">Job completed successfully!</p>
+                <p className="text-green-700 text-sm mt-1">View results below.</p>
+              </div>
+            )}
+
+            {job.status === 'error' && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-md">
+                <p className="text-red-800 font-semibold">Job failed</p>
+                <p className="text-red-700 text-sm mt-1">{job.error || 'Unknown error occurred'}</p>
+              </div>
+            )}
+
+            {job.status === 'canceled' && (
+              <div className="p-4 bg-gray-50 border border-gray-200 rounded-md">
+                <p className="text-gray-800 font-semibold">Job was canceled</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
