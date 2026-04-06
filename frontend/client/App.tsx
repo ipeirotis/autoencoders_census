@@ -6,17 +6,20 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Index from "./pages/Index";
+import { RootErrorBoundary } from "@/components/error-boundaries/RootErrorBoundary";
 
 const queryClient = new QueryClient();
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <Index />
-    </TooltipProvider>
-  </QueryClientProvider>
+  <RootErrorBoundary>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <Index />
+      </TooltipProvider>
+    </QueryClientProvider>
+  </RootErrorBoundary>
 );
 
 createRoot(document.getElementById("root")!).render(<App />);
