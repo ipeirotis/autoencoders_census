@@ -45,9 +45,9 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### Frontend Production
 
-- [ ] **FE-01**: React error boundary wraps App component (catches render errors)
-- [ ] **FE-02**: React error boundary wraps high-risk components (Preview, Results)
-- [ ] **FE-03**: Error boundaries display recovery UI (not blank screen)
+- [x] **FE-01**: React error boundary wraps App component (catches render errors)
+- [x] **FE-02**: React error boundary wraps high-risk components (Preview, Results)
+- [x] **FE-03**: Error boundaries display recovery UI (not blank screen)
 - [ ] **FE-04**: Progress indicator shows multi-stage status (Queued → Preprocessing → Training → Scoring)
 - [ ] **FE-05**: Progress indicator displays percent complete for each stage
 - [ ] **FE-06**: Job cancellation UI provides cancel button on job status page
@@ -203,9 +203,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WORK-12 | Phase 2 | Complete |
 | WORK-13 | Phase 2 | Complete |
 | WORK-14 | Phase 2 | Complete |
-| FE-01 | Phase 3 | Pending |
-| FE-02 | Phase 3 | Pending |
-| FE-03 | Phase 3 | Pending |
+| FE-01 | Phase 3 | Complete |
+| FE-02 | Phase 3 | Complete |
+| FE-03 | Phase 3 | Complete |
 | FE-04 | Phase 3 | Pending |
 | FE-05 | Phase 3 | Pending |
 | FE-06 | Phase 3 | Pending |
