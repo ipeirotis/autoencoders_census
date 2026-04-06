@@ -60,8 +60,8 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **FE-13**: Missing dependency serverless-http added to package.json
 - [x] **FE-14**: Missing npm script build:client added to package.json
 - [x] **FE-15**: Missing npm script dev:server added to package.json
-- [ ] **FE-16**: TypeScript strict mode enabled (incremental: noImplicitAny → strictNullChecks → strict)
-- [ ] **FE-17**: TypeScript strict mode violations fixed without type assertions
+- [x] **FE-16**: TypeScript strict mode enabled (incremental: noImplicitAny → strictNullChecks → strict)
+- [x] **FE-17**: TypeScript strict mode violations fixed without type assertions
 - [x] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
 - [x] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
 - [x] **FE-20**: Port mismatch fixed (server uses documented port)
@@ -218,8 +218,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FE-13 | Phase 3 | Complete |
 | FE-14 | Phase 3 | Complete |
 | FE-15 | Phase 3 | Complete |
-| FE-16 | Phase 3 | Pending |
-| FE-17 | Phase 3 | Pending |
+| FE-16 | Phase 3 | Complete |
+| FE-17 | Phase 3 | Complete |
 | FE-18 | Phase 3 | Complete |
 | FE-19 | Phase 3 | Complete |
 | FE-20 | Phase 3 | Complete |
