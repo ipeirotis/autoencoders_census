@@ -11,6 +11,8 @@ import { ResultCard } from "@/components/ResultCard";
 import { parseCSVFile, type CSVParseResult } from "@/utils/csv-parser";
 import { uploadCsv, checkJobStatus, type JobStatus } from "@/utils/api";
 import { cn } from "@/lib/utils";
+import { PreviewErrorBoundary } from "@/components/error-boundaries/PreviewErrorBoundary";
+import { ResultsErrorBoundary } from "@/components/error-boundaries/ResultsErrorBoundary";
 
 export default function Index() {
   const [file, setFile] = useState<File | null>(null);
@@ -119,8 +121,10 @@ export default function Index() {
             {preview && (
               <div className="mt-6">
                 <h3 className="text-sm font-semibold mb-2">Input Preview</h3>
-                <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
-                
+                <PreviewErrorBoundary>
+                  <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
+                </PreviewErrorBoundary>
+
                 <div className="mt-4 flex gap-4">
                   <Button onClick={handleUpload} disabled={isProcessing} size="lg" className="flex-1">
                     {isProcessing ? "Processing..." : "Run Analysis"}
@@ -158,18 +162,22 @@ export default function Index() {
               <Button onClick={handleReset} variant="outline">Analyze New File</Button>
             </div>
 
-            <ResultCard type="success" message="Outliers identified successfully." />
-            
+            <ResultsErrorBoundary>
+              <ResultCard type="success" message="Outliers identified successfully." />
+            </ResultsErrorBoundary>
+
             <div className="mt-6">
               <h3 className="text-lg font-semibold mb-3">Top Outliers</h3>
-              
+
               {/* [STEP 2] Update the headers prop here */}
-              <PreviewTable 
-                rows={results} 
-                headers={getOrderedHeaders(results[0])}  
-                totalRows={results.length} 
-              />
-              
+              <PreviewErrorBoundary>
+                <PreviewTable
+                  rows={results}
+                  headers={getOrderedHeaders(results[0])}
+                  totalRows={results.length}
+                />
+              </PreviewErrorBoundary>
+
             </div>
           </div>
 
@@ -209,7 +217,9 @@ export default function Index() {
         {/* Error State */}
         {error && (
           <div className="bg-white rounded-2xl shadow p-6">
-             <ResultCard type="error" message={error} />
+             <ResultsErrorBoundary>
+               <ResultCard type="error" message={error} />
+             </ResultsErrorBoundary>
              <Button onClick={handleReset} variant="outline" className="mt-4">Try Again</Button>
           </div>
         )}
