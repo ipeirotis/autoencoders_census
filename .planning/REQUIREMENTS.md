@@ -70,9 +70,9 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### Operational Features
 
-- [ ] **OPS-01**: User can export outlier results as CSV file
-- [ ] **OPS-02**: CSV export prevents formula injection (sanitizes =, +, -, @, \t, \r characters)
-- [ ] **OPS-03**: CSV export includes proper Content-Disposition headers
+- [x] **OPS-01**: User can export outlier results as CSV file
+- [x] **OPS-02**: CSV export prevents formula injection (sanitizes =, +, -, @, \t, \r characters)
+- [x] **OPS-03**: CSV export includes proper Content-Disposition headers
 - [ ] **OPS-04**: Job cancellation deletes GCS files for canceled jobs
 - [ ] **OPS-05**: Job cancellation cancels Vertex AI job if running
 - [ ] **OPS-06**: Job cancellation updates Firestore status to "canceled"
@@ -225,9 +225,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FE-20 | Phase 3 | Complete |
 | FE-21 | Phase 3 | Complete |
 | FE-22 | Phase 3 | Complete |
-| OPS-01 | Phase 4 | Pending |
-| OPS-02 | Phase 4 | Pending |
-| OPS-03 | Phase 4 | Pending |
+| OPS-01 | Phase 4 | Complete |
+| OPS-02 | Phase 4 | Complete |
+| OPS-03 | Phase 4 | Complete |
 | OPS-04 | Phase 4 | Pending |
 | OPS-05 | Phase 4 | Pending |
 | OPS-06 | Phase 4 | Pending |
