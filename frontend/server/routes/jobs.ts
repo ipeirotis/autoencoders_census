@@ -9,20 +9,15 @@
  */
 
 import { Router } from "express";
-import { Storage } from "@google-cloud/storage";
-import { Firestore } from "@google-cloud/firestore";
-import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
+import { storage, firestore, pubsub } from '../config/gcp-clients';
 
 const router = Router();
-const storage = new Storage();
-const firestore = new Firestore();
-const pubsub = new PubSub();
 
 // Configuration from Environment Variables
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";

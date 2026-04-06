@@ -15,9 +15,6 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
-import { Storage } from "@google-cloud/storage";
-import { Firestore } from "@google-cloud/firestore";
-import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
 import { corsConfig, helmetConfig } from "./middleware/security";
@@ -29,19 +26,17 @@ import { sessionConfig } from "./config/session";
 import { passport } from "./middleware/auth";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
+import { storage, firestore, pubsub } from "./config/gcp-clients";
 import path from "path";
 
 // --- Configuration ---
 // Environment variables are validated at startup via env module import above
 // Server will fail fast with clear error message if required vars are missing
 const GCS_BUCKET_NAME = env.GCS_BUCKET_NAME;
-const PROJECT_ID = env.GOOGLE_CLOUD_PROJECT;
 const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens to
 
-// --- Google Cloud Clients ---
-const storage = new Storage({ projectId: PROJECT_ID });
-const firestore = new Firestore({ projectId: PROJECT_ID });
-const pubsub = new PubSub({ projectId: PROJECT_ID });
+// GCP clients imported from singleton module (gcp-clients.ts)
+// No local instantiation needed - prevents connection pool exhaustion
 
 // --- Multer Middleware (Memory Storage) ---
 // Keeps the file in RAM (req.file.buffer) so we can stream it to GCS
