@@ -8,7 +8,7 @@
  * Flow: Frontend → (signed URL) → GCS → Pub/Sub → worker.py → Vertex AI → Firestore → Frontend polls
  */
 
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
@@ -36,7 +36,7 @@ const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 // Note: File size validation (WORK-11) happens at Worker layer via validate_csv()
 // Express layer cannot reliably check size before GCS upload completes
 // GCS bucket has 100MB object size limit configured separately
-router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req, res) => {
+router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req: Request, res: Response) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
@@ -76,7 +76,7 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
 });
 
 // 2. Start Processing (Trigger Pub/Sub)
-router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req, res) => {
+router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req: Request, res: Response) => {
   try {
     const { jobId, gcsFileName } = req.body;
 
@@ -109,7 +109,7 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 });
 
 // 3. Check Job Status
-router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req, res) => {
+router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const doc = await firestore.collection("jobs").doc(id).get();
