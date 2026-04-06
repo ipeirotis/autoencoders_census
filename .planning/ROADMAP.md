@@ -99,7 +99,7 @@ Plans:
 ---
 
 ### Phase 4: Operational Features
-**Goal**: Users can export results, cancel jobs with resource cleanup, and maintainer understands GitHub PR workflow for ongoing collaboration.
+**Goal**: Users can export results, cancel jobs with resource cleanup, see per-column contribution scores, and maintainer understands GitHub PR workflow for ongoing collaboration.
 
 **Depends on**: Phase 3 (export and cancellation features integrate with frontend UI)
 
@@ -108,11 +108,20 @@ Plans:
 **Success Criteria** (what must be TRUE):
 1. User can download outlier results as CSV file without Excel formula injection risk
 2. Canceled jobs clean up GCS files and cancel running Vertex AI jobs (not just Firestore flag)
-3. Old uploaded files and results automatically delete after retention period (GCS lifecycle rules active)
+3. Old uploaded files and results automatically delete after 7-day retention period (GCS lifecycle rules active)
 4. User can see per-column outlier contribution scores in results UI (which survey questions were anomalous)
 5. Maintainer understands branch strategy, commit conventions, and PR review process for collaborating with IliasTriant
 
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — CSV export with formula injection protection (Wave 1: OPS-01, OPS-02, OPS-03)
+- [ ] 04-02-PLAN.md — Job cancellation with GCS + Vertex AI cleanup (Wave 1: OPS-04, OPS-05, OPS-06)
+- [ ] 04-03-PLAN.md — GCS lifecycle rules & expired job handling (Wave 1: OPS-07, OPS-08, OPS-13)
+- [ ] 04-04-PLAN.md — Per-column contribution scores backend (Wave 1: OPS-09, OPS-10, OPS-14)
+- [ ] 04-05-PLAN.md — Per-column contribution scores UI (Wave 2: OPS-09, OPS-10)
+- [ ] 04-06-PLAN.md — Enhanced error messages & manual file deletion (Wave 2: OPS-11, OPS-12)
+- [ ] 04-07-PLAN.md — GitHub collaboration workflow documentation (Wave 1: GH-01, GH-02, GH-03, GH-04, GH-05)
 
 ---
 
@@ -123,7 +132,7 @@ Plans:
 | 1. Security Foundation | 6/7 | In Progress | - |
 | 2. Worker Reliability | 3/3 | Complete | 2026-04-05 |
 | 3. Frontend Production | 1/7 | In Progress | - |
-| 4. Operational Features | 0/TBD | Not started | - |
+| 4. Operational Features | 0/7 | Not started | - |
 
 ---
 
