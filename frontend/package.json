@@ -16,6 +16,7 @@
     "@google-cloud/logging-winston": "^6.0.1",
     "@google-cloud/pubsub": "^5.2.0",
     "@google-cloud/storage": "^7.18.0",
+    "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-label": "^2.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-toast": "^1.2.15",
