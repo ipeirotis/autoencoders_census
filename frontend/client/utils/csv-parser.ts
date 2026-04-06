@@ -1,107 +1,54 @@
+import Papa from 'papaparse';
+
 export interface CSVParseResult {
-  rows: Record<string, unknown>[];
+  rows: Array<Record<string, any>>;
   headers: string[];
   totalRows: number;
 }
 
-// Reads file, parses CSV content, and returns preview data
-export async function parseCSVFile(
-  file: File,
-  skipRows: number = 0
-): Promise<CSVParseResult> {
+/**
+ * Parse CSV file using Papa Parse streaming to prevent memory crashes on large files.
+ * Uses web worker to avoid blocking UI thread.
+ * Previews only first 100 rows to prevent loading entire 50MB+ file into memory.
+ * Returns only first 20 rows for display.
+ */
+export async function parseCSVFile(file: File): Promise<CSVParseResult> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+    const rows: Array<Record<string, any>> = [];
 
-    reader.onload = () => {
-      try {
-        const content = reader.result as string;
-        const lines = content
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
-
-        if (lines.length === 0) {
-          reject(new Error("CSV file is empty"));
-          return;
-        }
-
-        // Skip the specified number of rows
-        const skippedLines = lines.slice(skipRows);
-
-        if (skippedLines.length === 0) {
-          reject(new Error("No rows left after skipping"));
-          return;
-        }
-
-        const headers = parseCSVLine(skippedLines[0]);
-        if (headers.length === 0) {
-          reject(new Error("CSV file has no headers"));
-          return;
-        }
-
-        const rows: Record<string, unknown>[] = [];
-        for (let i = 1; i < skippedLines.length; i++) {
-          const values = parseCSVLine(skippedLines[i]);
-          const row: Record<string, unknown> = {};
-
-          headers.forEach((header, index) => {
-            row[header] = values[index] || "";
-          });
-
-          rows.push(row);
-        }
-
+    Papa.parse(file, {
+      worker: true,        // Use web worker to avoid blocking UI
+      header: true,        // First row is headers
+      skipEmptyLines: true,
+      preview: 100,        // Only parse first 100 rows for preview (prevents memory crash)
+      step: (results) => {
+        // Collect each parsed row
+        rows.push(results.data);
+      },
+      complete: (results) => {
+        // Handle completion
         if (rows.length === 0) {
-          reject(new Error("CSV file has no data rows (only headers)"));
+          reject(new Error('CSV file has no data rows'));
+          return;
+        }
+
+        // Extract headers from first row's keys
+        const headers = Object.keys(rows[0] || {});
+
+        if (headers.length === 0) {
+          reject(new Error('CSV file has no headers'));
           return;
         }
 
         resolve({
-          rows: rows.slice(0, 20),
-          headers,
-          totalRows: rows.length,
+          rows: rows.slice(0, 20),  // Show first 20 rows in preview
+          headers: headers,
+          totalRows: rows.length
         });
-      } catch (error) {
-        reject(
-          error instanceof Error
-            ? error
-            : new Error("Failed to parse CSV file")
-        );
+      },
+      error: (error) => {
+        reject(new Error(`CSV parsing failed: ${error.message}`));
       }
-    };
-
-    reader.onerror = () => {
-      reject(new Error("Failed to read file"));
-    };
-
-    reader.readAsText(file);
+    });
   });
-}
-
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let insideQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const nextChar = line[i + 1];
-
-    if (char === '"') {
-      if (insideQuotes && nextChar === '"') {
-        current += '"';
-        i++;
-      } else {
-        insideQuotes = !insideQuotes;
-      }
-    } else if (char === "," && !insideQuotes) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-
-  result.push(current.trim());
-  return result;
 }
