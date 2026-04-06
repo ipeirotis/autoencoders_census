@@ -65,8 +65,8 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [ ] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
 - [ ] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
 - [ ] **FE-20**: Port mismatch fixed (server uses documented port)
-- [ ] **FE-21**: CSV parser uses streaming for preview (prevents memory crash on large files)
-- [ ] **FE-22**: File type validation added to click-upload path (not just drag-and-drop)
+- [x] **FE-21**: CSV parser uses streaming for preview (prevents memory crash on large files)
+- [x] **FE-22**: File type validation added to click-upload path (not just drag-and-drop)
 
 ### Operational Features
 
@@ -223,8 +223,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FE-18 | Phase 3 | Pending |
 | FE-19 | Phase 3 | Pending |
 | FE-20 | Phase 3 | Pending |
-| FE-21 | Phase 3 | Pending |
-| FE-22 | Phase 3 | Pending |
+| FE-21 | Phase 3 | Complete |
+| FE-22 | Phase 3 | Complete |
 | OPS-01 | Phase 4 | Pending |
 | OPS-02 | Phase 4 | Pending |
 | OPS-03 | Phase 4 | Pending |
