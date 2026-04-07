@@ -5,9 +5,20 @@ import { StageIndicator } from '@/components/progress/StageIndicator';
 import { DualProgressBar } from '@/components/progress/DualProgressBar';
 import { JobMetadata } from '@/components/progress/JobMetadata';
 import { OutlierTable } from '@/components/results/OutlierTable';
+import { DeleteJobDialog } from '@/components/results/DeleteJobDialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+
+/**
+ * Helper to check if job files expired (7-day retention)
+ */
+function isJobExpired(createdAt: Date | string): boolean {
+  const created = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  const expirationDate = new Date(created);
+  expirationDate.setDate(expirationDate.getDate() + 7);
+  return new Date() > expirationDate;
+}
 
 /**
  * Dedicated progress page at /job/:id route.
@@ -81,10 +92,36 @@ export default function JobProgress() {
             )}
 
             {job.status === 'complete' && (
-              <div className="p-4 bg-green-50 border border-green-200 rounded-md">
-                <p className="text-green-800 font-semibold">Job completed successfully!</p>
-                <p className="text-green-700 text-sm mt-1">View results below.</p>
-              </div>
+              <>
+                <div className="p-4 bg-green-50 border border-green-200 rounded-md">
+                  <p className="text-green-800 font-semibold">Job completed successfully!</p>
+                  <p className="text-green-700 text-sm mt-1">View results below.</p>
+                </div>
+
+                {/* File expiration and download section */}
+                <div className="flex items-center gap-3">
+                  {/* Expired job message */}
+                  {(isJobExpired(job.createdAt) || job.filesExpired) && (
+                    <div className="flex-1 p-3 border rounded-lg bg-yellow-50 border-yellow-200">
+                      <p className="text-sm text-yellow-800">
+                        Files expired - data deleted after 7-day retention period
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Download button - hidden if expired */}
+                  {!isJobExpired(job.createdAt) && !job.filesExpired && (
+                    <Button onClick={() => window.location.href = `/api/jobs/${id}/export`}>
+                      Download Results CSV
+                    </Button>
+                  )}
+
+                  {/* Manual delete button - only show if files not expired and job complete */}
+                  {!isJobExpired(job.createdAt) && !job.filesExpired && (
+                    <DeleteJobDialog jobId={id!} />
+                  )}
+                </div>
+              </>
             )}
 
             {job.status === 'error' && (
