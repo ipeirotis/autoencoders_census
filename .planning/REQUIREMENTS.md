@@ -76,13 +76,13 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **OPS-04**: Job cancellation deletes GCS files for canceled jobs
 - [x] **OPS-05**: Job cancellation cancels Vertex AI job if running
 - [x] **OPS-06**: Job cancellation updates Firestore status to "canceled"
-- [ ] **OPS-07**: GCS lifecycle rules delete old uploaded files (30-day retention)
-- [ ] **OPS-08**: GCS lifecycle rules delete old result files (90-day retention)
+- [x] **OPS-07**: GCS lifecycle rules delete old uploaded files (30-day retention)
+- [x] **OPS-08**: GCS lifecycle rules delete old result files (90-day retention)
 - [x] **OPS-09**: User can see per-column outlier contribution scores in results
 - [x] **OPS-10**: Per-column scores show which survey questions were anomalous
 - [ ] **OPS-11**: User can download failed-rows CSV with specific error descriptions
 - [ ] **OPS-12**: Row-level validation errors indicate encoding issues, missing values, schema mismatches
-- [ ] **OPS-13**: Signed URLs generated on-demand (1-hour expiration, not 7-day)
+- [x] **OPS-13**: Signed URLs generated on-demand (1-hour expiration, not 7-day)
 - [x] **OPS-14**: Progress tracking writes stage updates to Firestore throughout processing
 
 ### GitHub Best Practices
@@ -231,13 +231,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-04 | Phase 4 | Complete |
 | OPS-05 | Phase 4 | Complete |
 | OPS-06 | Phase 4 | Complete |
-| OPS-07 | Phase 4 | Pending |
-| OPS-08 | Phase 4 | Pending |
+| OPS-07 | Phase 4 | Complete |
+| OPS-08 | Phase 4 | Complete |
 | OPS-09 | Phase 4 | Complete |
 | OPS-10 | Phase 4 | Complete |
 | OPS-11 | Phase 4 | Pending |
 | OPS-12 | Phase 4 | Pending |
-| OPS-13 | Phase 4 | Pending |
+| OPS-13 | Phase 4 | Complete |
 | OPS-14 | Phase 4 | Complete |
 | GH-01 | Phase 4 | Complete |
 | GH-02 | Phase 4 | Complete |

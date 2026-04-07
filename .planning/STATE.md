@@ -26,12 +26,12 @@ progress:
 ## Current Position
 
 **Phase:** 04 - Operational Features
-**Plan:** 1 of 8
+**Plan:** 6 of 8
 **Status:** Ready to execute
 
-**Progress:** [█████████░] 88%
+**Progress:** [█████████░] 92%
 
-**Last Plan Completed:** 04-00 (Test Infrastructure Setup)
+**Last Plan Completed:** 04-03 (GCS Lifecycle Configuration)
 
 ## Performance Metrics
 
@@ -48,8 +48,8 @@ progress:
 - Remaining: 71
 
 ### Plans
-- Total plans: 6 (Phase 1 planned)
-- Completed: 5
+- Total plans: 25 (all phases)
+- Completed: 23
 - In progress: 0
 - Blocked: 0
 
@@ -78,6 +78,7 @@ progress:
 | Phase 04 P01 | 218 | 3 tasks | 5 files |
 | Phase 04 P02 | 1160 | 3 tasks | 5 files |
 | Phase 04 P04 | 286 | 3 tasks | 3 files |
+| 04 | 03 | GCS Lifecycle Configuration | 2m 43s | 3/3 | 1 | 2026-04-07 |
 
 ## Accumulated Context
 
@@ -124,6 +125,12 @@ progress:
 
 20. **Use TanStack Query refetchInterval for polling lifecycle** (2026-04-06): Eliminates stale closure issues and provides automatic cleanup on unmount. refetchInterval with conditional return handles terminal state detection cleanly without manual useEffect orchestration.
 
+21. **7-day retention applies uniformly to all GCS files** (2026-04-07): Both uploads/ and results/ prefixes use same retention period for simplicity. Lifecycle rule configured via gcloud CLI deletes files older than 7 days automatically.
+
+22. **Firestore job metadata persists after GCS file deletion** (2026-04-07): Preserves job history for audit purposes even after files expire. Allows users to view past jobs without maintaining expensive storage indefinitely.
+
+23. **Client-side age check pattern for expired job detection** (2026-04-07): Frontend calculates expiration date from job.createdAt + 7 days to hide download button and show expiration message for expired jobs. Pattern documented in GCS-LIFECYCLE-SETUP.md.
+
 ### Active Todos
 - [ ] Run `/gsd:plan-phase 1` to decompose Security Foundation phase into executable plans
 - [ ] Verify express-rate-limit version ≥8.0.2 (CVE-2026-30827 fix)
@@ -163,28 +170,28 @@ None currently. Roadmap complete and ready for phase planning.
 ### Session Continuity
 
 **What Just Happened:**
-- Completed Phase 04 Plan 00: Test Infrastructure Setup
-- Created 4 test stub files with 16 skip-decorated test functions (11 backend pytest, 5 frontend vitest)
-- Established Nyquist-compliant verification framework for all Phase 4 operational features
-- Two tasks completed, two commits made (7fb3cb2, fa30cc3)
-- Wave 0 pattern enables continuous automated verification during feature implementation
-- All test stubs discoverable by pytest/vitest and ready for implementation
+- Completed Phase 04 Plan 03: GCS Lifecycle Configuration
+- GCS bucket lifecycle rule configured to automatically delete files older than 7 days
+- Created comprehensive 194-line setup documentation (GCS-LIFECYCLE-SETUP.md)
+- Verified signed URL expiration is correctly set to 15 minutes (OPS-13)
+- Three tasks completed, two commits made (5089b90, 86bf270)
+- Requirements OPS-07, OPS-08, OPS-13 fully satisfied
+- Duration: 2min 43sec
 
 **Next Steps:**
-1. Execute plan 04-01 (CSV Export with Formula Injection Protection)
-2. Remove skip decorators from test_export.py tests as features are implemented
-3. Continue through Phase 4 plans, incrementally unskipping tests
+1. Execute remaining Phase 4 plans (04-04, 04-05, 04-06)
+2. Complete per-column contribution scores (backend + UI)
+3. Implement expired job UI and manual file deletion
 4. Run full test suite before phase verification
 
 **Open Questions:**
-- None. Plan 04-00 completed successfully with no blockers or deviations.
+- None. Plan 04-03 completed successfully with no blockers or deviations.
 
 **Context for Next Agent:**
-- tests/test_export.py: 4 test stubs for CSV export (OPS-01 through OPS-04)
-- tests/test_lifecycle.py: 3 test stubs for GCS lifecycle (OPS-07, OPS-08, OPS-13)
-- tests/test_cancellation.py: 4 test stubs for job cancellation (OPS-05 through OPS-08)
-- frontend/client/components/__tests__/PerColumnScores.test.tsx: 5 test stubs for per-column scores UI (OPS-09, OPS-10)
-- All tests skip-decorated pending implementation
+- .planning/docs/GCS-LIFECYCLE-SETUP.md: Comprehensive lifecycle setup documentation with troubleshooting and cost analysis
+- GCS lifecycle rule: Active on autoencoder_data bucket (Delete action, age: 7 days)
+- Signed URL expiration: Verified 15 minutes in frontend/server/routes/jobs.ts (line 66)
+- Expired job pattern: Client-side age check (createdAt + 7 days) documented for frontend implementation
 
 ---
 

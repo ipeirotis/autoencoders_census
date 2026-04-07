@@ -117,13 +117,14 @@ Plans:
 **Plans**: 7 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — CSV export with formula injection protection (Wave 1: OPS-01, OPS-02, OPS-03)
-- [ ] 04-02-PLAN.md — Job cancellation with GCS + Vertex AI cleanup (Wave 1: OPS-04, OPS-05, OPS-06)
-- [ ] 04-03-PLAN.md — GCS lifecycle rules & expired job handling (Wave 1: OPS-07, OPS-08, OPS-13)
+- [x] 04-00-PLAN.md — Test Infrastructure Setup (Wave 0) (COMPLETE - 2026-04-06)
+- [x] 04-01-PLAN.md — CSV export with formula injection protection (Wave 1: OPS-01, OPS-02, OPS-03) (COMPLETE - 2026-04-06)
+- [x] 04-02-PLAN.md — Job cancellation with GCS + Vertex AI cleanup (Wave 1: OPS-04, OPS-05, OPS-06) (COMPLETE - 2026-04-06)
+- [x] 04-03-PLAN.md — GCS lifecycle rules & expired job handling (Wave 1: OPS-07, OPS-08, OPS-13) (COMPLETE - 2026-04-07)
 - [ ] 04-04-PLAN.md — Per-column contribution scores backend (Wave 1: OPS-09, OPS-10, OPS-14)
 - [ ] 04-05-PLAN.md — Per-column contribution scores UI (Wave 2: OPS-09, OPS-10)
 - [ ] 04-06-PLAN.md — Expired job UI & manual file deletion (Wave 2: OPS-12)
-- [ ] 04-07-PLAN.md — GitHub collaboration workflow documentation (Wave 1: GH-01, GH-02, GH-03, GH-04, GH-05)
+- [x] 04-07-PLAN.md — GitHub collaboration workflow documentation (Wave 1: GH-01, GH-02, GH-03, GH-04, GH-05) (COMPLETE - 2026-04-06)
 
 ---
 
@@ -134,7 +135,7 @@ Plans:
 | 1. Security Foundation | 6/7 | In Progress | - |
 | 2. Worker Reliability | 3/3 | Complete | 2026-04-05 |
 | 3. Frontend Production | 1/7 | In Progress | - |
-| 4. Operational Features | 0/7 | Not started | - |
+| 4. Operational Features | 4/8 | In Progress | - |
 
 ---
 
