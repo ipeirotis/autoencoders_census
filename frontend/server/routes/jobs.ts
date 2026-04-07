@@ -235,4 +235,75 @@ router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res:
   }
 });
 
+// 6. Manual File Deletion (Completed Jobs)
+// Separate from cancellation endpoint (which is for running jobs)
+router.delete("/jobs/:id/files", requireAuth, validateJobId, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch job
+    const doc = await firestore.collection("jobs").doc(id).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = doc.data();
+
+    // Only allow deletion of completed/failed jobs (not running jobs)
+    if (!['complete', 'failed', 'canceled'].includes(job.status)) {
+      return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
+    }
+
+    const gcsFileName = job.gcsFileName || job.file;
+    let filesDeleted = 0;
+
+    // Delete GCS uploaded file (best-effort)
+    try {
+      if (gcsFileName) {
+        await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
+        filesDeleted++;
+        logger.info('Deleted GCS upload file', { jobId: id, file: gcsFileName });
+      }
+    } catch (error) {
+      logger.warn('Failed to delete GCS upload file (may already be deleted)', {
+        jobId: id,
+        file: gcsFileName,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    // Delete result files if exist (best-effort)
+    const resultFileName = `results/${id}.json`;
+    try {
+      await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
+      filesDeleted++;
+      logger.info('Deleted GCS result file', { jobId: id, file: resultFileName });
+    } catch (error) {
+      logger.warn('Failed to delete GCS result file (may not exist)', {
+        jobId: id,
+        file: resultFileName,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    // Update Firestore to mark files as expired (optional flag)
+    await firestore.collection("jobs").doc(id).update({
+      filesExpired: true,
+      filesDeletedAt: new Date()
+    });
+
+    logger.info('Job files deleted manually', { jobId: id, filesDeleted, userId: (req as any).user?.id });
+
+    res.json({ success: true, message: 'Files deleted successfully', filesDeleted });
+  } catch (error) {
+    logger.error("Error deleting job files", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to delete files" });
+  }
+});
+
 export const jobsRouter = router;
