@@ -4,6 +4,7 @@ import { useJobCancellation } from '@/hooks/useJobCancellation';
 import { StageIndicator } from '@/components/progress/StageIndicator';
 import { DualProgressBar } from '@/components/progress/DualProgressBar';
 import { JobMetadata } from '@/components/progress/JobMetadata';
+import { OutlierTable } from '@/components/results/OutlierTable';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -96,6 +97,20 @@ export default function JobProgress() {
             {job.status === 'canceled' && (
               <div className="p-4 bg-gray-50 border border-gray-200 rounded-md">
                 <p className="text-gray-800 font-semibold">Job was canceled</p>
+              </div>
+            )}
+
+            {job.status === 'complete' && job.outliers && job.outliers.length > 0 && (
+              <div className="mt-6">
+                <OutlierTable outliers={job.outliers} />
+              </div>
+            )}
+
+            {job.status === 'complete' && (!job.outliers || job.outliers.length === 0) && (
+              <div className="mt-6 p-4 border rounded-lg bg-muted">
+                <p className="text-sm text-muted-foreground">
+                  No outliers detected in this dataset.
+                </p>
               </div>
             )}
           </CardContent>
