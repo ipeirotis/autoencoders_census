@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from dataset.loader import DataLoader
 from features.transform import Table2Vector
+from evaluate.outliers import compute_per_column_contributions
 
 load_dotenv()
 
@@ -464,6 +465,12 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
+        # Update status to training
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.TRAINING, {
+            'stage': 'Training autoencoder model'
+        })
+
         logger.info("Training autoencoder...")
         keras_model.fit(
             X_train, X_train,
@@ -471,17 +478,56 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             validation_data=(X_test, X_test)
         )
 
-        # 8. Calculate reconstruction error
-        reconstruction = keras_model.predict(vectorized_df)
-        if isinstance(reconstruction, list):
-            reconstruction = reconstruction[0]
-        mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
-        df['reconstruction_error'] = mse
+        # Update status to scoring
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.SCORING, {
+            'stage': 'Computing outlier scores'
+        })
 
-        # 9. Get top outliers
+        # 8. Calculate reconstruction error using VAE reconstruction_loss
+        from model.base import VAE
+
+        predictions = keras_model.predict(vectorized_df)
+        if isinstance(predictions, list):
+            predictions = predictions[0]
+
+        # Compute per-row reconstruction loss using VAE.reconstruction_loss
+        reconstruction_loss = VAE.reconstruction_loss(
+            cardinalities,
+            vectorized_df.to_numpy(),
+            predictions,
+        )
+        df['reconstruction_error'] = reconstruction_loss.numpy()
+
+        # 9. Get top outliers and compute per-column contributions
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
-        outliers_data = top_outliers.to_dict(orient='records')
+
+        # Compute contributions for each outlier row
+        outliers_data = []
+        for idx, row in top_outliers.iterrows():
+            # Get vectorized data and prediction for this row
+            row_data = vectorized_df.iloc[idx:idx+1].to_numpy()
+            row_pred = keras_model.predict(row_data, verbose=0)
+
+            if isinstance(row_pred, list):
+                row_pred = row_pred[0]
+
+            # Compute per-column contributions for this outlier
+            contributions = compute_per_column_contributions(
+                row_data,
+                row_pred,
+                cardinalities,
+                list(process_df.columns)  # Original column names before vectorization
+            )
+
+            # Build outlier record with contributions
+            outlier_record = row.to_dict()
+            outlier_record['contributions'] = [
+                {'column': col, 'percentage': float(pct)}
+                for col, pct in contributions
+            ]
+            outliers_data.append(outlier_record)
 
         # 10. Save to Firestore with transactional status update (WORK-07)
         transaction = db.transaction()
