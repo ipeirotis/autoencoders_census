@@ -81,7 +81,7 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 - [x] **OPS-09**: User can see per-column outlier contribution scores in results
 - [x] **OPS-10**: Per-column scores show which survey questions were anomalous
 - [ ] **OPS-11**: User can download failed-rows CSV with specific error descriptions
-- [ ] **OPS-12**: Row-level validation errors indicate encoding issues, missing values, schema mismatches
+- [x] **OPS-12**: Row-level validation errors indicate encoding issues, missing values, schema mismatches
 - [x] **OPS-13**: Signed URLs generated on-demand (1-hour expiration, not 7-day)
 - [x] **OPS-14**: Progress tracking writes stage updates to Firestore throughout processing
 
@@ -236,7 +236,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-09 | Phase 4 | Complete |
 | OPS-10 | Phase 4 | Complete |
 | OPS-11 | Phase 4 | Pending |
-| OPS-12 | Phase 4 | Pending |
+| OPS-12 | Phase 4 | Complete |
 | OPS-13 | Phase 4 | Complete |
 | OPS-14 | Phase 4 | Complete |
 | GH-01 | Phase 4 | Complete |
