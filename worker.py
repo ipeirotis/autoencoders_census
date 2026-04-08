@@ -79,41 +79,64 @@ def validate_message(data: dict) -> PubSubMessage:
         raise ValueError(f"Invalid message format: {errors}")
 
 
-def check_idempotency(message_id: str, job_id: str) -> bool:
+def check_idempotency(message_id: str) -> bool:
     """
-    Check if message already processed using Firestore transaction.
-    Returns True if already processed, False if first time.
+    Read-only check: has this Pub/Sub message already been marked processed?
 
-    This prevents duplicate processing when Pub/Sub redelivers messages
-    (at-least-once delivery guarantee). Uses Firestore transactions to
-    handle race conditions when multiple workers check same message.
+    Returns True if the message was previously processed and should be
+    skipped, False if it has not yet been processed.
+
+    IMPORTANT: This function does NOT write anything. The marker is set by
+    :func:`mark_message_processed` *after* job execution completes. That
+    ordering prevents the "silently dropped message" failure mode: if a
+    worker crashed between marking and acknowledgment, Pub/Sub would
+    redeliver the message and a "mark-before-process" implementation would
+    see the marker and ack the redelivered copy without performing any
+    work, leaving the job stuck forever.
 
     Args:
         message_id: Unique Pub/Sub message ID
-        job_id: Job ID from message payload (for logging/cleanup)
 
     Returns:
         bool: True if message was already processed, False if first time
     """
     processed_ref = db.collection('processed_messages').document(message_id)
+    snapshot = processed_ref.get()
+    return snapshot.exists
+
+
+def mark_message_processed(message_id: str, job_id: str) -> None:
+    """
+    Record that a Pub/Sub message has been successfully processed.
+
+    Must be called only AFTER :func:`process_upload_local` /
+    :func:`process_upload_vertex` returns, so that a crash mid-processing
+    leaves the marker unset and Pub/Sub redelivery triggers a real retry
+    instead of a silent drop.
+
+    Uses a Firestore transaction with a "set-if-not-exists" check to stay
+    idempotent if two workers ever race to mark the same message.
+
+    Args:
+        message_id: Unique Pub/Sub message ID
+        job_id: Job ID from message payload (for bookkeeping/cleanup)
+    """
+    processed_ref = db.collection('processed_messages').document(message_id)
 
     @firestore.transactional
-    def mark_processed(transaction, ref):
-        """Transactional read-modify-write to prevent race conditions."""
+    def _set_if_not_exists(transaction, ref):
         snapshot = ref.get(transaction=transaction)
         if snapshot.exists:
-            return True  # Already processed
+            return  # Already marked by another worker - idempotent no-op
 
-        # Mark as processed with metadata for cleanup
         transaction.set(ref, {
             'jobId': job_id,
             'processedAt': firestore.SERVER_TIMESTAMP,
             'expiresAt': firestore.SERVER_TIMESTAMP  # For manual cleanup (7-day TTL)
         })
-        return False
 
     transaction = db.transaction()
-    return mark_processed(transaction, processed_ref)
+    _set_if_not_exists(transaction, processed_ref)
 
 
 class AckExtender:
@@ -597,8 +620,12 @@ def callback(message):
         bucket = validated.bucket
         file_path = validated.file
 
-        # WORK-04: Check if already processed
-        if check_idempotency(message.message_id, job_id):
+        # WORK-04: Read-only idempotency check. We intentionally do NOT mark
+        # the message as processed here: the marker is written AFTER
+        # processing completes (mark_message_processed below). If we crashed
+        # between a premature mark and ack, Pub/Sub would redeliver and we'd
+        # drop the redelivered copy without ever finishing the work.
+        if check_idempotency(message.message_id):
             logger.info(f"Message {message.message_id} already processed, skipping")
             message.ack()  # Ack duplicate message
             return
@@ -608,6 +635,20 @@ def callback(message):
             process_upload_vertex(job_id, bucket, file_path, message)
         else:
             process_upload_local(job_id, bucket, file_path, message)
+
+        # WORK-04: Only now that processing is done do we record the marker,
+        # so a crash mid-processing leaves the marker unset and Pub/Sub
+        # redelivery triggers a real retry instead of a silent drop.
+        try:
+            mark_message_processed(message.message_id, job_id)
+        except Exception as mark_err:
+            # Failing to persist the marker isn't fatal: the job itself already
+            # finished, and the worst case on redelivery is an early-return
+            # due to the job state machine (terminal states reject
+            # transitions). Log and continue to ack.
+            logger.warning(
+                f"Failed to mark message {message.message_id} as processed: {mark_err}"
+            )
 
         # WORK-06: Ack only after processing completes successfully
         message.ack()
