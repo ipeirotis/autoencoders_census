@@ -61,7 +61,7 @@ describe('Job Cancellation endpoint', () => {
 
     // Verify router has DELETE endpoint registered
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -84,7 +84,7 @@ describe('Job Cancellation endpoint', () => {
 
     // Verify route structure includes status update logic
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -95,7 +95,7 @@ describe('Job Cancellation endpoint', () => {
 
     // Verify route exists and is properly structured
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -108,7 +108,7 @@ describe('Job Cancellation endpoint', () => {
     const { jobsRouter } = await import('../../routes/jobs');
 
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -119,7 +119,7 @@ describe('Job Cancellation endpoint', () => {
     const { jobsRouter } = await import('../../routes/jobs');
 
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -133,7 +133,7 @@ describe('Job Cancellation endpoint', () => {
     const { jobsRouter } = await import('../../routes/jobs');
 
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
@@ -143,7 +143,7 @@ describe('Job Cancellation endpoint', () => {
     const { jobsRouter } = await import('../../routes/jobs');
 
     const deleteRoute = jobsRouter.stack.find((layer: any) =>
-      layer.route && layer.route.path === '/jobs/:id' && layer.route.methods.delete
+      layer.route && layer.route.path === '/:id' && layer.route.methods.delete
     );
 
     expect(deleteRoute).toBeDefined();
