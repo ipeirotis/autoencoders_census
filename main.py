@@ -582,9 +582,17 @@ def chow_liu_outliers(
     cleaned_df = prepare_for_categorical(project_data)
     logger.info(f"Cleaned data: {cleaned_df.shape[0]} rows, {cleaned_df.shape[1]} columns")
 
+    if cleaned_df.shape[1] == 0:
+        logger.error(
+            "No columns survived cleaning (Rule-of-9). Cannot fit Chow-Liu tree."
+        )
+        return
+
     # 5. Fit Chow-Liu tree and score rows
     logger.info("Fitting Chow-Liu tree...")
-    ranked_df, cl_model = rank_rows_by_chow_liu(cleaned_df, alpha=alpha, mi_subsample=mi_subsample)
+    ranked_df, cl_model = rank_rows_by_chow_liu(
+        cleaned_df, alpha=alpha, mi_subsample=mi_subsample, random_state=seed
+    )
 
     # 6. Map to error column (1 - pct: higher = more anomalous)
     ranked_df["error"] = 1.0 - ranked_df["pct"]
@@ -599,7 +607,7 @@ def chow_liu_outliers(
     if not os.path.exists(output):
         os.makedirs(output)
     save_to_csv(ranked_df, output, "errors")
-    logger.info(f"Outlier scores saved to {output}errors.csv")
+    logger.info(f"Outlier scores saved to {os.path.join(output, 'errors.csv')}")
 
 
 @cli.command("generate")

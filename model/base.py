@@ -116,9 +116,12 @@ class VAE(keras.Model):
             x_attr = tf.keras.backend.cast(x_attr, "float32")
             y_attr = tf.keras.backend.cast(y_attr, "float32")
 
+            # Normalize by log(K) so each attribute's loss is in [0, 1].
+            # Guard against degenerate single-category attributes (log(1)=0)
+            # — Rule-of-9 already filters these, but we stay defensive.
             xent_loss.append(
                 tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-                / np.log(categories + 1e-7)
+                / np.log(max(int(categories), 2))
             )
 
             start_idx += categories

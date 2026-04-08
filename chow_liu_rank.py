@@ -152,14 +152,17 @@ class CLTree:
             self.cpt[(c, p)] = cont / cont.sum(axis=1, keepdims=True)
 
     # ---------- public API ----------
-    def fit(self, df: pd.DataFrame, root: Optional[str] = None, mi_subsample: Optional[int] = None):
+    def fit(self, df: pd.DataFrame, root: Optional[str] = None,
+            mi_subsample: Optional[int] = None, random_state: int = 42):
         """
         Fit tree on df. If mi_subsample is set (e.g., 10000), use a random subset
-        of rows for MI to speed up on very large datasets.
+        of rows for MI to speed up on very large datasets. ``random_state`` controls
+        the subsampling RNG so callers can override the default for reproducibility
+        across runs that share a global seed.
         """
         self._build_schema(df)
         if mi_subsample is not None and len(df) > mi_subsample:
-            samp = df.sample(mi_subsample, random_state=42)
+            samp = df.sample(mi_subsample, random_state=random_state)
         else:
             samp = df
         X_sub = self._df_to_ints(samp)
@@ -232,13 +235,14 @@ class CLTree:
 
 def rank_rows_by_chow_liu(df: pd.DataFrame,
                           alpha: float = 1.0,
-                          mi_subsample: Optional[int] = None):
+                          mi_subsample: Optional[int] = None,
+                          random_state: int = 42):
     """
     Fit a Chow–Liu tree on 'df' and return:
       - ranked_df: df with scoring columns, sorted by logp DESC
       - model: the fitted CLTree (exposes edges() and parameters)
     """
-    cl = CLTree(alpha=alpha).fit(df, mi_subsample=mi_subsample)
+    cl = CLTree(alpha=alpha).fit(df, mi_subsample=mi_subsample, random_state=random_state)
     ranked = cl.score_dataframe(df)
     return ranked, cl
 
