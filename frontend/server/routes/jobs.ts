@@ -14,7 +14,7 @@ import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth } from '../middleware/auth';
-import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
+import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
@@ -47,7 +47,10 @@ const DEFAULT_CSV_CONTENT_TYPE = 'text/csv';
 // Note: File size validation (WORK-11) happens at Worker layer via validate_csv()
 // Express layer cannot reliably check size before GCS upload completes
 // GCS bucket has 100MB object size limit configured separately
-router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req, res) => {
+// Uses the dedicated uploadUrlLimiter (separate from uploadLimiter used by
+// /start-job) so a normal 3-step upload doesn't consume two rate-limit
+// slots from the same budget - see frontend/server/middleware/rateLimits.ts.
+router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
