@@ -34,22 +34,31 @@ const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 const ALLOWED_CSV_CONTENT_TYPES = ['text/csv', 'application/vnd.ms-excel'];
 const DEFAULT_CSV_CONTENT_TYPE = 'text/csv';
 
+/**
+ * WORK-12: Defense-in-depth CSV validation
+ *
+ * Express layer (quick checks):
+ *   - File extension validation (.csv only) - handled by validateUploadUrl middleware
+ *   - Content-Type validation (warn on unexpected types, allow for browser compatibility)
+ *
+ * Worker layer (deep checks):
+ *   - Encoding detection and validation (chardet)
+ *   - Structure validation (pandas streaming, min rows/cols)
+ *   - Size limit enforcement (>100MB rejection)
+ *   - Edge case handling (unicode, missing values)
+ *
+ * Note: File size validation (WORK-11) happens at the Worker layer via
+ * validate_csv(); the Express layer cannot reliably check size before
+ * the GCS upload completes. The GCS bucket has a 100MB object size
+ * limit configured separately.
+ *
+ * /upload-url uses the dedicated uploadUrlLimiter (separate from the
+ * uploadLimiter used by /start-job) so a normal 3-step upload doesn't
+ * consume two rate-limit slots from the same budget - see
+ * frontend/server/middleware/rateLimits.ts.
+ */
+
 // 1. Get Signed URL for Upload
-// WORK-12: Defense-in-depth CSV validation
-// Express layer (quick checks):
-//   - File extension validation (.csv only) - handled by validateUploadUrl middleware
-//   - Content-Type validation (warn on unexpected types, allow for browser compatibility)
-// Worker layer (deep checks):
-//   - Encoding detection and validation (chardet)
-//   - Structure validation (pandas streaming, min rows/cols)
-//   - Size limit enforcement (>100MB rejection)
-//   - Edge case handling (unicode, missing values)
-// Note: File size validation (WORK-11) happens at Worker layer via validate_csv()
-// Express layer cannot reliably check size before GCS upload completes
-// GCS bucket has 100MB object size limit configured separately
-// Uses the dedicated uploadUrlLimiter (separate from uploadLimiter used by
-// /start-job) so a normal 3-step upload doesn't consume two rate-limit
-// slots from the same budget - see frontend/server/middleware/rateLimits.ts.
 router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
   try {
     const { filename, contentType } = req.body;
