@@ -6,6 +6,7 @@
 import { Router, Request, Response } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
 import { validateSignup, validateLogin } from '../middleware/validation';
+import { authLimiter } from '../middleware/rateLimits';
 import {
   createUser,
   createVerificationToken,
@@ -26,7 +27,7 @@ const router = Router();
  * POST /api/auth/signup
  * Create a new user account
  */
-router.post('/signup', validateSignup, async (req: Request, res: Response) => {
+router.post('/signup', authLimiter, validateSignup, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
@@ -57,7 +58,7 @@ router.post('/signup', validateSignup, async (req: Request, res: Response) => {
  * POST /api/auth/login
  * Authenticate user with email and password
  */
-router.post('/login', validateLogin, (req: Request, res: Response, next) => {
+router.post('/login', authLimiter, validateLogin, (req: Request, res: Response, next) => {
   passport.authenticate('local', (err: any, user: any, info: any) => {
     if (err) {
       logger.error('Login error', { error: err });
@@ -174,7 +175,7 @@ router.get('/verify-email', async (req: Request, res: Response) => {
  * Email sending is stubbed (logs to console) in v1
  * Always returns success to prevent email enumeration
  */
-router.post('/request-reset', async (req: Request, res: Response) => {
+router.post('/request-reset', authLimiter, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
 
@@ -207,7 +208,7 @@ router.post('/request-reset', async (req: Request, res: Response) => {
  * POST /api/auth/reset-password
  * Reset password with token
  */
-router.post('/reset-password', async (req: Request, res: Response) => {
+router.post('/reset-password', authLimiter, async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
 

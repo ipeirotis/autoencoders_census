@@ -13,17 +13,41 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
-# Mock tensorflow and model imports before importing worker
-sys.modules['tensorflow'] = MagicMock()
-sys.modules['model.autoencoder'] = MagicMock()
-sys.modules['dataset.loader'] = MagicMock()
-sys.modules['features.transform'] = MagicMock()
+# Mock heavyweight imports before importing worker so the module loads quickly
+# and without GPU/TF/GCP dependencies.
+#
+# IMPORTANT: we capture and restore the previous sys.modules state after the
+# import. Otherwise pytest (which collects tests in alphabetical order) would
+# see these MagicMock entries when later test files do
+# `from features.transform import Table2Vector` or
+# `from model.autoencoder import AutoencoderModel`, causing cryptic failures
+# like `ValueError: not enough values to unpack (expected 2, got 0)` when
+# unpacking the result of a MagicMock call in tests/test_integration_pipeline.py.
+_MOCKED_MODULES = [
+    'tensorflow',
+    'model.autoencoder',
+    'dataset.loader',
+    'features.transform',
+]
+_saved_modules = {name: sys.modules.get(name) for name in _MOCKED_MODULES}
+
+for name in _MOCKED_MODULES:
+    sys.modules[name] = MagicMock()
 
 # Mock load_dotenv and google.cloud.firestore.Client before importing worker.
 # worker.py instantiates a Firestore client at module load time, which would
 # otherwise fail under CI where no Application Default Credentials are set.
 with patch('dotenv.load_dotenv'), patch('google.cloud.firestore.Client'):
     import worker
+
+# Restore sys.modules to its original state so other tests collected after
+# this file get the real modules when they do `from features.transform import ...`.
+for name in _MOCKED_MODULES:
+    saved = _saved_modules[name]
+    if saved is None:
+        sys.modules.pop(name, None)
+    else:
+        sys.modules[name] = saved
 
 
 def test_validate_environment_raises_on_missing_google_cloud_project(monkeypatch):
