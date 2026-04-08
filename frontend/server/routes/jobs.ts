@@ -1,14 +1,16 @@
 /**
  * Jobs API Routes - Handles the 3-step upload workflow:
  *
- * 1. POST /upload-url  - Generates a signed GCS URL for direct browser upload
- * 2. POST /start-job   - Creates Firestore doc + publishes Pub/Sub message to trigger worker
- * 3. GET /job-status/:id - Polls Firestore for job status and results
+ * 1. POST /upload-url       - Generates a signed GCS URL for direct browser upload
+ * 2. POST /start-job        - Creates Firestore doc + publishes Pub/Sub message to trigger worker
+ * 3. GET  /job-status/:id   - Polls Firestore for job status and results
+ * 4. DELETE /:id            - Marks a job as canceled in Firestore
  *
  * Flow: Frontend → (signed URL) → GCS → Pub/Sub → worker.py → Vertex AI → Firestore → Frontend polls
  */
 
 import { Router, Request, Response } from "express";
+import { Timestamp } from "@google-cloud/firestore";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
@@ -16,6 +18,41 @@ import { validateJobId, validateUploadUrl, validateStartJob } from '../middlewar
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
+
+/**
+ * Recursively convert Firestore Timestamp values into ISO strings so that
+ * clients receive parseable date values instead of {_seconds, _nanoseconds}
+ * objects. Plain values (strings, numbers, booleans) are returned unchanged.
+ */
+function serializeFirestoreData(value: unknown): unknown {
+  if (value instanceof Timestamp) {
+    return value.toDate().toISOString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  // Duck-type fallback for Timestamp-shaped objects (defensive against SDK
+  // variants that may produce plain objects with a toDate() method).
+  if (
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { toDate?: unknown }).toDate === 'function'
+  ) {
+    const date = (value as { toDate: () => Date }).toDate();
+    if (date instanceof Date && !Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.map(serializeFirestoreData);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, serializeFirestoreData(v)])
+    );
+  }
+  return value;
+}
 
 const router = Router();
 
@@ -118,8 +155,9 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
       return res.status(404).json({ status: "not_found" });
     }
 
-    const data = doc.data();
-    res.json(data);
+    // Normalize Firestore Timestamps to ISO strings so clients can
+    // construct valid Date objects from the response.
+    res.json(serializeFirestoreData(doc.data()));
   } catch (error) {
     logger.error("Error checking status", {
       error: error instanceof Error ? error.message : String(error),
@@ -127,6 +165,51 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
       userId: (req as any).user?.id
     });
     res.status(500).json({ error: "Failed to check status" });
+  }
+});
+
+// 4. Cancel Job
+// Marks the Firestore job document as "canceled" so the polling client
+// reaches a terminal state and stops polling. The worker is expected to
+// observe this state change and abort any in-flight processing.
+router.delete("/:id", requireAuth, pollLimiter, validateJobId, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const docRef = firestore.collection("jobs").doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    const data = doc.data();
+    if (data?.userId && data.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    // Don't re-cancel jobs that already reached a terminal state
+    const terminalStates = new Set(["complete", "error", "canceled"]);
+    if (data?.status && terminalStates.has(data.status)) {
+      return res.status(409).json({
+        error: "Job has already reached a terminal state",
+        status: data.status,
+      });
+    }
+
+    await docRef.update({
+      status: "canceled",
+      canceledAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    res.json({ success: true, jobId: id, status: "canceled" });
+  } catch (error) {
+    logger.error("Error canceling job", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to cancel job" });
   }
 });
 
