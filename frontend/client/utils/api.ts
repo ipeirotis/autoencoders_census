@@ -39,6 +39,7 @@ async function getUploadUrl(filename: string, contentType: string) {
   const res = await fetch(`${API_BASE}/api/jobs/upload-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ filename, contentType }),
   });
   if (!res.ok) throw new Error("Failed to get upload URL");
@@ -63,6 +64,7 @@ async function startJob(jobId: string, gcsFileName: string) {
   const res = await fetch(`${API_BASE}/api/jobs/start-job`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ jobId, gcsFileName }),
   });
   if (!res.ok) throw new Error("Failed to start processing job");
@@ -87,7 +89,9 @@ export async function uploadCsv(file: File): Promise<UploadResponse> {
 
 // Poll Status
 export async function checkJobStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`);
+  const res = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to check job status");
   return res.json();
 }
