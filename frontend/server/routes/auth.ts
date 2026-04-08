@@ -15,6 +15,7 @@ import {
   createPasswordResetToken,
   getUserByResetToken,
   updatePassword,
+  toPublicUser,
 } from '../models/user';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
@@ -40,7 +41,7 @@ router.post('/signup', validateSignup, async (req: Request, res: Response) => {
       }
 
       logger.info('User signed up and logged in', { userId: user.id, email: user.email });
-      res.status(201).json({ user });
+      res.status(201).json({ user: toPublicUser(user) });
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'Email already registered') {
@@ -75,9 +76,8 @@ router.post('/login', validateLogin, (req: Request, res: Response, next) => {
 
       logger.info('User logged in', { userId: user.id, email: user.email });
 
-      // Don't send passwordHash to client
-      const { passwordHash, ...userPublic } = user;
-      res.json({ user: userPublic });
+      // Strip passwordHash and verification/reset secrets before returning
+      res.json({ user: toPublicUser(user) });
     });
   })(req, res, next);
 });
@@ -105,10 +105,9 @@ router.post('/logout', (req: Request, res: Response) => {
  * Get current authenticated user
  */
 router.get('/me', requireAuth, (req: Request, res: Response) => {
-  // Don't send passwordHash to client
+  // Strip passwordHash and verification/reset secrets before returning
   const user = req.user as any;
-  const { passwordHash, ...userPublic } = user;
-  res.json({ user: userPublic });
+  res.json({ user: toPublicUser(user) });
 });
 
 /**
