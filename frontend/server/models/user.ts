@@ -14,7 +14,8 @@ const USERS_COLLECTION = 'users';
 const BCRYPT_ROUNDS = 12;
 
 /**
- * User interface (public - without sensitive fields)
+ * User interface (without passwordHash, but still contains sensitive fields
+ * like verificationToken/resetToken that must never be sent to API clients)
  */
 export interface User {
   id: string;
@@ -31,6 +32,31 @@ export interface User {
  */
 interface UserInternal extends User {
   passwordHash: string;
+}
+
+/**
+ * Public user interface - safe to return in API responses.
+ * Excludes passwordHash, verificationToken, resetToken, and resetTokenExpiry
+ * so clients can never read credentials or verification/reset secrets.
+ */
+export interface PublicUser {
+  id: string;
+  email: string;
+  createdAt: string;
+  emailVerified: boolean;
+}
+
+/**
+ * Strip all sensitive fields from a user object before returning it to clients.
+ * Removes passwordHash, verificationToken, resetToken, and resetTokenExpiry.
+ */
+export function toPublicUser(user: User | UserInternal): PublicUser {
+  return {
+    id: user.id,
+    email: user.email,
+    createdAt: user.createdAt,
+    emailVerified: user.emailVerified,
+  };
 }
 
 /**
