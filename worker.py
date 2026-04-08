@@ -600,6 +600,25 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
             sync=False
         )
 
+        # Persist the Vertex-assigned resource name so the cancel endpoint can
+        # call cancelCustomJob with the correct identifier. The app job_id (a
+        # client-generated UUID) is NOT a valid Vertex AI customJobs id, so
+        # cancellation by app id will silently fail. resource_name takes the
+        # form: projects/{p}/locations/{l}/customJobs/{vertex_numeric_id}
+        vertex_job_name = getattr(job, "resource_name", None)
+        if vertex_job_name:
+            db.collection('jobs').document(job_id).set(
+                {"vertexJobName": vertex_job_name}, merge=True
+            )
+            logger.info(
+                f"Stored Vertex resource name for job {job_id}: {vertex_job_name}"
+            )
+        else:
+            logger.warning(
+                f"Vertex AI did not return a resource_name for job {job_id}; "
+                "cancellation will be a no-op"
+            )
+
         logger.info("Job submitted to Vertex AI.")
 
     except Exception as e:
