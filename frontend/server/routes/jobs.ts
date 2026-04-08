@@ -134,7 +134,8 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
 });
 
 // 4. Export Outlier Results as CSV
-router.get("/jobs/:id/export", requireAuth, downloadLimiter, validateJobId, async (req: Request, res: Response) => {
+// Mounted at /api/jobs, so this becomes GET /api/jobs/:id/export
+router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -146,6 +147,11 @@ router.get("/jobs/:id/export", requireAuth, downloadLimiter, validateJobId, asyn
     }
 
     const job = doc.data();
+
+    // Enforce job ownership - prevent users from exporting other users' data
+    if (job.userId && job.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
 
     // Only export completed jobs
     if (job.status !== 'complete') {
@@ -183,7 +189,8 @@ router.get("/jobs/:id/export", requireAuth, downloadLimiter, validateJobId, asyn
 });
 
 // 5. Cancel Job with Full Resource Cleanup
-router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res: Response) => {
+// Mounted at /api/jobs, so this becomes DELETE /api/jobs/:id
+router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -195,6 +202,12 @@ router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res:
     }
 
     const job = doc.data();
+
+    // Enforce job ownership - prevent users from canceling other users' jobs
+    if (job.userId && job.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
     const gcsFileName = job.gcsFileName || job.file; // Check both possible fields
 
     // 1. Delete GCS uploaded file (best-effort)
@@ -213,8 +226,11 @@ router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res:
     }
 
     // 2. Cancel Vertex AI job (best-effort, async)
-    // Note: May not stop job if already running, cancellation is best-effort
-    await cancelVertexAIJob(id);
+    // Note: May not stop job if already running, cancellation is best-effort.
+    // Use the actual server-generated Vertex resource name stored when the job
+    // was dispatched. If absent (e.g. local mode or job never reached Vertex),
+    // cancelVertexAIJob will skip the call.
+    await cancelVertexAIJob(job.vertexJobName, id);
 
     // 3. Update Firestore status to "canceled"
     await firestore.collection("jobs").doc(id).update({
@@ -237,7 +253,8 @@ router.delete("/jobs/:id", requireAuth, validateJobId, async (req: Request, res:
 
 // 6. Manual File Deletion (Completed Jobs)
 // Separate from cancellation endpoint (which is for running jobs)
-router.delete("/jobs/:id/files", requireAuth, validateJobId, async (req: Request, res: Response) => {
+// Mounted at /api/jobs, so this becomes DELETE /api/jobs/:id/files
+router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -249,6 +266,11 @@ router.delete("/jobs/:id/files", requireAuth, validateJobId, async (req: Request
     }
 
     const job = doc.data();
+
+    // Enforce job ownership - prevent users from deleting other users' files
+    if (job.userId && job.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
 
     // Only allow deletion of completed/failed jobs (not running jobs)
     if (!['complete', 'failed', 'canceled'].includes(job.status)) {
