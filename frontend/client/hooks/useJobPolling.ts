@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 
 interface JobStatus {
   jobId: string;
-  status: 'queued' | 'preprocessing' | 'training' | 'scoring' | 'complete' | 'error' | 'canceled';
+  // Must mirror worker.py's JobStatus enum - see StageIndicator for details.
+  status: 'queued' | 'processing' | 'training' | 'scoring' | 'complete' | 'error' | 'canceled';
   stageProgress?: number;  // 0-100 percent for current stage
   overallProgress?: number;  // 0-100 percent for entire job
   fileName?: string;
