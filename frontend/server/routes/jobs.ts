@@ -14,7 +14,7 @@ import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth } from '../middleware/auth';
-import { uploadLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
+import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
@@ -29,7 +29,7 @@ const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
 // 1. Get Signed URL for Upload
-router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req, res) => {
+router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();

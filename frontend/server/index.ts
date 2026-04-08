@@ -15,6 +15,7 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
 import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
@@ -101,7 +102,11 @@ export function createServer() {
       }
 
       const originalName = req.file.originalname;
-      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Use a UUID v4 for the job id so it matches the `validateJobId` UUID
+      // check on /api/jobs/job-status/:id. The previous
+      // `job_<timestamp>_<random>` format got rejected at polling time,
+      // leaving the fallback upload flow internally inconsistent.
+      const uniqueId = uuidv4();
 
       // Generate safe filename (discard user-provided name)
       const safeFilename = generateSafeFilename((req as any).user.id);
