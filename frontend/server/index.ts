@@ -53,6 +53,15 @@ const upload = multer({
 export function createServer() {
   const app = express();
 
+  // Trust the first proxy hop in production so Express sees the client
+  // protocol/IP forwarded by a TLS-terminating proxy (Cloud Run, Nginx, etc.).
+  // Without this, `cookie.secure: true` on the session causes express-session
+  // to refuse to issue session cookies (it sees req.secure === false), and
+  // every subsequent authenticated request returns 401.
+  if (env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
+
   // Security middleware - apply BEFORE routes
   app.use(corsConfig);
   app.use(helmetConfig);

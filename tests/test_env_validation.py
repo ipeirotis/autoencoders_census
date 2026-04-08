@@ -19,8 +19,10 @@ sys.modules['model.autoencoder'] = MagicMock()
 sys.modules['dataset.loader'] = MagicMock()
 sys.modules['features.transform'] = MagicMock()
 
-# Mock load_dotenv before importing worker
-with patch('dotenv.load_dotenv'):
+# Mock load_dotenv and google.cloud.firestore.Client before importing worker.
+# worker.py instantiates a Firestore client at module load time, which would
+# otherwise fail under CI where no Application Default Credentials are set.
+with patch('dotenv.load_dotenv'), patch('google.cloud.firestore.Client'):
     import worker
 
 
