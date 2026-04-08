@@ -630,12 +630,32 @@ def chow_liu_outliers(
 )
 @click.option("--data", help="data to take columns from", type=str, default="sadc_2017")
 @click.option(
+    "--drop_columns", help="columns to drop from the data", type=str, default=None
+)
+@click.option(
+    "--rename_columns", help="columns to rename from the data", type=str, default=None
+)
+@click.option(
+    "--interest_columns", help="columns to merge from the data", type=str, default=None
+)
+@click.option(
     "--target_features",
     help="features to condition samples on (comma separated)",
     type=str,
     default=None,
 )
-def generate(seed, prior, model_path, number_samples, output, data, target_features):
+def generate(
+    seed,
+    prior,
+    model_path,
+    number_samples,
+    output,
+    data,
+    drop_columns,
+    rename_columns,
+    interest_columns,
+    target_features,
+):
 
     set_seed(seed)
 
@@ -643,8 +663,27 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
     model = load_model(model_path)
     decoder = model.decoder
 
+    # Reuse the same dataset configuration as `train` so the feature schema
+    # (drops, renames, columns-of-interest) matches what the model was
+    # trained on. Otherwise the encoder receives a mismatched input shape.
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+
     logger.info(f"Loading data....")
-    data_loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
