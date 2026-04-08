@@ -15,7 +15,18 @@ export interface UploadResponse {
 }
 
 export interface JobStatus {
-  status: "uploading" | "processing" | "complete" | "error";
+  // "uploading" is a client-only idle state used by Index.tsx. The server
+  // reports the JobStatus enum values from worker.py (queued, processing,
+  // training, scoring, complete, error, canceled).
+  status:
+    | "uploading"
+    | "queued"
+    | "processing"
+    | "training"
+    | "scoring"
+    | "complete"
+    | "error"
+    | "canceled";
   stats?: any;
   outliers?: any[];
   error?: string;
@@ -35,11 +46,14 @@ async function getUploadUrl(filename: string, contentType: string) {
 }
 
 // 2. Upload File to GCS
-async function uploadToGcs(url: string, file: File) {
+// The Content-Type used for the PUT MUST match the one the server used when
+// signing the URL - otherwise GCS rejects the upload. The server echoes the
+// content type it signed with, so we use that value verbatim.
+async function uploadToGcs(url: string, file: File, contentType: string) {
   const res = await fetch(url, {
     method: "PUT",
     body: file,
-    headers: { "Content-Type": file.type },
+    headers: { "Content-Type": contentType },
   });
   if (!res.ok) throw new Error("Failed to upload file to storage");
 }
@@ -56,15 +70,18 @@ async function startJob(jobId: string, gcsFileName: string) {
 
 // Main Upload Function
 export async function uploadCsv(file: File): Promise<UploadResponse> {
-  // A. Get URL
-  const { url, jobId, gcsFileName } = await getUploadUrl(file.name, file.type);
-  
-  // B. Upload
-  await uploadToGcs(url, file);
-  
+  // A. Get URL - server returns the content type it used to sign the URL,
+  // which may differ from file.type (e.g. server falls back to text/csv
+  // when the browser reports something unrecognized or empty).
+  const { url, jobId, gcsFileName, contentType: signedContentType } =
+    await getUploadUrl(file.name, file.type || "text/csv");
+
+  // B. Upload using the same content type the server signed with
+  await uploadToGcs(url, file, signedContentType || "text/csv");
+
   // C. Start Job
   await startJob(jobId, gcsFileName);
-  
+
   return { jobId };
 }
 

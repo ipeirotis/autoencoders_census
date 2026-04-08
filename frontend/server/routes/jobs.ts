@@ -28,6 +28,12 @@ const pubsub = new PubSub();
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
+// Accepted CSV content types. Browsers (especially on Windows) can label
+// CSV files as application/vnd.ms-excel instead of text/csv, so we accept
+// both and fall back to text/csv for anything else.
+const ALLOWED_CSV_CONTENT_TYPES = ['text/csv', 'application/vnd.ms-excel'];
+const DEFAULT_CSV_CONTENT_TYPE = 'text/csv';
+
 // 1. Get Signed URL for Upload
 // WORK-12: Defense-in-depth CSV validation
 // Express layer (quick checks):
@@ -47,14 +53,23 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
     const jobId = uuidv4();
 
     // WORK-12: Content-Type validation (defensive, not strict)
-    // Some browsers send different MIME types for CSV files
-    if (contentType && contentType !== 'text/csv' && contentType !== 'application/vnd.ms-excel') {
-      logger.warn('Unexpected content type for CSV upload', {
-        contentType,
-        filename,
-        userId: (req as any).user.id
-      });
-      // Allow but log - browser MIME type detection is inconsistent
+    // Some browsers send different MIME types for CSV files. Use the client's
+    // content type when it is on the allow list so the signed URL accepts the
+    // subsequent PUT (GCS enforces an exact Content-Type match when one was
+    // specified at signing time). For unexpected values, warn and fall back
+    // to text/csv so the URL still works for standard CSV uploads.
+    let signedUrlContentType = DEFAULT_CSV_CONTENT_TYPE;
+    if (typeof contentType === 'string' && contentType.length > 0) {
+      if (ALLOWED_CSV_CONTENT_TYPES.includes(contentType)) {
+        signedUrlContentType = contentType;
+      } else {
+        logger.warn('Unexpected content type for CSV upload', {
+          contentType,
+          filename,
+          userId: (req as any).user.id
+        });
+        // Fall through using DEFAULT_CSV_CONTENT_TYPE
+      }
     }
 
     // Use safe filename - discard user-provided filename for storage path
@@ -67,10 +82,10 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
         version: "v4",
         action: "write",
         expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType: 'text/csv',  // Force CSV content type for GCS
+        contentType: signedUrlContentType,
       });
 
-    res.json({ url, jobId, gcsFileName, originalFilename: filename });
+    res.json({ url, jobId, gcsFileName, originalFilename: filename, contentType: signedUrlContentType });
   } catch (error) {
     logger.error("Error generating signed URL", {
       error: error instanceof Error ? error.message : String(error),
@@ -96,8 +111,13 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
     // Initialize Firestore document
+    // Use "queued" to match the worker's JobStatus state machine (worker.py):
+    // is_valid_transition(None, QUEUED) is True, and QUEUED is the only valid
+    // first status. Using any other string (e.g. "uploading") would cause the
+    // worker's first update_job_status() call to raise ValueError and leave
+    // the job stuck without ever transitioning to processing.
     await firestore.collection("jobs").doc(jobId).set({
-      status: "uploading", // Initial state
+      status: "queued", // Initial state (matches worker JobStatus.QUEUED)
       createdAt: new Date(),
       userId: (req as any).user.id,
     });
