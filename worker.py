@@ -98,6 +98,24 @@ class JobDocumentNotReadyError(Exception):
     """
 
 
+class JobInProgressError(Exception):
+    """
+    Raised when a duplicate Pub/Sub delivery arrives while another worker
+    is actively processing the same job (the job document is in a
+    non-terminal in-progress state - PROCESSING / TRAINING / SCORING -
+    but no idempotency marker has been written yet because the original
+    worker has not finished).
+
+    The outer callback() nacks the message on this exception so Pub/Sub
+    will redeliver later. Crucially, it does NOT write the idempotency
+    marker in this case: if the original worker later crashes and
+    leaves the job stuck in an in-progress state, a subsequent
+    redelivery must still be able to retry. Acking (and marking) a
+    duplicate that overlapped with an in-flight run would permanently
+    hide that recovery path - Codex P1 r3055316xxx.
+    """
+
+
 def check_idempotency(message_id: str) -> bool:
     """
     Read-only check: has this Pub/Sub message already been marked processed?
@@ -446,9 +464,73 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 raise JobDocumentNotReadyError(
                     f"Job {job_id} document not yet written, retry via nack"
                 ) from e
-            logger.warning(f"Failed to update status: {e}")
-            # Job is already in a later/terminal state (canceled, complete,
-            # processing, etc.) - skip processing to avoid duplicate work.
+
+            # The transition was rejected because the job is in a state
+            # other than QUEUED. Codex P1 (r3055316xxx) flagged a subtle
+            # bug here: on duplicate Pub/Sub delivery the branch below
+            # would simply `return`, and callback() would then write the
+            # idempotency marker and ack the message, preventing any
+            # future retry. If the ORIGINAL worker was still running and
+            # then crashed, the job would be permanently stuck because
+            # Pub/Sub has no message to redeliver anymore.
+            #
+            # Fix: read the current state and split by category.
+            #   - Terminal states (COMPLETE, ERROR, CANCELED): the work is
+            #     done by another worker, safe to let callback() ack and
+            #     mark the message as processed. Just return.
+            #   - In-progress states (PROCESSING, TRAINING, SCORING):
+            #     another worker may still be actively running (or may
+            #     have crashed mid-way). nack via JobInProgressError so
+            #     Pub/Sub redelivers and the next attempt either finds a
+            #     terminal state (if the other worker finished) or
+            #     retries cleanly.
+            #   - Anything else (unexpected): log and return without
+            #     raising. callback() will ack and the operator will
+            #     see the unusual state in the logs.
+            try:
+                snapshot = job_ref.get()
+                current_status = (
+                    snapshot.get('status') if snapshot.exists else None
+                )
+            except Exception as read_err:
+                logger.warning(
+                    f"Failed to read job {job_id} state after invalid "
+                    f"transition ({e}); treating as in-progress retry: "
+                    f"{read_err}"
+                )
+                raise JobInProgressError(
+                    f"Job {job_id} state unreadable after "
+                    f"invalid-transition; retrying via nack"
+                ) from e
+
+            terminal_states = {
+                JobStatus.COMPLETE.value,
+                JobStatus.ERROR.value,
+                JobStatus.CANCELED.value,
+            }
+            in_progress_states = {
+                JobStatus.PROCESSING.value,
+                JobStatus.TRAINING.value,
+                JobStatus.SCORING.value,
+            }
+            if current_status in terminal_states:
+                logger.info(
+                    f"Job {job_id} already in terminal state "
+                    f"{current_status}, skipping duplicate delivery"
+                )
+                return
+            if current_status in in_progress_states:
+                raise JobInProgressError(
+                    f"Job {job_id} is already {current_status}; duplicate "
+                    f"delivery nacked so a later redelivery can retry if "
+                    f"the active worker fails"
+                ) from e
+
+            logger.warning(
+                f"Job {job_id} in unexpected state "
+                f"{current_status!r} after failed PROCESSING transition "
+                f"({e}); acking and skipping"
+            )
             return
 
         # 1. Download from GCS
@@ -580,6 +662,13 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # Never swallow this: it must reach callback() so the message is
         # nacked for Pub/Sub redelivery. Do NOT mark the job ERROR - the
         # document doesn't even exist yet.
+        raise
+    except JobInProgressError:
+        # Never swallow this either: callback() must nack (not ack+mark)
+        # so Pub/Sub can redeliver if the original worker crashes.
+        # Writing status=ERROR here would ALSO be wrong - another worker
+        # is actively running this job and would see its next transition
+        # rejected as "ERROR -> TRAINING" / similar.
         raise
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
@@ -748,6 +837,20 @@ def callback(message):
             logger.warning(
                 f"Job {job_id} not ready yet, nacking for Pub/Sub redelivery: "
                 f"{not_ready}"
+            )
+            message.nack()
+            return
+        except JobInProgressError as in_progress:
+            # Codex P1 (r3055316xxx): this is a duplicate Pub/Sub delivery
+            # while another worker is still actively processing the same
+            # job. nack so Pub/Sub redelivers later - and critically do NOT
+            # call mark_message_processed, because if the original worker
+            # subsequently crashes we need the next redelivery to be able
+            # to retry. Acking a duplicate that overlapped an in-flight
+            # run would permanently hide that recovery path.
+            logger.warning(
+                f"Job {job_id} is already in progress on another worker, "
+                f"nacking duplicate delivery for retry: {in_progress}"
             )
             message.nack()
             return
