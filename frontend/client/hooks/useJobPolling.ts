@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 
+// Match the API_BASE convention used by frontend/client/utils/api.ts so
+// that split frontend/backend deployments reach the correct origin.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+
 interface JobStatus {
   jobId: string;
   status: 'queued' | 'processing' | 'training' | 'scoring' | 'complete' | 'error' | 'canceled';
@@ -33,7 +37,9 @@ export function useJobPolling(jobId: string | null) {
         throw new Error('Job ID is required');
       }
 
-      const response = await fetch(`/api/jobs/job-status/${jobId}`);
+      const response = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`, {
+        credentials: 'include',
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch job status');

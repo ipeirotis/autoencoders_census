@@ -217,7 +217,7 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
     if (!doc.exists) return res.status(404).json({ error: 'Job not found' });
 
     const job = doc.data();
-    if (job.userId && job.userId !== (req as any).user.id) {
+    if (job.userId !== (req as any).user.id) {
       return res.status(404).json({ error: 'Job not found' });
     }
     if (job.status !== 'complete') {
@@ -276,7 +276,7 @@ router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
       const snap = await tx.get(docRef);
       if (!snap.exists) throw new Error('NOT_FOUND');
       const job = snap.data() || {};
-      if (job.userId && job.userId !== userId) throw new Error('NOT_FOUND');
+      if (job.userId !== userId) throw new Error('NOT_FOUND');
       if (TERMINAL_STATUSES.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
       gcsFileName = job.gcsFileName || job.gcsPath || job.file;
       vertexJobName = job.vertexJobName;
@@ -319,7 +319,7 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Job not found' });
 
     const job = doc.data();
-    if (job.userId && job.userId !== (req as any).user.id) {
+    if (job.userId !== (req as any).user.id) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
@@ -328,7 +328,7 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
       return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
     }
 
-    const gcsFileName = job.gcsFileName || job.file;
+    const gcsFileName = job.gcsFileName || job.gcsPath || job.file;
     let filesDeleted = 0;
     let uploadDeleteFailed = false;
 
