@@ -23,7 +23,13 @@ export function StageIndicator({ currentStage }: StageIndicatorProps) {
     scoring: 'Scoring',
   };
 
-  const currentIndex = STAGES.indexOf(currentStage as typeof STAGES[number]);
+  // Terminal states mean all stages are done; indexOf returns -1 for these,
+  // so treat them as "past the last stage" so every badge shows completed.
+  const TERMINAL_STATES = new Set(['complete', 'error', 'canceled']);
+  const isTerminal = TERMINAL_STATES.has(currentStage);
+  const currentIndex = isTerminal
+    ? STAGES.length
+    : STAGES.indexOf(currentStage as typeof STAGES[number]);
 
   return (
     <div className="flex items-center gap-2">
