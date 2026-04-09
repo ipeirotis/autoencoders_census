@@ -38,15 +38,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from dataset.loader import DataLoader
 from features.transform import Table2Vector
-# NOTE: `evaluate.outliers` (which exposes compute_per_column_contributions)
-# imports TensorFlow at module scope via `model.base`. Importing it here
-# eagerly would defeat the lazy-load pattern that lets tests/utilities
-# `import worker` without TensorFlow installed. The helper is imported
-# inside process_upload_local instead.
 
 load_dotenv()
 
-# Configuration
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 SUBSCRIPTION_ID = os.getenv("PUBSUB_SUBSCRIPTION_ID")
@@ -58,14 +52,12 @@ db = firestore.Client(project=PROJECT_ID)
 
 
 class PubSubMessage(BaseModel):
-    """Pydantic model for validating Pub/Sub message payload."""
-    jobId: str = Field(..., min_length=1, description="Firestore job document ID")
-    bucket: str = Field(..., min_length=1, description="GCS bucket name")
-    file: str = Field(..., min_length=1, description="GCS file path")
+    jobId: str = Field(..., min_length=1)
+    bucket: str = Field(..., min_length=1)
+    file: str = Field(..., min_length=1)
 
 
 def validate_message(data: dict) -> PubSubMessage:
-    """Validate message fields, raise ValueError with clear error."""
     try:
         return PubSubMessage(**data)
     except ValidationError as e:
@@ -74,8 +66,6 @@ def validate_message(data: dict) -> PubSubMessage:
 
 
 def check_idempotency(message_id: str, job_id: str) -> bool:
-    """Check if message already processed using Firestore transaction.
-    Returns True if already processed, False if first time."""
     processed_ref = db.collection('processed_messages').document(message_id)
 
     @firestore.transactional
@@ -95,7 +85,6 @@ def check_idempotency(message_id: str, job_id: str) -> bool:
 
 
 class AckExtender:
-    """Periodically extends Pub/Sub message ack deadline during long-running jobs."""
     def __init__(self, message, interval_seconds=60):
         self.message = message
         self.interval = interval_seconds
@@ -122,7 +111,6 @@ class AckExtender:
             self.timer.cancel()
 
 
-# Job Status State Machine (WORK-08)
 from enum import Enum
 
 class JobStatus(str, Enum):
@@ -149,8 +137,7 @@ ALLOWED_TRANSITIONS = {
 def is_valid_transition(current_status, new_status):
     if current_status is None:
         try:
-            new = JobStatus(new_status)
-            return new == JobStatus.QUEUED
+            return JobStatus(new_status) == JobStatus.QUEUED
         except ValueError:
             return False
     try:
@@ -193,14 +180,12 @@ def validate_environment():
     missing = [name for name, value in required_vars.items() if not value]
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
-        logger.error("Set these variables before starting the worker.")
         sys.exit(1)
     logger.info("Environment validation passed.")
     return True
 
 
 def validate_csv(csv_bytes, max_size_mb=100):
-    """Validate CSV encoding, structure, and size."""
     size_mb = len(csv_bytes) / (1024 * 1024)
     if size_mb > max_size_mb:
         raise ValueError(f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
@@ -213,12 +198,7 @@ def validate_csv(csv_bytes, max_size_mb=100):
         encoding = 'utf-8'
 
     try:
-        chunk_iterator = pd.read_csv(
-            io.BytesIO(csv_bytes),
-            encoding=encoding,
-            chunksize=10000,
-            engine='python'
-        )
+        chunk_iterator = pd.read_csv(io.BytesIO(csv_bytes), encoding=encoding, chunksize=10000, engine='python')
         first_chunk = next(chunk_iterator)
         expected_columns = len(first_chunk.columns)
         total_rows = len(first_chunk)
@@ -243,8 +223,8 @@ def validate_csv(csv_bytes, max_size_mb=100):
 
 
 def process_upload_local(job_id, bucket_name, file_path, message):
-    """Process the uploaded CSV locally: download from GCS, train autoencoder,
-    score outliers, and write results to Firestore."""
+    """Process the uploaded CSV locally."""
+    # Lazy imports - TF must not be loaded at module scope
     from model.autoencoder import AutoencoderModel
     from evaluate.outliers import compute_per_column_contributions
     import tensorflow as tf
@@ -273,10 +253,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             logger.info(f"CSV validation passed: {row_count} rows, {col_count} columns, {encoding} encoding")
         except ValueError as e:
             transaction = db.transaction()
-            update_job_status(transaction, job_ref, JobStatus.ERROR, {
-                'error': str(e),
-                'errorType': 'validation'
-            })
+            update_job_status(transaction, job_ref, JobStatus.ERROR, {'error': str(e), 'errorType': 'validation'})
             logger.error(f"CSV validation failed for job {job_id}: {e}")
             return
 
@@ -288,12 +265,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         df = loader.load_original_data(csv_bytes)
         logger.info(f"Loaded CSV data. Shape: {df.shape}")
 
-        stats = {
-            "total_rows": len(df),
-            "kept_columns": [],
-            "ignored_columns": []
-        }
-
+        stats = {"total_rows": len(df), "kept_columns": [], "ignored_columns": []}
         process_df = df.fillna("missing").astype(str)
 
         cols_to_keep = []
@@ -302,23 +274,21 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             if unique_count > 1 and unique_count <= 9:
                 cols_to_keep.append(col)
                 stats["kept_columns"].append({
-                    "name": col,
-                    "type": str(df[col].dtype),
+                    "name": col, "type": str(df[col].dtype),
                     "unique_values": unique_count,
                     "missing_values": int(df[col].isin(["NA", "nan", "missing"]).sum())
                 })
             else:
                 stats["ignored_columns"].append({
-                    "name": col,
-                    "unique_values": unique_count,
+                    "name": col, "unique_values": unique_count,
                     "missing_values": int(df[col].isin(["NA", "nan", "missing"]).sum())
                 })
 
         process_df = process_df[cols_to_keep]
-        logger.info(f"After Rule of 9: {process_df.shape} (kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})")
+        logger.info(f"After Rule of 9: {process_df.shape}")
 
         if process_df.shape[1] == 0:
-            raise ValueError("All columns were dropped by Rule of 9 filter. No columns have 2-9 unique values.")
+            raise ValueError("All columns were dropped by Rule of 9 filter.")
 
         model_variable_types = {col: 'categorical' for col in process_df.columns}
         vectorizer = Table2Vector(model_variable_types)
@@ -332,8 +302,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         model_config = {
             "learning_rate": 0.001,
             "latent_space_dim": max(2, int(input_dim * 0.1)),
-            "encoder_layers": 2,
-            "decoder_layers": 2,
+            "encoder_layers": 2, "decoder_layers": 2,
             "encoder_units_1": int(input_dim * 0.5),
             "decoder_units_1": int(input_dim * 0.5)
         }
@@ -341,9 +310,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
         transaction = db.transaction()
-        update_job_status(transaction, job_ref, JobStatus.TRAINING, {
-            'stage': 'Training autoencoder model'
-        })
+        update_job_status(transaction, job_ref, JobStatus.TRAINING, {'stage': 'Training autoencoder model'})
 
         class CancellationCallback(tf.keras.callbacks.Callback):
             def on_epoch_end(self, epoch, logs=None):
@@ -352,73 +319,51 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                     self.model.stop_training = True
 
         logger.info("Training autoencoder...")
-        keras_model.fit(
-            X_train, X_train,
-            epochs=15, batch_size=32, verbose=2,
-            validation_data=(X_test, X_test),
-            callbacks=[CancellationCallback()]
-        )
+        keras_model.fit(X_train, X_train, epochs=15, batch_size=32, verbose=2,
+                        validation_data=(X_test, X_test), callbacks=[CancellationCallback()])
 
         if is_job_canceled(job_id):
             logger.info(f"Job {job_id} was canceled after training, aborting scoring")
             return
 
         transaction = db.transaction()
-        update_job_status(transaction, job_ref, JobStatus.SCORING, {
-            'stage': 'Computing outlier scores'
-        })
+        update_job_status(transaction, job_ref, JobStatus.SCORING, {'stage': 'Computing outlier scores'})
 
         from model.base import VAE
-
         predictions = keras_model.predict(vectorized_df)
         if isinstance(predictions, list):
             predictions = predictions[0]
 
-        reconstruction_loss = VAE.reconstruction_loss(
-            cardinalities,
-            vectorized_df.to_numpy(),
-            predictions,
-        )
+        reconstruction_loss = VAE.reconstruction_loss(cardinalities, vectorized_df.to_numpy(), predictions)
         df['reconstruction_error'] = reconstruction_loss.numpy()
 
-        # Get top outliers and compute per-column contributions.
-        # Reuse the batch `predictions` computed above rather than calling
-        # keras_model.predict per row (up to 100 redundant forward passes).
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
 
-        # Convert predictions to a numpy array for positional slicing.
         predictions_np = predictions if isinstance(predictions, np.ndarray) else np.array(predictions)
         vectorized_np = vectorized_df.to_numpy()
 
-        # Cap per-outlier contributions to the top N columns by percentage.
-        # This bounds the Firestore document payload: with 100 outliers and
-        # many kept columns, the full contribution list can push the job
-        # document past Firestore's 1 MiB limit. Top-10 preserves the most
-        # informative attribution data while keeping the payload bounded.
         MAX_CONTRIBUTIONS_PER_OUTLIER = 10
 
         outliers_data = []
         for idx, row in top_outliers.iterrows():
-            # Slice the already-computed batch predictions by positional index.
             row_data = vectorized_np[idx:idx+1]
             row_pred = predictions_np[idx:idx+1]
 
             contributions = compute_per_column_contributions(
-                row_data,
-                row_pred,
-                cardinalities,
-                list(process_df.columns)
-            )
+                row_data, row_pred, cardinalities, list(process_df.columns))
 
-            # Store per-row metadata under a reserved `__meta` namespace so it
-            # cannot silently overwrite a user-uploaded column with the same name.
-            # Contributions are sorted descending and capped to limit payload.
             sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
             capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
 
-            outlier_record = row.to_dict()
-            outlier_record['__meta'] = {
+            # Structurally separate user data from system metadata.
+            # User columns live under `data`; system keys (reconstruction_error,
+            # contributions) live at the top level. This makes key collisions
+            # with arbitrary user column names impossible.
+            row_dict = row.to_dict()
+            outlier_record = {
+                'data': row_dict,
+                'reconstruction_error': float(row_dict.get('reconstruction_error', 0)),
                 'contributions': [
                     {'column': col, 'percentage': float(pct)}
                     for col, pct in capped_contribs
@@ -429,11 +374,8 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         transaction = db.transaction()
         job_ref = db.collection('jobs').document(job_id)
         update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
-            'stats': stats,
-            'outliers': outliers_data,
-            'processedAt': firestore.SERVER_TIMESTAMP
+            'stats': stats, 'outliers': outliers_data, 'processedAt': firestore.SERVER_TIMESTAMP
         })
-
         logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
 
     except Exception as e:
@@ -458,61 +400,31 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
     try:
         logger.info(f"Starting Vertex AI job {job_id}")
         container_uri = f"us-central1-docker.pkg.dev/{PROJECT_ID}/autoencoder-repo/trainer:v1"
-        logger.info(f"Target Image: {container_uri}")
 
-        aiplatform.init(
-            project=PROJECT_ID,
-            location="us-central1",
-            staging_bucket="gs://autoencoders-census-staging"
-        )
+        aiplatform.init(project=PROJECT_ID, location="us-central1",
+                        staging_bucket="gs://autoencoders-census-staging")
 
         job = aiplatform.CustomContainerTrainingJob(
-            display_name=f"autoencoder-{job_id}",
-            container_uri=container_uri
-        )
+            display_name=f"autoencoder-{job_id}", container_uri=container_uri)
 
         job.run(
-            args=[
-                f"--job-id={job_id}",
-                f"--bucket-name={bucket_name}",
-                f"--file-path={file_path}"
-            ],
-            replica_count=1,
-            service_account="203111407489-compute@developer.gserviceaccount.com",
-            machine_type="n1-standard-4",
-            sync=False
-        )
+            args=[f"--job-id={job_id}", f"--bucket-name={bucket_name}", f"--file-path={file_path}"],
+            replica_count=1, service_account="203111407489-compute@developer.gserviceaccount.com",
+            machine_type="n1-standard-4", sync=False)
 
         vertex_job_name = getattr(job, "resource_name", None)
         if vertex_job_name:
-            db.collection('jobs').document(job_id).set(
-                {"vertexJobName": vertex_job_name}, merge=True
-            )
-            logger.info(
-                f"Stored Vertex training pipeline resource name for job {job_id}: "
-                f"{vertex_job_name}"
-            )
+            db.collection('jobs').document(job_id).set({"vertexJobName": vertex_job_name}, merge=True)
+            logger.info(f"Stored Vertex training pipeline resource name for job {job_id}: {vertex_job_name}")
 
-            # Reconciliation: cancel the pipeline if the job was canceled
-            # while we were submitting (the cancel API would have found no
-            # vertexJobName and skipped the Vertex cancel).
             if is_job_canceled(job_id):
-                logger.info(
-                    f"Job {job_id} was canceled during Vertex submission, "
-                    "canceling the just-submitted pipeline"
-                )
+                logger.info(f"Job {job_id} was canceled during Vertex submission, canceling pipeline")
                 try:
                     job.cancel()
                 except Exception as cancel_err:
-                    logger.warning(
-                        f"Failed to cancel Vertex pipeline after late cancel "
-                        f"detection for job {job_id}: {cancel_err}"
-                    )
+                    logger.warning(f"Failed to cancel Vertex pipeline after late cancel detection for job {job_id}: {cancel_err}")
         else:
-            logger.warning(
-                f"Vertex AI did not return a resource_name for job {job_id}; "
-                "cancellation will be a no-op"
-            )
+            logger.warning(f"Vertex AI did not return a resource_name for job {job_id}; cancellation will be a no-op")
 
         logger.info("Job submitted to Vertex AI.")
 
@@ -532,7 +444,6 @@ _processing_mode = "local"
 
 
 def callback(message):
-    """Pub/Sub callback: runs whenever a message arrives."""
     try:
         logger.info(f"Received message: {message.data}")
         data = json.loads(message.data.decode("utf-8"))
@@ -568,10 +479,8 @@ def callback(message):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pub/Sub worker for survey processing")
-    parser.add_argument(
-        "--mode", choices=["local", "vertex"], default="local",
-        help="Processing mode: 'local' runs ML locally, 'vertex' dispatches to Vertex AI (default: local)"
-    )
+    parser.add_argument("--mode", choices=["local", "vertex"], default="local",
+                        help="Processing mode: 'local' or 'vertex' (default: local)")
     args = parser.parse_args()
     _processing_mode = args.mode
 
@@ -579,7 +488,6 @@ if __name__ == "__main__":
 
     subscriber = pubsub_v1.SubscriberClient()
     subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_ID)
-
     logger.info(f"Listening for jobs on {subscription_path}...")
     logger.info(f"Processing mode: {_processing_mode}")
 
