@@ -759,6 +759,14 @@ def is_job_canceled(job_id):
         return False
 
 
+def _safe_float(value, default=0.0):
+    """Convert value to float, returning default for non-numeric inputs."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def process_upload_local(job_id, bucket_name, file_path, message):
     """
     Process the uploaded CSV locally: download from GCS, train autoencoder,
@@ -1161,7 +1169,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             row_dict = row.to_dict()
             outlier_record = {
                 'data': row_dict,
-                'reconstruction_error': float(row_dict.get('reconstruction_error', 0)),
+                'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
                 'contributions': [
                     {'column': col, 'percentage': float(pct)}
                     for col, pct in capped_contribs
