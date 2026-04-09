@@ -373,51 +373,90 @@ def validate_csv(csv_bytes, max_size_mb=100):
     if size_mb > max_size_mb:
         raise ValueError(f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
 
-    # WORK-09: Detect encoding
+    # WORK-09: Detect encoding. Try the chardet guess first, then fall back
+    # through a small list of Windows/Western European codecs before finally
+    # trying UTF-8. Doing the fallback as a candidate list (rather than just
+    # jumping to UTF-8 on low confidence) keeps real cp1252 files (smart
+    # quotes, em dashes, Windows Excel exports) decodable even when chardet
+    # hedges with a low-confidence Mac-* guess.
     detection = chardet.detect(csv_bytes[:100000])  # Sample first 100KB
-    encoding = detection['encoding']
-    confidence = detection['confidence']
+    detected_encoding = detection.get('encoding')
+    detected_confidence = detection.get('confidence') or 0.0
 
-    if confidence < 0.7:
-        logger.warning(f"Low encoding confidence: {confidence:.2f} for {encoding}, falling back to UTF-8")
-        encoding = 'utf-8'
+    # Only trust chardet's guess when it is confident. On low-confidence
+    # guesses (e.g. "MacLatin2" with 0.03 for a straight cp1252 file)
+    # we skip the guess entirely and fall through to the well-known
+    # Western European codecs - cp1252 is the real answer for almost
+    # every Excel-exported CSV on Windows, so trying it explicitly is
+    # more reliable than whatever obscure codec chardet picked.
+    candidate_encodings = []
+    if detected_encoding and detected_confidence >= 0.7:
+        candidate_encodings.append(detected_encoding)
+    else:
+        logger.warning(
+            f"Low encoding confidence: {detected_confidence:.2f} for "
+            f"{detected_encoding!r}, skipping the guess and trying "
+            f"standard fallback encodings"
+        )
+    for fallback in ("utf-8", "cp1252", "latin-1"):
+        if fallback not in candidate_encodings:
+            candidate_encodings.append(fallback)
 
     # WORK-10, WORK-13, WORK-14: Validate structure with streaming
-    try:
-        chunk_iterator = pd.read_csv(
-            io.BytesIO(csv_bytes),
-            encoding=encoding,
-            chunksize=10000,
-            engine='python'       # Better error messages, detects inconsistent columns
-        )
+    last_unicode_err = None
+    for candidate in candidate_encodings:
+        try:
+            chunk_iterator = pd.read_csv(
+                io.BytesIO(csv_bytes),
+                encoding=candidate,
+                chunksize=10000,
+                engine='python'       # Better error messages, detects inconsistent columns
+            )
 
-        first_chunk = next(chunk_iterator)
-        expected_columns = len(first_chunk.columns)
-        total_rows = len(first_chunk)
+            first_chunk = next(chunk_iterator)
+            expected_columns = len(first_chunk.columns)
+            total_rows = len(first_chunk)
 
-        # Validate subsequent chunks have same structure
-        for chunk in chunk_iterator:
-            if len(chunk.columns) != expected_columns:
-                raise ValueError(f"Inconsistent column count: expected {expected_columns}, got {len(chunk.columns)}")
-            total_rows += len(chunk)
+            # Validate subsequent chunks have same structure
+            for chunk in chunk_iterator:
+                if len(chunk.columns) != expected_columns:
+                    raise ValueError(
+                        f"Inconsistent column count: expected {expected_columns}, "
+                        f"got {len(chunk.columns)}"
+                    )
+                total_rows += len(chunk)
 
-        # Minimum data requirements
-        if total_rows < 10:
-            raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
-        if expected_columns < 2:
-            raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
+            # Minimum data requirements
+            if total_rows < 10:
+                raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
+            if expected_columns < 2:
+                raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
 
-        logger.info(f"CSV validation passed: {total_rows} rows, {expected_columns} columns, {encoding} encoding")
-        return encoding, expected_columns, total_rows
+            logger.info(
+                f"CSV validation passed: {total_rows} rows, {expected_columns} columns, "
+                f"{candidate} encoding"
+            )
+            return candidate, expected_columns, total_rows
 
-    except pd.errors.ParserError as e:
-        raise ValueError(f"CSV parsing error: {str(e)}")
-    except pd.errors.EmptyDataError as e:
-        raise ValueError("CSV file is empty")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"Encoding error with {encoding}: {str(e)}")
-    except StopIteration:
-        raise ValueError("CSV file is empty")
+        except UnicodeDecodeError as e:
+            last_unicode_err = e
+            logger.info(
+                f"Candidate encoding {candidate} rejected by read_csv: {e}; "
+                f"trying next candidate"
+            )
+            continue
+        except pd.errors.ParserError as e:
+            raise ValueError(f"CSV parsing error: {str(e)}")
+        except pd.errors.EmptyDataError:
+            raise ValueError("CSV file is empty")
+        except StopIteration:
+            raise ValueError("CSV file is empty")
+
+    # All candidate encodings failed with UnicodeDecodeError.
+    raise ValueError(
+        f"Encoding error: no candidate encoding from {candidate_encodings} "
+        f"could decode the CSV ({last_unicode_err})"
+    )
 
 
 def process_upload_local(job_id, bucket_name, file_path, message):
@@ -554,8 +593,14 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             return
 
         # 2. Load Data
+        # Codex P2 (r3055316yyy): pass the encoding detected by validate_csv
+        # so parsing uses the same codec as validation. Otherwise a valid
+        # cp1252 CSV (smart quotes, em dashes, non-ASCII categoricals) would
+        # pass validation but be silently decoded as Latin-1 or UTF-8 at
+        # parse time, corrupting categorical values and therefore the
+        # resulting outlier scores.
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
-        df = loader.load_original_data(csv_bytes)
+        df = loader.load_original_data(csv_bytes, encoding=encoding)
         logger.info(f"Loaded CSV data. Shape: {df.shape}")
 
         # 3. Calculate stats for the frontend 'Overview' tab
@@ -704,6 +749,77 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
 
     try:
         logger.info(f"Starting Vertex AI job {job_id}")
+
+        # Codex P1 (r3055399xxx): claim the job BEFORE launching the
+        # Vertex AI training job. Without this guard a duplicate Pub/Sub
+        # delivery would call job.run(sync=False) again and submit a
+        # second (billable) Vertex training job against the same jobId.
+        # The local path already has this guard; mirror it here so both
+        # modes are protected by the same state-machine claim.
+        #
+        # Use the same classification the local path uses for an invalid
+        # transition (see process_upload_local): a document-not-found
+        # error raises JobDocumentNotReadyError (nack for redelivery), a
+        # non-terminal in-progress state raises JobInProgressError (nack
+        # for redelivery so we never double-submit), a terminal state
+        # returns cleanly (the other worker already completed the job),
+        # and anything unexpected logs and returns.
+        job_ref = db.collection('jobs').document(job_id)
+        try:
+            transaction = db.transaction()
+            update_job_status(transaction, job_ref, JobStatus.PROCESSING)
+        except ValueError as e:
+            if "not found" in str(e):
+                raise JobDocumentNotReadyError(
+                    f"Job {job_id} document not yet written, retry via nack"
+                ) from e
+
+            try:
+                snapshot = job_ref.get()
+                current_status = (
+                    snapshot.get('status') if snapshot.exists else None
+                )
+            except Exception as read_err:
+                logger.warning(
+                    f"Failed to read job {job_id} state after invalid "
+                    f"transition ({e}); treating as in-progress retry: "
+                    f"{read_err}"
+                )
+                raise JobInProgressError(
+                    f"Job {job_id} state unreadable after "
+                    f"invalid-transition; retrying via nack"
+                ) from e
+
+            terminal_states = {
+                JobStatus.COMPLETE.value,
+                JobStatus.ERROR.value,
+                JobStatus.CANCELED.value,
+            }
+            in_progress_states = {
+                JobStatus.PROCESSING.value,
+                JobStatus.TRAINING.value,
+                JobStatus.SCORING.value,
+            }
+            if current_status in terminal_states:
+                logger.info(
+                    f"Job {job_id} already in terminal state "
+                    f"{current_status}, skipping duplicate Vertex dispatch"
+                )
+                return
+            if current_status in in_progress_states:
+                raise JobInProgressError(
+                    f"Job {job_id} is already {current_status}; duplicate "
+                    f"Vertex dispatch nacked to avoid double-submitting a "
+                    f"training job"
+                ) from e
+
+            logger.warning(
+                f"Job {job_id} in unexpected state "
+                f"{current_status!r} after failed PROCESSING transition "
+                f"({e}); acking and skipping Vertex dispatch"
+            )
+            return
+
         container_uri = f"us-central1-docker.pkg.dev/{PROJECT_ID}/autoencoder-repo/trainer:v1"
         logger.info(f"Target Image: {container_uri}")
 
@@ -732,6 +848,13 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
 
         logger.info("Job submitted to Vertex AI.")
 
+    except JobDocumentNotReadyError:
+        # Never swallow: callback() must nack for Pub/Sub redelivery.
+        raise
+    except JobInProgressError:
+        # Never swallow: callback() must nack without marking so a
+        # crashed-worker scenario can still retry on redelivery.
+        raise
     except Exception as e:
         logger.error(f"Failed to launch Vertex AI job: {e}")
 
