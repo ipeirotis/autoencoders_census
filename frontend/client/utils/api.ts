@@ -5,6 +5,10 @@
  * 1. getUploadUrl()  → POST /api/jobs/upload-url  → Gets signed GCS URL
  * 2. uploadToGcs()   → PUT to signed URL          → Uploads file directly to GCS
  * 3. startJob()      → POST /api/jobs/start-job   → Triggers Pub/Sub message
+ *
+ * All credentialed requests include the session cookie via
+ * `credentials: 'include'` so they work both same-origin and on cross-site
+ * deployments where the SPA and API live on different hosts.
  */
 export interface DemoResponse {
   message: string;
@@ -32,7 +36,32 @@ export interface JobStatus {
   error?: string;
 }
 
+/**
+ * Thrown when a job API request fails. Carries the HTTP status so callers
+ * can distinguish authentication failures (401, session expired - the user
+ * needs to log back in) from validation errors and from real server errors.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+
+async function parseError(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body?.details?.[0]?.message) return body.details[0].message;
+    if (typeof body?.error === "string") return body.error;
+  } catch {
+    // non-JSON error body, fall through
+  }
+  return fallback;
+}
 
 // 1. Get the Signed URL
 async function getUploadUrl(filename: string, contentType: string) {
@@ -42,7 +71,9 @@ async function getUploadUrl(filename: string, contentType: string) {
     credentials: "include",
     body: JSON.stringify({ filename, contentType }),
   });
-  if (!res.ok) throw new Error("Failed to get upload URL");
+  if (!res.ok) {
+    throw new ApiError(await parseError(res, "Failed to get upload URL"), res.status);
+  }
   return res.json();
 }
 
@@ -70,7 +101,9 @@ async function startJob(jobId: string, gcsFileName: string) {
     credentials: "include",
     body: JSON.stringify({ jobId, gcsFileName }),
   });
-  if (!res.ok) throw new Error("Failed to start processing job");
+  if (!res.ok) {
+    throw new ApiError(await parseError(res, "Failed to start processing job"), res.status);
+  }
 }
 
 // Main Upload Function
@@ -93,6 +126,8 @@ export async function checkJobStatus(jobId: string): Promise<JobStatus> {
   const res = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`, {
     credentials: "include",
   });
-  if (!res.ok) throw new Error("Failed to check job status");
+  if (!res.ok) {
+    throw new ApiError(await parseError(res, "Failed to check job status"), res.status);
+  }
   return res.json();
 }

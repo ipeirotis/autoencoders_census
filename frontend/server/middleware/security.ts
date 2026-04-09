@@ -36,6 +36,50 @@ function normalizeOrigin(value: string): string {
 const allowedOrigins = [normalizeOrigin(env.FRONTEND_URL)].filter(Boolean);
 
 /**
+ * CSRF defense via Origin-header verification.
+ *
+ * With `sameSite: 'none'` the session cookie rides cross-site requests, so
+ * a third-party HTML form can fire mutating POSTs (logout, start-job, etc.)
+ * with the victim's session attached. CORS blocks _reading_ the response
+ * but not the side effect.
+ *
+ * Fix: on mutating methods (POST/PUT/PATCH/DELETE), verify the Origin
+ * header against the allowlist. Browsers always send Origin on cross-origin
+ * requests, so a forged form POST from evil.com will carry
+ * `Origin: https://evil.com` and be rejected. Same-origin requests may
+ * omit Origin entirely — those are allowed because they can't be spoofed
+ * by a cross-site form. Non-browser clients (curl, server-to-server) also
+ * omit Origin and are safe because they don't carry browser cookies.
+ */
+import { Request, Response, NextFunction } from 'express';
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+export function csrfOriginCheck(req: Request, res: Response, next: NextFunction): void {
+  if (!MUTATING_METHODS.has(req.method)) {
+    next();
+    return;
+  }
+
+  const origin = req.get('origin');
+
+  // No Origin header = same-origin browser request or non-browser client.
+  // Both are safe to allow.
+  if (!origin) {
+    next();
+    return;
+  }
+
+  // Cross-origin: verify the origin is in the allowlist.
+  if (allowedOrigins.includes(origin)) {
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: 'Origin not allowed' });
+}
+
+/**
  * CORS configuration with origin whitelist
  * - Allows requests from whitelisted origins only
  * - Allows requests with no origin (mobile apps, curl)
