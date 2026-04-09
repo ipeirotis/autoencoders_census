@@ -25,9 +25,12 @@ async function validateFile(file: File): Promise<{ valid: boolean; error?: strin
     return { valid: false, error: 'Only CSV files are allowed' };
   }
 
-  // Check magic bytes (prevents .exe renamed to .csv)
-  const buffer = await file.arrayBuffer();
-  const type = await fileTypeFromBuffer(new Uint8Array(buffer));
+  // Check magic bytes (prevents .exe renamed to .csv).
+  // file-type only inspects the first few bytes, so read a small slice
+  // instead of buffering the entire file (up to 50 MB) into memory.
+  const MAGIC_BYTE_SAMPLE_SIZE = 4100; // file-type recommended minimum
+  const sample = await file.slice(0, MAGIC_BYTE_SAMPLE_SIZE).arrayBuffer();
+  const type = await fileTypeFromBuffer(new Uint8Array(sample));
 
   // CSV files are text/plain or text/csv, may not have magic bytes
   // If fileTypeFromBuffer returns undefined (text file), that's OK for CSV

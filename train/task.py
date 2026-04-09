@@ -132,7 +132,7 @@ def train_and_predict(job_id, bucket_name, file_path):
                     
                     top_outliers.loc[common_indices, col] = formatted_col
         except Exception as e:
-            logger.error(f"Failed to decocde reconstruction: {e}")
+            logger.error(f"Failed to decode reconstruction: {e}")
             # Continue without formatting if deserialization fails
             pass
         # --- END NEW ---
