@@ -1,6 +1,6 @@
 /**
  * Frontend API client - calls Express endpoints
- * 
+ *
  * This orchestrates the 3-step upload:
  * 1. getUploadUrl()  → POST /api/jobs/upload-url  → Gets signed GCS URL
  * 2. uploadToGcs()   → PUT to signed URL          → Uploads file directly to GCS
@@ -47,14 +47,17 @@ async function getUploadUrl(filename: string, contentType: string) {
 }
 
 // 2. Upload File to GCS
-// The Content-Type used for the PUT MUST match the one the server used when
-// signing the URL - otherwise GCS rejects the upload. The server echoes the
-// content type it signed with, so we use that value verbatim.
-async function uploadToGcs(url: string, file: File, contentType: string) {
+// The Content-Type used for the PUT MUST match whatever the server used
+// when signing the URL - otherwise GCS rejects the upload. The server
+// echoes nothing back; instead it signs using exactly the contentType
+// we sent in step 1 (or omits the constraint entirely if we sent an
+// empty one). We pass the same `file.type` through here for both calls,
+// so the PUT header always matches the signing value.
+async function uploadToGcs(url: string, file: File) {
   const res = await fetch(url, {
     method: "PUT",
     body: file,
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": file.type },
   });
   if (!res.ok) throw new Error("Failed to upload file to storage");
 }
@@ -72,14 +75,12 @@ async function startJob(jobId: string, gcsFileName: string) {
 
 // Main Upload Function
 export async function uploadCsv(file: File): Promise<UploadResponse> {
-  // A. Get URL - server returns the content type it used to sign the URL,
-  // which may differ from file.type (e.g. server falls back to text/csv
-  // when the browser reports something unrecognized or empty).
-  const { url, jobId, gcsFileName, contentType: signedContentType } =
-    await getUploadUrl(file.name, file.type || "text/csv");
+  // A. Get URL - pass file.type so the server signs for that exact
+  //    Content-Type (or omits the constraint if file.type is empty).
+  const { url, jobId, gcsFileName } = await getUploadUrl(file.name, file.type);
 
-  // B. Upload using the same content type the server signed with
-  await uploadToGcs(url, file, signedContentType || "text/csv");
+  // B. Upload (sends the same file.type header)
+  await uploadToGcs(url, file);
 
   // C. Start Job
   await startJob(jobId, gcsFileName);
