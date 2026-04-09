@@ -21,7 +21,7 @@ import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
-import { corsConfig, helmetConfig } from "./middleware/security";
+import { corsConfig, helmetConfig, csrfOriginCheck } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
 import { requireAuth } from "./middleware/auth";
 import { uploadLimiter } from "./middleware/rateLimits";
@@ -65,6 +65,7 @@ export function createServer() {
 
   // Security middleware - apply BEFORE routes
   app.use(corsConfig);
+  app.use(csrfOriginCheck); // Reject cross-origin mutating requests from unlisted origins (CSRF defense for sameSite=none)
   app.use(helmetConfig);
 
   app.use(express.json());
