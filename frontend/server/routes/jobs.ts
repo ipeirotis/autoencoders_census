@@ -9,7 +9,7 @@
  */
 
 import { Router } from "express";
-import { Storage } from "@google-cloud/storage";
+import { Storage, GetSignedUrlConfig } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
@@ -18,28 +18,27 @@ import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '.
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
+import { env } from '../config/env';
 
 const router = Router();
 const storage = new Storage();
 const firestore = new Firestore();
 const pubsub = new PubSub();
 
-// Configuration from Environment Variables
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
-const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
-
-// Accepted CSV content types. Browsers (especially on Windows) can label
-// CSV files as application/vnd.ms-excel instead of text/csv, so we accept
-// both and fall back to text/csv for anything else.
-const ALLOWED_CSV_CONTENT_TYPES = ['text/csv', 'application/vnd.ms-excel'];
-const DEFAULT_CSV_CONTENT_TYPE = 'text/csv';
+// Configuration from validated environment variables (see config/env.ts).
+// Using the validated `env` object instead of `process.env` directly so a
+// missing/misspelled topic or bucket fails fast at startup rather than at
+// first request with an opaque "topic not found" runtime error.
+const BUCKET_NAME = env.GCS_BUCKET_NAME;
+const TOPIC_ID = env.PUBSUB_TOPIC_ID;
 
 /**
  * WORK-12: Defense-in-depth CSV validation
  *
  * Express layer (quick checks):
  *   - File extension validation (.csv only) - handled by validateUploadUrl middleware
- *   - Content-Type validation (warn on unexpected types, allow for browser compatibility)
+ *   - Content-Type passthrough so the signed URL's Content-Type constraint
+ *     matches the client's subsequent PUT (see /upload-url handler).
  *
  * Worker layer (deep checks):
  *   - Encoding detection and validation (chardet)
@@ -64,40 +63,32 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
 
-    // WORK-12: Content-Type validation (defensive, not strict)
-    // Some browsers send different MIME types for CSV files. Use the client's
-    // content type when it is on the allow list so the signed URL accepts the
-    // subsequent PUT (GCS enforces an exact Content-Type match when one was
-    // specified at signing time). For unexpected values, warn and fall back
-    // to text/csv so the URL still works for standard CSV uploads.
-    let signedUrlContentType = DEFAULT_CSV_CONTENT_TYPE;
-    if (typeof contentType === 'string' && contentType.length > 0) {
-      if (ALLOWED_CSV_CONTENT_TYPES.includes(contentType)) {
-        signedUrlContentType = contentType;
-      } else {
-        logger.warn('Unexpected content type for CSV upload', {
-          contentType,
-          filename,
-          userId: (req as any).user.id
-        });
-        // Fall through using DEFAULT_CSV_CONTENT_TYPE
-      }
-    }
-
     // Use safe filename - discard user-provided filename for storage path
     const gcsFileName = generateSafeFilename((req as any).user.id);
+
+    // V4 signed URLs include Content-Type in the canonical request, so the
+    // client's PUT must send the exact same value the URL was signed for. If
+    // the client did not declare a contentType (e.g. browsers that report an
+    // empty MIME for `.csv` files), omit it from the signing options entirely
+    // so the signature does not constrain the Content-Type header. Otherwise
+    // sign for the exact value the client said it would send so they match -
+    // including Excel-era MIME types like `application/vnd.ms-excel` that
+    // Windows browsers routinely report for CSV files.
+    const signOptions: GetSignedUrlConfig = {
+      version: "v4",
+      action: "write",
+      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
+    };
+    if (typeof contentType === 'string' && contentType.length > 0) {
+      signOptions.contentType = contentType;
+    }
 
     const [url] = await storage
       .bucket(BUCKET_NAME)
       .file(gcsFileName)
-      .getSignedUrl({
-        version: "v4",
-        action: "write",
-        expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType: signedUrlContentType,
-      });
+      .getSignedUrl(signOptions);
 
-    res.json({ url, jobId, gcsFileName, originalFilename: filename, contentType: signedUrlContentType });
+    res.json({ url, jobId, gcsFileName, originalFilename: filename });
   } catch (error) {
     logger.error("Error generating signed URL", {
       error: error instanceof Error ? error.message : String(error),
@@ -111,6 +102,22 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
 router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req, res) => {
   try {
     const { jobId, gcsFileName } = req.body;
+    const userId = (req as any).user.id;
+
+    // Authorization: ensure the caller owns the file path. Signed URLs are
+    // issued under `uploads/<userId>/...` (see generateSafeFilename), so any
+    // gcsFileName outside that prefix was not minted for this user. Without
+    // this check, an authenticated user who learned another user's object
+    // path could trigger processing on files outside their namespace.
+    const expectedPrefix = `uploads/${userId}/`;
+    if (typeof gcsFileName !== 'string' || !gcsFileName.startsWith(expectedPrefix)) {
+      logger.warn("start-job rejected: gcsFileName outside caller namespace", {
+        jobId,
+        userId,
+        gcsFileName,
+      });
+      return res.status(403).json({ error: "Forbidden: file path does not belong to caller" });
+    }
 
     // The message format MUST match what worker.py expects
     const messageJson = {
@@ -120,19 +127,44 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     };
 
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
-    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    // Initialize Firestore document
-    // Use "queued" to match the worker's JobStatus state machine (worker.py):
-    // is_valid_transition(None, QUEUED) is True, and QUEUED is the only valid
-    // first status. Using any other string (e.g. "uploading") would cause the
-    // worker's first update_job_status() call to raise ValueError and leave
-    // the job stuck without ever transitioning to processing.
-    await firestore.collection("jobs").doc(jobId).set({
-      status: "queued", // Initial state (matches worker JobStatus.QUEUED)
-      createdAt: new Date(),
-      userId: (req as any).user.id,
-    });
+    // Atomically claim the job ID. Use Firestore's `create()` (not `set()`):
+    // it throws ALREADY_EXISTS if the doc is taken, which prevents an
+    // authenticated user who learned another user's job UUID (via logs,
+    // shared client state, etc.) from overwriting `userId`/status on the
+    // existing doc and locking the original owner out of /job-status/:id.
+    //
+    // The persisted status MUST be "queued" (JobStatus.QUEUED in worker.py),
+    // not "uploading". The worker's is_valid_transition(None, ...) state
+    // machine only accepts QUEUED as the valid first status - any other
+    // value would cause update_job_status(..., PROCESSING) to raise
+    // ValueError and leave the job stuck forever without ever running.
+    try {
+      await firestore.collection("jobs").doc(jobId).create({
+        status: "queued", // Initial state (matches worker JobStatus.QUEUED)
+        createdAt: new Date(),
+        userId,
+      });
+    } catch (createErr: any) {
+      // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
+      // existing document. Surface as 409 so the client knows the ID is
+      // taken without leaking ownership details.
+      if (createErr?.code === 6) {
+        logger.warn("start-job rejected: jobId already claimed", {
+          jobId,
+          userId,
+        });
+        return res.status(409).json({ error: "Job ID already exists" });
+      }
+      throw createErr;
+    }
+
+    // Only publish to Pub/Sub once the doc is successfully claimed, so a
+    // collision cannot enqueue work against someone else's job. Publishing
+    // after the Firestore write also closes the "worker runs before the
+    // job document exists" race - by the time the worker picks up the
+    // message, the queued doc is guaranteed to be there.
+    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
     res.json({ success: true, message: "Job started" });
   } catch (error) {
@@ -149,6 +181,7 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = (req as any).user.id;
     const doc = await firestore.collection("jobs").doc(id).get();
 
     if (!doc.exists) {
@@ -156,6 +189,19 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
     }
 
     const data = doc.data();
+
+    // Authorization: only the job owner can read its status/results.
+    // Return 404 (not 403) so callers cannot use the response code to confirm
+    // existence of someone else's job UUIDs.
+    if (!data || data.userId !== userId) {
+      logger.warn("job-status rejected: caller is not job owner", {
+        jobId: id,
+        userId,
+        ownerId: data?.userId,
+      });
+      return res.status(404).json({ status: "not_found" });
+    }
+
     res.json(data);
   } catch (error) {
     logger.error("Error checking status", {
