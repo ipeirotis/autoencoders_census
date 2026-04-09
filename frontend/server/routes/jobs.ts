@@ -9,7 +9,7 @@
  */
 
 import { Router } from "express";
-import { Storage } from "@google-cloud/storage";
+import { Storage, GetSignedUrlConfig } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { v4 as uuidv4 } from "uuid";
@@ -37,15 +37,25 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
     // Use safe filename - discard user-provided filename for storage path
     const gcsFileName = generateSafeFilename((req as any).user.id);
 
+    // V4 signed URLs include Content-Type in the canonical request, so the
+    // client's PUT must send the exact same value the URL was signed for. If
+    // the client did not declare a contentType (e.g. browsers that report an
+    // empty MIME for `.csv` files), omit it from the signing options entirely
+    // so the signature does not constrain the Content-Type header. Otherwise
+    // sign for the exact value the client said it would send so they match.
+    const signOptions: GetSignedUrlConfig = {
+      version: "v4",
+      action: "write",
+      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
+    };
+    if (typeof contentType === 'string' && contentType.length > 0) {
+      signOptions.contentType = contentType;
+    }
+
     const [url] = await storage
       .bucket(BUCKET_NAME)
       .file(gcsFileName)
-      .getSignedUrl({
-        version: "v4",
-        action: "write",
-        expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType: contentType || 'text/csv',
-      });
+      .getSignedUrl(signOptions);
 
     res.json({ url, jobId, gcsFileName, originalFilename: filename });
   } catch (error) {
