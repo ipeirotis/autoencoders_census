@@ -5,6 +5,8 @@ import { Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+
 interface DeleteJobDialogProps {
   jobId: string;
 }
@@ -18,8 +20,9 @@ export function DeleteJobDialog({ jobId }: DeleteJobDialogProps) {
     setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/jobs/${jobId}/files`, {
-        method: 'DELETE'
+      const response = await fetch(`${API_BASE}/api/jobs/${jobId}/files`, {
+        method: 'DELETE',
+        credentials: 'include',
       });
 
       if (!response.ok) {

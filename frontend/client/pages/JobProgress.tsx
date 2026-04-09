@@ -1,6 +1,9 @@
 import { useParams } from 'react-router-dom';
 import { useJobPolling } from '@/hooks/useJobPolling';
 import { useJobCancellation } from '@/hooks/useJobCancellation';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+
 import { StageIndicator } from '@/components/progress/StageIndicator';
 import { DualProgressBar } from '@/components/progress/DualProgressBar';
 import { JobMetadata } from '@/components/progress/JobMetadata';
@@ -178,7 +181,7 @@ export default function JobProgress() {
 
                   {/* Download button - hidden if expired */}
                   {!isJobExpired(job.createdAt) && !job.filesExpired && (
-                    <Button onClick={() => window.location.href = `/api/jobs/${id}/export`}>
+                    <Button onClick={() => window.location.href = `${API_BASE}/api/jobs/${id}/export`}>
                       Download Results CSV
                     </Button>
                   )}

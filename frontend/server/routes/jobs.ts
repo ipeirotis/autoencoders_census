@@ -241,15 +241,22 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
     res.attachment(`outliers-${id}.csv`);
 
     // Outlier records separate user data (`data` sub-object) from system metadata.
+    // Include reconstruction_error in export even if stored at top level only.
     const firstRow = outliers.length > 0 ? (outliers[0].data || outliers[0]) : {};
     const columnKeys: string[] = Object.keys(firstRow);
+    if (!columnKeys.includes('reconstruction_error') && outliers.length > 0 && outliers[0].reconstruction_error != null) {
+      columnKeys.push('reconstruction_error');
+    }
     const sanitizedHeaders = columnKeys.map((key) => String(sanitizeFormulaInjection(key)));
 
     const csvStream = format({ headers: sanitizedHeaders });
     csvStream.pipe(res);
     outliers.forEach((row: any) => {
       const rowData = row.data || row;
-      csvStream.write(columnKeys.map((key) => sanitizeFormulaInjection(rowData[key])));
+      csvStream.write(columnKeys.map((key) => {
+        const val = rowData[key] ?? row[key];
+        return sanitizeFormulaInjection(val);
+      }));
     });
     csvStream.end();
   } catch (error) {
