@@ -121,11 +121,14 @@ export default function Index() {
 
   const getOrderedHeaders = (row: any) => {
     if (!row) return [];
-    const allHeaders = Object.keys(row);
-    
+    // Outlier records may nest user columns under `data` (Phase 4 format)
+    // or keep them flat (legacy format). Handle both.
+    const source = row.data && typeof row.data === 'object' ? row.data : row;
+    const allHeaders = Object.keys(source);
+
     // Remove 'reconstruction_error' from the list
     const dataHeaders = allHeaders.filter(h => h !== 'reconstruction_error');
-    
+
     // Put 'reconstruction_error' at the very start
     return ['reconstruction_error', ...dataHeaders];
   };
@@ -220,7 +223,17 @@ export default function Index() {
               {/* [STEP 2] Update the headers prop here */}
               <PreviewErrorBoundary>
                 <PreviewTable
-                  rows={results}
+                  rows={results.map((r: any) => {
+                    // Flatten nested data/metadata structure for display.
+                    // Phase 4 outlier records nest user columns under `data`;
+                    // legacy records keep them flat. Merge both into a flat
+                    // object so PreviewTable can render column values directly.
+                    if (r.data && typeof r.data === 'object') {
+                      const { data, contributions, ...meta } = r;
+                      return { ...data, ...meta };
+                    }
+                    return r;
+                  })}
                   headers={getOrderedHeaders(results[0])}
                   totalRows={results.length}
                 />

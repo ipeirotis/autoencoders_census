@@ -278,7 +278,7 @@ router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
       const job = snap.data() || {};
       if (job.userId && job.userId !== userId) throw new Error('NOT_FOUND');
       if (TERMINAL_STATUSES.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
-      gcsFileName = job.gcsFileName || job.file;
+      gcsFileName = job.gcsFileName || job.gcsPath || job.file;
       vertexJobName = job.vertexJobName;
       tx.update(docRef, { status: 'canceled', canceledAt: new Date() });
     });
