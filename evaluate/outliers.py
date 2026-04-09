@@ -114,14 +114,14 @@ def compute_per_column_contributions(
         ]
     else:
         contributions = [
-            (column_names[i], (per_attr_losses[i] / total_loss) * 100.0)
+            (column_names[i], float((per_attr_losses[i] / total_loss) * 100.0))
             for i in range(len(per_attr_losses))
         ]
 
     # Normalize to exactly 100% (address potential floating-point rounding issues)
     total_pct = sum(pct for _, pct in contributions)
     contributions = [
-        (col, (pct / total_pct) * 100.0)
+        (col, float((pct / total_pct) * 100.0))
         for col, pct in contributions
     ]
 

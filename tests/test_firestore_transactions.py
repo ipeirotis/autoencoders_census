@@ -21,7 +21,7 @@ class TestFirestoreTransactions:
     def test_update_job_status_atomically_validates_transition(self):
         """Test 1: update_job_status() atomically reads current status and validates transition"""
         # Use Mock instead of real Transaction to avoid commit issues
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -49,7 +49,7 @@ class TestFirestoreTransactions:
     def test_update_job_status_raises_error_for_invalid_transition(self):
         """Test 2: update_job_status() raises ValueError for invalid transitions"""
         # Create mock transaction with required internal attributes
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -77,7 +77,7 @@ class TestFirestoreTransactions:
         # This tests Firestore's built-in retry mechanism via @firestore.transactional decorator
         # We verify the function is decorated and can be called multiple times
 
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -108,7 +108,7 @@ class TestFirestoreTransactions:
 
     def test_transaction_function_is_pure(self):
         """Test 4: Transaction function is pure (no external state mutations)"""
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -137,7 +137,7 @@ class TestFirestoreTransactions:
 
     def test_update_job_status_preserves_additional_fields(self):
         """Test 5: update_job_status() preserves additional_fields in update"""
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -172,7 +172,7 @@ class TestFirestoreTransactions:
 
     def test_update_job_status_raises_error_when_job_not_found(self):
         """Test that update_job_status raises ValueError when job document doesn't exist"""
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
@@ -193,7 +193,7 @@ class TestFirestoreTransactions:
 
     def test_update_job_status_logs_transition(self):
         """Test that update_job_status logs the status transition"""
-        mock_transaction = Mock(spec=firestore.Transaction)
+        mock_transaction = MagicMock()
         mock_transaction._read_only = False
         mock_transaction._id = b"test-transaction-id"
         mock_transaction._max_attempts = 5
