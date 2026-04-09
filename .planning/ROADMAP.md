@@ -11,7 +11,7 @@ This roadmap transforms the existing functional AutoEncoder platform into a prod
 ## Phases
 
 - [x] **Phase 1: Security Foundation** - Block deployment vulnerabilities before public access
-- [ ] **Phase 2: Worker Reliability** - Prevent race conditions and quota waste in async processing
+- [x] **Phase 2: Worker Reliability** - Prevent race conditions and quota waste in async processing
 - [ ] **Phase 3: Frontend Production** - Enable graceful error handling and user feedback for long jobs
 - [ ] **Phase 4: Operational Features** - Add export, cleanup, and GitHub workflow capabilities
 
@@ -64,9 +64,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Message validation, idempotency, ack deadline extension
-- [ ] 02-02-PLAN.md — Transactional status updates and state machine validation
-- [ ] 02-03-PLAN.md — CSV validation with encoding detection and edge case handling
+- [x] 02-01-PLAN.md — Message validation, idempotency, ack deadline extension (COMPLETE - 2026-04-05)
+- [x] 02-02-PLAN.md — Transactional status updates and state machine validation (COMPLETE - 2026-04-05)
+- [x] 02-03-PLAN.md — CSV validation with encoding detection and edge case handling (COMPLETE - 2026-04-05)
 
 ---
 
@@ -85,25 +85,46 @@ Plans:
 5. Application builds successfully with all dependencies installed (no missing lib/utils.ts, react-router-dom, serverless-http)
 6. TypeScript strict mode catches type errors at compile time without unsafe assertions
 
-**Plans**: TBD
+**Plans**: 7 plans (6 original + 1 gap closure)
+
+Plans:
+- [ ] 03-01-PLAN.md — Build infrastructure and GCP client consolidation (Wave 1)
+- [ ] 03-02-PLAN.md — React error boundaries for graceful error recovery (Wave 1)
+- [ ] 03-03A-PLAN.md — Multi-stage progress tracking (Wave 2)
+- [ ] 03-03B-PLAN.md — Job cancellation UI and API (Wave 3)
+- [ ] 03-04A-PLAN.md — TypeScript strict mode (noImplicitAny) (Wave 1)
+- [x] 03-04B-PLAN.md — Streaming CSV parser with Papa Parse and unified file validation (Wave 1) (COMPLETE - 2026-04-06)
+- [ ] 03-05-PLAN.md — Close build failure gap (missing @radix-ui/react-alert-dialog) (Wave 4)
 
 ---
 
 ### Phase 4: Operational Features
-**Goal**: Users can export results, cancel jobs with resource cleanup, and maintainer understands GitHub PR workflow for ongoing collaboration.
+**Goal**: Users can export results, cancel jobs with resource cleanup, see per-column contribution scores, and maintainer understands GitHub PR workflow for ongoing collaboration.
 
 **Depends on**: Phase 3 (export and cancellation features integrate with frontend UI)
 
-**Requirements**: OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, OPS-10, OPS-11, OPS-12, OPS-13, OPS-14, GH-01, GH-02, GH-03, GH-04, GH-05 (19 requirements)
+**Requirements**: OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, OPS-10, OPS-12, OPS-13, OPS-14, GH-01, GH-02, GH-03, GH-04, GH-05 (18 requirements in v1.0)
+
+**Deferred to v1.1**: OPS-11 (failed-rows CSV export with per-row error descriptions)
 
 **Success Criteria** (what must be TRUE):
 1. User can download outlier results as CSV file without Excel formula injection risk
 2. Canceled jobs clean up GCS files and cancel running Vertex AI jobs (not just Firestore flag)
-3. Old uploaded files and results automatically delete after retention period (GCS lifecycle rules active)
+3. Old uploaded files and results automatically delete after 7-day retention period (GCS lifecycle rules active)
 4. User can see per-column outlier contribution scores in results UI (which survey questions were anomalous)
 5. Maintainer understands branch strategy, commit conventions, and PR review process for collaborating with IliasTriant
 
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+- [x] 04-00-PLAN.md — Test Infrastructure Setup (Wave 0) (COMPLETE - 2026-04-06)
+- [x] 04-01-PLAN.md — CSV export with formula injection protection (Wave 1: OPS-01, OPS-02, OPS-03) (COMPLETE - 2026-04-06)
+- [x] 04-02-PLAN.md — Job cancellation with GCS + Vertex AI cleanup (Wave 1: OPS-04, OPS-05, OPS-06) (COMPLETE - 2026-04-06)
+- [x] 04-03-PLAN.md — GCS lifecycle rules & expired job handling (Wave 1: OPS-07, OPS-08, OPS-13) (COMPLETE - 2026-04-07)
+- [ ] 04-04-PLAN.md — Per-column contribution scores backend (Wave 1: OPS-09, OPS-10, OPS-14)
+- [ ] 04-05-PLAN.md — Per-column contribution scores UI (Wave 2: OPS-09, OPS-10)
+- [ ] 04-06-PLAN.md — Expired job UI & manual file deletion (Wave 2: OPS-12)
+- [x] 04-07-PLAN.md — GitHub collaboration workflow documentation (Wave 1: GH-01, GH-02, GH-03, GH-04, GH-05) (COMPLETE - 2026-04-06)
 
 ---
 
@@ -112,25 +133,25 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Security Foundation | 6/7 | In Progress | - |
-| 2. Worker Reliability | 0/3 | Not started | - |
-| 3. Frontend Production | 0/TBD | Not started | - |
-| 4. Operational Features | 0/TBD | Not started | - |
+| 2. Worker Reliability | 3/3 | Complete | 2026-04-05 |
+| 3. Frontend Production | 1/7 | In Progress | - |
+| 4. Operational Features | 4/8 | In Progress | - |
 
 ---
 
 ## Coverage Validation
 
-**Total v1.0 requirements**: 71
+**Total v1.0 requirements**: 70 (OPS-11 deferred to v1.1)
 - Security Hardening (SEC): 16 requirements → Phase 1
 - Worker Reliability (WORK): 14 requirements → Phase 2
 - Frontend Production (FE): 22 requirements → Phase 3
-- Operational Features (OPS): 14 requirements → Phase 4
+- Operational Features (OPS): 13 requirements → Phase 4 (OPS-11 deferred)
 - GitHub Best Practices (GH): 5 requirements → Phase 4
 
-**Mapped to phases**: 71/71 (100%)
-**Unmapped**: 0
+**Mapped to v1.0 phases**: 70/70 (100%)
+**Deferred to v1.1**: 1 (OPS-11)
 
 ---
 
 *Roadmap created: 2026-03-24*
-*Last updated: 2026-04-03*
+*Last updated: 2026-04-06*

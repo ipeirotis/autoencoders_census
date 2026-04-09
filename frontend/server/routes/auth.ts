@@ -3,7 +3,7 @@
  * Handles user signup, login, logout, and current user retrieval
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
 import {
   validateSignup,
@@ -62,7 +62,7 @@ router.post('/signup', authLimiter, validateSignup, async (req: Request, res: Re
  * POST /api/auth/login
  * Authenticate user with email and password
  */
-router.post('/login', authLimiter, validateLogin, (req: Request, res: Response, next) => {
+router.post('/login', authLimiter, validateLogin, (req: Request, res: Response, next: NextFunction) => {
   passport.authenticate('local', (err: any, user: any, info: any) => {
     if (err) {
       logger.error('Login error', { error: err });

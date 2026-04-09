@@ -91,10 +91,54 @@ def train_and_predict(job_id, bucket_name, file_path):
         
         # 5. Predict & Score
         reconstruction = keras_model.predict(vectorized_df)
+        if isinstance(reconstruction, list):
+            reconstruction = reconstruction[0]
+
         mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
         df['reconstruction_error'] = mse
 
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
+        
+        # --- NEW: Decode Reconstruction for Visualization ---
+        # 1. Align reconstruction with dataframe indices
+        reconstruction_df = pd.DataFrame(
+            reconstruction, 
+            columns=vectorized_df.columns, 
+            index=df.index
+        )
+        
+        # 2. Extract only the outliers' reconstruction
+        # Use intersection to be safe (though indices should match)
+        common_indices = top_outliers.index.intersection(reconstruction_df.index)
+        outlier_reconstruction = reconstruction_df.loc[common_indices]
+        
+        # 3. Invert transformation to get categorical values.
+        # Reset to contiguous 0..N index before tabularize so internal
+        # concat doesn't misalign rows, then map back to common_indices.
+        try:
+            contiguous = outlier_reconstruction.reset_index(drop=True)
+            decoded_outliers = vectorizer.tabularize_vector(contiguous)
+            decoded_outliers.index = common_indices
+
+            # 4. Format the `top_outliers` DataFrame to show "Original -> Predicted"
+            for col in decoded_outliers.columns:
+                if col in top_outliers.columns:
+                    original_vals = top_outliers.loc[common_indices, col].fillna("missing").astype(str)
+                    predicted_vals = decoded_outliers.loc[common_indices, col].fillna("missing").astype(str)
+                    
+                    # zip and format
+                    formatted_col = [
+                        f"{orig} -> {pred}" if orig != pred else orig
+                        for orig, pred in zip(original_vals, predicted_vals)
+                    ]
+                    
+                    top_outliers.loc[common_indices, col] = formatted_col
+        except Exception as e:
+            logger.error(f"Failed to decocde reconstruction: {e}")
+            # Continue without formatting if deserialization fails
+            pass
+        # --- END NEW ---
+
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
         
         # 6. Save Results

@@ -5,68 +5,47 @@
  * 2. POST /start-job   - Creates Firestore doc + publishes Pub/Sub message to trigger worker
  * 3. GET /job-status/:id - Polls Firestore for job status and results
  *
+ * Phase 4 additions:
+ * 4. GET /:id/export    - CSV export with formula injection protection
+ * 5. DELETE /:id        - Job cancellation with full resource cleanup
+ * 6. DELETE /:id/files  - Manual file deletion for completed jobs
+ *
  * Flow: Frontend → (signed URL) → GCS → Pub/Sub → worker.py → Vertex AI → Firestore → Frontend polls
  */
 
 import { Router } from "express";
-import { Storage, GetSignedUrlConfig } from "@google-cloud/storage";
-import { Firestore } from "@google-cloud/firestore";
-import { PubSub } from "@google-cloud/pubsub";
+import { GetSignedUrlConfig } from "@google-cloud/storage";
 import { v4 as uuidv4 } from "uuid";
+import { format } from 'fast-csv';
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
+import { sanitizeFormulaInjection } from '../utils/csvSanitization';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
+import { storage, firestore, pubsub } from '../config/gcp-clients';
+import { cancelVertexAIJob } from '../services/vertexAi';
+
+/**
+ * Returns true when a GCS delete error means "object already gone".
+ * Treating already-deleted as success keeps cleanup idempotent.
+ */
+function isGcsNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: unknown };
+  return e.code === 404 || e.code === 'ENOENT';
+}
 
 const router = Router();
-const storage = new Storage();
-const firestore = new Firestore();
-const pubsub = new PubSub();
 
 // Configuration from validated environment variables (see config/env.ts).
-// Using the validated `env` object instead of `process.env` directly so a
-// missing/misspelled topic or bucket fails fast at startup rather than at
-// first request with an opaque "topic not found" runtime error.
 const BUCKET_NAME = env.GCS_BUCKET_NAME;
 const TOPIC_ID = env.PUBSUB_TOPIC_ID;
 
 /**
- * WORK-12: Defense-in-depth CSV validation
- *
- * Express layer (quick checks):
- *   - File extension validation (.csv only) - handled by validateUploadUrl middleware
- *   - Content-Type passthrough so the signed URL's Content-Type constraint
- *     matches the client's subsequent PUT (see /upload-url handler).
- *
- * Worker layer (deep checks):
- *   - Encoding detection and validation (chardet)
- *   - Structure validation (pandas streaming, min rows/cols)
- *   - Size limit enforcement (>100MB rejection)
- *   - Edge case handling (unicode, missing values)
- *
- * Note: File size validation (WORK-11) happens at the Worker layer via
- * validate_csv(); the Express layer cannot reliably check size before
- * the GCS upload completes. The GCS bucket has a 100MB object size
- * limit configured separately.
- *
- * /upload-url uses the dedicated uploadUrlLimiter (separate from the
- * uploadLimiter used by /start-job) so a normal 3-step upload doesn't
- * consume two rate-limit slots from the same budget - see
- * frontend/server/middleware/rateLimits.ts.
- */
-
-/**
  * Non-terminal job statuses that a same-owner start-job retry is allowed to
- * resume. If the first publish succeeded but the client missed the response
- * and retries after the worker has already advanced the job past "queued"
- * (into processing/training/scoring), the retry should still succeed
- * idempotently - the job is already running, and the worker-side dedup
- * protects against duplicate work.
- *
- * Terminal statuses (complete, error, canceled) are intentionally excluded:
- * a retry against a finished job is a replay, not a legitimate resume.
+ * resume. Terminal statuses (complete, error, canceled) are excluded.
  */
 const RESUMABLE_STATUSES = new Set([
   "queued",
@@ -81,21 +60,14 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
 
-    // Use safe filename - discard user-provided filename for storage path
     const gcsFileName = generateSafeFilename((req as any).user.id);
 
-    // V4 signed URLs include Content-Type in the canonical request, so the
-    // client's PUT must send the exact same value the URL was signed for. If
-    // the client did not declare a contentType (e.g. browsers that report an
-    // empty MIME for `.csv` files), omit it from the signing options entirely
-    // so the signature does not constrain the Content-Type header. Otherwise
-    // sign for the exact value the client said it would send so they match -
-    // including Excel-era MIME types like `application/vnd.ms-excel` that
-    // Windows browsers routinely report for CSV files.
+    // V4 signed URLs include Content-Type in the canonical request.
+    // Pass through the client's declared type so the PUT matches the signed URL.
     const signOptions: GetSignedUrlConfig = {
       version: "v4",
       action: "write",
-      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
+      expires: Date.now() + 15 * 60 * 1000,
     };
     if (typeof contentType === 'string' && contentType.length > 0) {
       signOptions.contentType = contentType;
@@ -122,22 +94,15 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     const { jobId, gcsFileName } = req.body;
     const userId = (req as any).user.id;
 
-    // Authorization: ensure the caller owns the file path. Signed URLs are
-    // issued under `uploads/<userId>/...` (see generateSafeFilename), so any
-    // gcsFileName outside that prefix was not minted for this user. Without
-    // this check, an authenticated user who learned another user's object
-    // path could trigger processing on files outside their namespace.
+    // Authorization: ensure the caller owns the file path.
     const expectedPrefix = `uploads/${userId}/`;
     if (typeof gcsFileName !== 'string' || !gcsFileName.startsWith(expectedPrefix)) {
       logger.warn("start-job rejected: gcsFileName outside caller namespace", {
-        jobId,
-        userId,
-        gcsFileName,
+        jobId, userId, gcsFileName,
       });
       return res.status(403).json({ error: "Forbidden: file path does not belong to caller" });
     }
 
-    // The message format MUST match what worker.py expects
     const messageJson = {
       jobId: jobId,
       bucket: BUCKET_NAME,
@@ -146,73 +111,25 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
 
-    // Atomically claim the job ID. Use Firestore's `create()` (not `set()`):
-    // it throws ALREADY_EXISTS if the doc is taken, which prevents an
-    // authenticated user who learned another user's job UUID (via logs,
-    // shared client state, etc.) from overwriting `userId`/status on the
-    // existing doc and locking the original owner out of /job-status/:id.
-    //
-    // The persisted status MUST be "queued" (JobStatus.QUEUED in worker.py),
-    // not "uploading". The worker's is_valid_transition(None, ...) state
-    // machine only accepts QUEUED as the valid first status - any other
-    // value would cause update_job_status(..., PROCESSING) to raise
-    // ValueError and leave the job stuck forever without ever running.
-    //
-    // Codex P1 (r3053917215 + follow-up r3053955xxx): publish failure
-    // handling is trickier than just "delete on publish error". If
-    // publishMessage() actually succeeded on the server side but the
-    // client saw a transient network error (timeout, reset), Pub/Sub
-    // still delivers the message and the worker needs the claimed doc
-    // to exist - deleting it would strand a valid job. Conversely, if
-    // publish truly failed we do want the client to be able to retry
-    // with the same jobId (otherwise the 409 guard locks them out).
-    // Squaring this: keep the doc on publish error, and make a
-    // same-user retry with the same jobId idempotent - if the existing
-    // claim is still in a resumable (non-terminal) state and owned by
-    // the caller, reuse it and re-publish. The worker-side dedup
-    // (check_idempotency and mark_message_processed in worker.py) makes
-    // a duplicate publish on retry harmless.
-    //
-    // Codex P2 (retry idempotency across non-terminal states): an
-    // earlier version of this path only accepted "queued" as a
-    // resumable status. But if the first publish succeeded and the
-    // worker advanced the job past "queued" before the client's
-    // delayed retry arrived (e.g. ack-deadline-sized network stall),
-    // the retry would hit 409 even though the job is already running
-    // correctly. Accept any non-terminal status for same-owner retries
-    // (queued/processing/training/scoring) so the retry is idempotent
-    // across the entire worker lifecycle. Terminal statuses
-    // (complete/error/canceled) remain 409 because a retry against a
-    // finished job is a replay, not a resume.
-    //
-    // Codex P2 (retry-file-binding): persist `gcsFileName` on the
-    // claimed job doc and require same-user retries to present the
-    // EXACT same file path. Without this check, a client that retried
-    // /start-job with the same jobId but a different gcsFileName
-    // (accident, bug, or malice) would overwrite the logical meaning
-    // of the claimed job and cause two different files to race under
-    // one jobId, producing nondeterministic results.
+    // Atomically claim the job ID. create() throws ALREADY_EXISTS if taken,
+    // preventing overwrite of another user's job doc.
+    // Status MUST be "queued" (matches worker JobStatus.QUEUED).
     let claimedExistingDoc = false;
     let existingStatus: string | undefined;
     try {
       await firestore.collection("jobs").doc(jobId).create({
-        status: "queued", // Initial state (matches worker JobStatus.QUEUED)
+        status: "queued",
         createdAt: new Date(),
         userId,
-        gcsFileName, // Pin the retry to this exact object path.
+        gcsFileName,
       });
     } catch (createErr: any) {
-      // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
-      // existing document.
       if (createErr?.code !== 6) {
         throw createErr;
       }
 
-      // Same-user retry recovery: if the existing doc is owned by this
-      // caller AND is in a non-terminal (resumable) state AND targets
-      // the exact same uploaded object, treat the request as a publish
-      // retry and reuse the claim. Any other combination is a real
-      // collision / replay attempt and gets the 409.
+      // Same-user retry recovery: reuse doc if owned by caller, non-terminal,
+      // and targeting the same file.
       const existingDoc = await firestore.collection("jobs").doc(jobId).get();
       const existing = existingDoc.exists ? existingDoc.data() : undefined;
       if (
@@ -225,22 +142,13 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
         claimedExistingDoc = true;
         existingStatus = existing.status;
         logger.info("start-job: reusing pre-existing non-terminal doc for retry", {
-          jobId,
-          userId,
-          gcsFileName,
-          existingStatus,
+          jobId, userId, gcsFileName, existingStatus,
         });
       } else {
         logger.warn("start-job rejected: jobId already claimed", {
-          jobId,
-          userId,
+          jobId, userId,
           existingOwner: existing?.userId,
           existingStatus: existing?.status,
-          // Log the file mismatch so operators can see it in the audit
-          // trail. Do NOT log the existing.gcsFileName value if it
-          // belongs to a different user (we already blocked that
-          // above), but here we know the owner matched and only the
-          // file path differed, which is useful forensic data.
           existingGcsFileName: existing?.gcsFileName,
           requestedGcsFileName: gcsFileName,
         });
@@ -248,33 +156,13 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
       }
     }
 
-    // Publish to Pub/Sub only when we know republishing is safe and useful.
-    //
-    // If we just created the doc OR the existing doc was still "queued", we
-    // republish: the worker has not started yet (or may not have received
-    // the first publish), and the worker-side dedup on check_idempotency
-    // handles the duplicate message cleanly.
-    //
-    // If the existing doc is already past "queued" (processing/training/
-    // scoring), the worker is actively running the job, and re-publishing
-    // would be useless noise at best and - on workers without per-job
-    // dedup - a duplicate-work risk. Skip the publish and return success,
-    // which is what the client is looking for: "the job is running".
-    //
-    // On failure we do NOT delete the doc: the publish may have succeeded
-    // server-side even though the client saw an error, and we must not
-    // strand a valid job just because the ack was lost in flight. The
-    // client is expected to retry /start-job with the same jobId on any
-    // failure; the same-user reuse branch above will see the non-terminal
-    // doc and re-publish (or skip) appropriately.
+    // Publish only when useful. If the job is already past "queued", skip.
     const shouldPublish = !claimedExistingDoc || existingStatus === "queued";
     if (shouldPublish) {
       await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
     } else {
       logger.info("start-job: skipping republish for already-running job", {
-        jobId,
-        userId,
-        existingStatus,
+        jobId, userId, existingStatus,
       });
     }
 
@@ -305,15 +193,8 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
 
     const data = doc.data();
 
-    // Authorization: only the job owner can read its status/results.
-    // Return 404 (not 403) so callers cannot use the response code to confirm
-    // existence of someone else's job UUIDs.
+    // Only the job owner can read status/results.
     if (!data || data.userId !== userId) {
-      logger.warn("job-status rejected: caller is not job owner", {
-        jobId: id,
-        userId,
-        ownerId: data?.userId,
-      });
       return res.status(404).json({ status: "not_found" });
     }
 
@@ -325,6 +206,215 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
       userId: (req as any).user?.id
     });
     res.status(500).json({ error: "Failed to check status" });
+  }
+});
+
+// 4. Export Outlier Results as CSV
+router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await firestore.collection("jobs").doc(id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Job not found' });
+
+    const job = doc.data();
+    if (job.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    if (job.status !== 'complete') {
+      return res.status(400).json({ error: 'Job not complete' });
+    }
+
+    // Server-side expiry check.
+    if (job.filesExpired) {
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+    }
+    const createdAt = job.createdAt?.toDate ? job.createdAt.toDate() : new Date(job.createdAt);
+    if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
+      // Fail closed: invalid/missing timestamp treated as expired.
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+    }
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    if (createdAt < cutoff) {
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+    }
+
+    const outliers = job.outliers || [];
+    res.attachment(`outliers-${id}.csv`);
+
+    // Outlier records separate user data (`data` sub-object) from system metadata.
+    // Include reconstruction_error in export even if stored at top level only.
+    const firstRow = outliers.length > 0 ? (outliers[0].data || outliers[0]) : {};
+    const columnKeys: string[] = Object.keys(firstRow);
+    if (!columnKeys.includes('reconstruction_error') && outliers.length > 0 && outliers[0].reconstruction_error != null) {
+      columnKeys.push('reconstruction_error');
+    }
+    const sanitizedHeaders = columnKeys.map((key) => String(sanitizeFormulaInjection(key)));
+
+    const csvStream = format({ headers: sanitizedHeaders });
+    csvStream.pipe(res);
+    outliers.forEach((row: any) => {
+      const rowData = row.data || row;
+      csvStream.write(columnKeys.map((key) => {
+        const val = rowData[key] ?? row[key];
+        return sanitizeFormulaInjection(val);
+      }));
+    });
+    csvStream.end();
+  } catch (error) {
+    logger.error("Error exporting CSV", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to export CSV" });
+  }
+});
+
+// 5. Cancel Job with Full Resource Cleanup (transactional)
+router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
+  const { id } = req.params;
+  const userId = (req as any).user.id;
+  const NON_CANCELABLE = new Set(['complete', 'error']);
+  let gcsFileName: string | undefined;
+  let vertexJobName: string | undefined;
+  let alreadyCanceled = false;
+
+  try {
+    await firestore.runTransaction(async (tx) => {
+      const docRef = firestore.collection("jobs").doc(id);
+      const snap = await tx.get(docRef);
+      if (!snap.exists) throw new Error('NOT_FOUND');
+      const job = snap.data() || {};
+      if (job.userId !== userId) throw new Error('NOT_FOUND');
+      if (NON_CANCELABLE.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
+
+      gcsFileName = job.gcsFileName || job.gcsPath || job.file;
+      vertexJobName = job.vertexJobName;
+
+      if (job.status === 'canceled') {
+        // Already canceled — skip the status write but proceed to retry cleanup.
+        alreadyCanceled = true;
+      } else {
+        tx.update(docRef, { status: 'canceled', canceledAt: new Date() });
+      }
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === 'NOT_FOUND') return res.status(404).json({ error: 'Job not found' });
+    if (msg.startsWith('TERMINAL:')) {
+      return res.status(409).json({
+        error: `Cannot cancel job in terminal state: ${msg.slice('TERMINAL:'.length)}`,
+      });
+    }
+    logger.error("Error canceling job (transaction)", { error: msg, jobId: id, userId });
+    return res.status(500).json({ error: "Failed to cancel job" });
+  }
+
+  // Best-effort cleanup AFTER the canceled state is committed.
+  let gcsCleanupFailed = false;
+  try {
+    if (gcsFileName) {
+      await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
+      logger.info('Deleted GCS file for canceled job', { jobId: id, file: gcsFileName });
+    }
+  } catch (error) {
+    if (!isGcsNotFoundError(error)) {
+      gcsCleanupFailed = true;
+      logger.warn('Failed to delete GCS file', {
+        jobId: id, file: gcsFileName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const vertexCancelOk = await cancelVertexAIJob(vertexJobName, id);
+  logger.info('Job canceled successfully', { jobId: id, userId });
+
+  if (gcsCleanupFailed || !vertexCancelOk) {
+    return res.status(207).json({
+      success: true,
+      message: 'Job canceled but some cleanup failed. Resources may need manual attention.',
+    });
+  }
+  res.json({ success: true, message: 'Job canceled and resources cleaned up' });
+});
+
+// 6. Manual File Deletion (completed/errored/canceled jobs)
+router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await firestore.collection("jobs").doc(id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Job not found' });
+
+    const job = doc.data();
+    if (job.userId !== (req as any).user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const DELETABLE_STATUSES = new Set(['complete', 'error', 'canceled']);
+    if (!DELETABLE_STATUSES.has(job.status)) {
+      return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
+    }
+
+    const gcsFileName = job.gcsFileName || job.gcsPath || job.file;
+    let filesDeleted = 0;
+    let uploadDeleteFailed = false;
+
+    if (gcsFileName) {
+      try {
+        await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
+        filesDeleted++;
+      } catch (error) {
+        if (isGcsNotFoundError(error)) {
+          logger.info('GCS upload file already absent', { jobId: id, file: gcsFileName });
+        } else {
+          uploadDeleteFailed = true;
+          logger.warn('Failed to delete GCS upload file', {
+            jobId: id, file: gcsFileName,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+
+    const resultFileName = `results/${id}.json`;
+    let resultDeleteFailed = false;
+    try {
+      await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
+      filesDeleted++;
+    } catch (error) {
+      if (isGcsNotFoundError(error)) {
+        logger.info('GCS result file already absent', { jobId: id, file: resultFileName });
+      } else {
+        resultDeleteFailed = true;
+        logger.warn('Failed to delete GCS result file', {
+          jobId: id, file: resultFileName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    if ((gcsFileName && uploadDeleteFailed) || resultDeleteFailed) {
+      return res.status(502).json({
+        error: 'Failed to delete one or more files from storage. Please retry.',
+        filesDeleted,
+      });
+    }
+
+    await firestore.collection("jobs").doc(id).update({
+      filesExpired: true,
+      filesDeletedAt: new Date()
+    });
+
+    res.json({ success: true, message: 'Files deleted successfully', filesDeleted });
+  } catch (error) {
+    logger.error("Error deleting job files", {
+      error: error instanceof Error ? error.message : String(error),
+      jobId: req.params.id,
+      userId: (req as any).user?.id
+    });
+    res.status(500).json({ error: "Failed to delete files" });
   }
 });
 

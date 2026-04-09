@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useCallback, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Dropzone } from "@/components/Dropzone";
@@ -13,6 +14,8 @@ import { uploadCsv, checkJobStatus, ApiError, type JobStatus } from "@/utils/api
 import { logout as logoutRequest } from "@/utils/auth";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { cn } from "@/lib/utils";
+import { PreviewErrorBoundary } from "@/components/error-boundaries/PreviewErrorBoundary";
+import { ResultsErrorBoundary } from "@/components/error-boundaries/ResultsErrorBoundary";
 
 export default function Index() {
   const [file, setFile] = useState<File | null>(null);
@@ -24,6 +27,7 @@ export default function Index() {
   const [stats, setStats] = useState<any>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
   const { user, setUser } = useCurrentUser();
 
   const handleLogout = useCallback(async () => {
@@ -95,8 +99,9 @@ export default function Index() {
 
     try {
       const response = await uploadCsv(file);
-      setJobId(response.jobId);
-      // Polling useEffect will take over now
+      // Navigate to the dedicated progress page so the user gets the
+      // full monitoring/cancel/export UI introduced in Phase 4.
+      navigate(`/job/${response.jobId}`);
     } catch (err: any) {
       // Session expired between page load and upload - bounce back to auth.
       if (err instanceof ApiError && err.status === 401) {
@@ -119,11 +124,14 @@ export default function Index() {
 
   const getOrderedHeaders = (row: any) => {
     if (!row) return [];
-    const allHeaders = Object.keys(row);
-    
+    // Outlier records may nest user columns under `data` (Phase 4 format)
+    // or keep them flat (legacy format). Handle both.
+    const source = row.data && typeof row.data === 'object' ? row.data : row;
+    const allHeaders = Object.keys(source);
+
     // Remove 'reconstruction_error' from the list
     const dataHeaders = allHeaders.filter(h => h !== 'reconstruction_error');
-    
+
     // Put 'reconstruction_error' at the very start
     return ['reconstruction_error', ...dataHeaders];
   };
@@ -167,8 +175,10 @@ export default function Index() {
             {preview && (
               <div className="mt-6">
                 <h3 className="text-sm font-semibold mb-2">Input Preview</h3>
-                <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
-                
+                <PreviewErrorBoundary>
+                  <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
+                </PreviewErrorBoundary>
+
                 <div className="mt-4 flex gap-4">
                   <Button onClick={handleUpload} disabled={isProcessing} size="lg" className="flex-1">
                     {isProcessing ? "Processing..." : "Run Analysis"}
@@ -206,18 +216,32 @@ export default function Index() {
               <Button onClick={handleReset} variant="outline">Analyze New File</Button>
             </div>
 
-            <ResultCard type="success" message="Outliers identified successfully." />
-            
+            <ResultsErrorBoundary>
+              <ResultCard type="success" message="Outliers identified successfully." />
+            </ResultsErrorBoundary>
+
             <div className="mt-6">
               <h3 className="text-lg font-semibold mb-3">Top Outliers</h3>
-              
+
               {/* [STEP 2] Update the headers prop here */}
-              <PreviewTable 
-                rows={results} 
-                headers={getOrderedHeaders(results[0])}  
-                totalRows={results.length} 
-              />
-              
+              <PreviewErrorBoundary>
+                <PreviewTable
+                  rows={results.map((r: any) => {
+                    // Flatten nested data/metadata structure for display.
+                    // Phase 4 outlier records nest user columns under `data`;
+                    // legacy records keep them flat. Merge both into a flat
+                    // object so PreviewTable can render column values directly.
+                    if (r.data && typeof r.data === 'object') {
+                      const { data, contributions, ...meta } = r;
+                      return { ...data, ...meta };
+                    }
+                    return r;
+                  })}
+                  headers={getOrderedHeaders(results[0])}
+                  totalRows={results.length}
+                />
+              </PreviewErrorBoundary>
+
             </div>
           </div>
 
@@ -257,7 +281,9 @@ export default function Index() {
         {/* Error State */}
         {error && (
           <div className="bg-white rounded-2xl shadow p-6">
-             <ResultCard type="error" message={error} />
+             <ResultsErrorBoundary>
+               <ResultCard type="error" message={error} />
+             </ResultsErrorBoundary>
              <Button onClick={handleReset} variant="outline" className="mt-4">Try Again</Button>
           </div>
         )}

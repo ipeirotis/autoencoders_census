@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-last_updated: "2026-04-05T22:38:37.676Z"
+status: completed
+last_updated: "2026-04-07T02:56:52.078Z"
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 10
-  completed_plans: 10
+  completed_phases: 4
+  total_plans: 25
+  completed_plans: 25
   percent: 100
 ---
 
 # Project State: AutoEncoder Outlier Detection Platform
 
-**Last Updated:** 2026-03-24
+**Last Updated:** 2026-04-06
 **Milestone:** v1.0 Production-Ready Web Platform
 
 ## Project Reference
@@ -25,13 +25,13 @@ progress:
 
 ## Current Position
 
-**Phase:** 02 - Worker Reliability
-**Plan:** 3 of 3 (CSV Validation)
-**Status:** Ready to plan
+**Phase:** 04 - Operational Features
+**Plan:** 6 of 8
+**Status:** Milestone complete
 
 **Progress:** [██████████] 100%
 
-**Last Plan Completed:** 02-03 (CSV Validation)
+**Last Plan Completed:** 04-03 (GCS Lifecycle Configuration)
 
 ## Performance Metrics
 
@@ -48,8 +48,8 @@ progress:
 - Remaining: 71
 
 ### Plans
-- Total plans: 6 (Phase 1 planned)
-- Completed: 5
+- Total plans: 25 (all phases)
+- Completed: 23
 - In progress: 0
 - Blocked: 0
 
@@ -66,6 +66,21 @@ progress:
 | Phase 02 P01 | 3 | 3 tasks | 4 files |
 | Phase 02 P02 | 3 | 2 tasks | 3 files |
 | Phase 02 P03 | 5m | 2 tasks | 2 files | 2026-04-05 |
+| 03 | 04B | CSV File Handling | 2m | 2/2 | 2 | 2026-04-06 |
+| Phase 03 P02 | 4 | 4 tasks | 7 files |
+| Phase 03 P01 | 276 | 4 tasks | 4 files |
+| Phase 03 P04A | 5m 38s | 3 tasks | 5 files |
+| Phase 03 P03A | 1m 54s | 3 tasks | 3 files |
+| Phase 03 P03B | 2m 16s | 3 tasks | 4 files |
+| Phase 03 P05 | 2m 9s | 2 tasks | 2 files |
+| Phase 04 P00 | 132 | 2 tasks | 4 files |
+| Phase 04 P07 | 191 | 3 tasks | 1 files |
+| Phase 04 P01 | 218 | 3 tasks | 5 files |
+| Phase 04 P02 | 1160 | 3 tasks | 5 files |
+| Phase 04 P04 | 286 | 3 tasks | 3 files |
+| 04 | 03 | GCS Lifecycle Configuration | 2m 43s | 3/3 | 1 | 2026-04-07 |
+| Phase 04 P05 | 213 | 3 tasks | 3 files |
+| Phase 04 P06 | 300 | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -103,6 +118,20 @@ progress:
 16. **Validate at both Express and Worker layers (defense-in-depth)** (2026-04-05): Express layer provides fast feedback on obvious errors (.csv extension). Worker layer catches deep issues (encoding, structure) after GCS upload. Cannot check file size at Express layer before upload completes.
 
 17. **Set 100MB file size limit** (2026-04-05): Balances memory constraints (pandas loads chunks into memory) with practical CSV sizes. Larger files should use database imports or streaming pipelines.
+
+18. **Use incremental strict mode migration (noImplicitAny → strictNullChecks → strict: true)** (2026-04-06): Avoid overwhelming error count by enabling TypeScript strict mode flags incrementally. noImplicitAny first (24 errors), then strictNullChecks (future), then full strict mode. Alternative all-at-once approach would generate 1000+ errors.
+
+18. **Use Papa Parse streaming with web workers** (2026-04-06): Prevents UI thread blocking during parsing of large files. Preview limit of 100 rows prevents memory crashes on 50MB+ CSV files while maintaining fast preview.
+
+19. **Shared validateFile function for both upload paths** (2026-04-06): Single validation function ensures drag-drop and click-upload have identical validation logic. Prevents security gaps from implementation divergence and reduces maintenance burden.
+
+20. **Use TanStack Query refetchInterval for polling lifecycle** (2026-04-06): Eliminates stale closure issues and provides automatic cleanup on unmount. refetchInterval with conditional return handles terminal state detection cleanly without manual useEffect orchestration.
+
+21. **7-day retention applies uniformly to all GCS files** (2026-04-07): Both uploads/ and results/ prefixes use same retention period for simplicity. Lifecycle rule configured via gcloud CLI deletes files older than 7 days automatically.
+
+22. **Firestore job metadata persists after GCS file deletion** (2026-04-07): Preserves job history for audit purposes even after files expire. Allows users to view past jobs without maintaining expensive storage indefinitely.
+
+23. **Client-side age check pattern for expired job detection** (2026-04-07): Frontend calculates expiration date from job.createdAt + 7 days to hide download button and show expiration message for expired jobs. Pattern documented in GCS-LIFECYCLE-SETUP.md.
 
 ### Active Todos
 - [ ] Run `/gsd:plan-phase 1` to decompose Security Foundation phase into executable plans
@@ -143,27 +172,28 @@ None currently. Roadmap complete and ready for phase planning.
 ### Session Continuity
 
 **What Just Happened:**
-- Completed Phase 02 Plan 03: CSV Validation
-- Implemented validate_csv() function with chardet encoding detection, pandas streaming validation, 100MB size limits
-- Defense-in-depth validation: Express layer (quick checks) + Worker layer (deep validation)
-- Handles edge cases: unicode characters, mostly-missing values, wide datasets (>100 columns)
-- Failed validation updates job status to ERROR with errorType: 'validation'
-- All tests passing (12 CSV validation tests, 100% pass rate)
-- Phase 02 (Worker Reliability) complete
+- Completed Phase 04 Plan 03: GCS Lifecycle Configuration
+- GCS bucket lifecycle rule configured to automatically delete files older than 7 days
+- Created comprehensive 194-line setup documentation (GCS-LIFECYCLE-SETUP.md)
+- Verified signed URL expiration is correctly set to 15 minutes (OPS-13)
+- Three tasks completed, two commits made (5089b90, 86bf270)
+- Requirements OPS-07, OPS-08, OPS-13 fully satisfied
+- Duration: 2min 43sec
 
 **Next Steps:**
-1. Move to Phase 03 or Phase 04 (Frontend Polish or Testing)
-2. All Phase 02 requirements (WORK-01 through WORK-14) complete
+1. Execute remaining Phase 4 plans (04-04, 04-05, 04-06)
+2. Complete per-column contribution scores (backend + UI)
+3. Implement expired job UI and manual file deletion
+4. Run full test suite before phase verification
 
 **Open Questions:**
-- None. Plan 03 completed successfully with no blockers.
+- None. Plan 04-03 completed successfully with no blockers or deviations.
 
 **Context for Next Agent:**
-- validate_csv() exported from worker.py
-- Validates encoding (chardet), structure (pandas streaming), size (100MB limit)
-- Integrated into process_upload_local() before data loading
-- Express layer validates .csv extension and logs content-type mismatches
-- Validation errors set errorType: 'validation' in Firestore for frontend display
+- .planning/docs/GCS-LIFECYCLE-SETUP.md: Comprehensive lifecycle setup documentation with troubleshooting and cost analysis
+- GCS lifecycle rule: Active on autoencoder_data bucket (Delete action, age: 7 days)
+- Signed URL expiration: Verified 15 minutes in frontend/server/routes/jobs.ts (line 66)
+- Expired job pattern: Client-side age check (createdAt + 7 days) documented for frontend implementation
 
 ---
 

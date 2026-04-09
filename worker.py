@@ -742,6 +742,31 @@ def validate_csv(csv_bytes, max_size_mb=100):
     )
 
 
+def is_job_canceled(job_id):
+    """Quick Firestore read to check whether the job has been canceled.
+
+    Fails closed: transient Firestore errors return False (not canceled)
+    rather than propagating and crashing the caller's training loop.
+    """
+    try:
+        snap = db.collection('jobs').document(job_id).get()
+        if snap.exists:
+            return snap.get('status') == JobStatus.CANCELED
+        return False
+    except Exception as e:
+        logger.warning(f"is_job_canceled: Firestore read failed for {job_id}, "
+                       f"assuming not canceled: {e}")
+        return False
+
+
+def _safe_float(value, default=0.0):
+    """Convert value to float, returning default for non-numeric inputs."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def process_upload_local(job_id, bucket_name, file_path, message):
     """
     Process the uploaded CSV locally: download from GCS, train autoencoder,
@@ -753,8 +778,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         file_path: GCS file path
         message: Pub/Sub message object for ack deadline extension
     """
-    # Lazy import to avoid tensorflow dependency for tests
+    # Lazy imports - TF must not be loaded at module scope
     from model.autoencoder import AutoencoderModel
+    from evaluate.outliers import compute_per_column_contributions
+    import tensorflow as tf
 
     job_ref = db.collection('jobs').document(job_id)
 
@@ -1082,15 +1109,32 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.TRAINING)
 
+        # Phase 4: cooperative cancellation during training
+        class CancellationCallback(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                if is_job_canceled(job_id):
+                    logger.info(f"Job {job_id} canceled during training (epoch {epoch}), stopping")
+                    self.model.stop_training = True
+
+        # Check for early cancellation before heavy training work
+        if is_job_canceled(job_id):
+            logger.info(f"Job {job_id} was canceled before training, aborting")
+            return
+
         logger.info("Training autoencoder...")
         keras_model.fit(
             X_train, X_train,
             epochs=15, batch_size=32, verbose=2,
-            validation_data=(X_test, X_test)
+            validation_data=(X_test, X_test),
+            callbacks=[CancellationCallback()]
         )
 
+        # Check cancellation after training
+        if is_job_canceled(job_id):
+            logger.info(f"Job {job_id} was canceled after training, aborting scoring")
+            return
+
         # Codex P1 (r3053724013): advance TRAINING -> SCORING before scoring
-        # so that the final COMPLETE transition matches ALLOWED_TRANSITIONS.
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.SCORING)
 
@@ -1101,10 +1145,37 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
         df['reconstruction_error'] = mse
 
-        # 9. Get top outliers
+        # 9. Get top outliers and compute per-column contributions.
+        # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
-        outliers_data = top_outliers.to_dict(orient='records')
+
+        predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
+        vectorized_np = vectorized_df.to_numpy()
+        MAX_CONTRIBUTIONS_PER_OUTLIER = 10
+
+        outliers_data = []
+        for idx, row in top_outliers.iterrows():
+            row_data = vectorized_np[idx:idx+1]
+            row_pred = predictions_np[idx:idx+1]
+
+            contributions = compute_per_column_contributions(
+                row_data, row_pred, cardinalities, list(process_df.columns))
+
+            sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
+            capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
+
+            # User columns under `data`, system metadata at top level.
+            row_dict = row.to_dict()
+            outlier_record = {
+                'data': row_dict,
+                'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
+                'contributions': [
+                    {'column': col, 'percentage': float(pct)}
+                    for col, pct in capped_contribs
+                ],
+            }
+            outliers_data.append(outlier_record)
 
         # 10. Save to Firestore with transactional status update (WORK-07)
         transaction = db.transaction()
@@ -1406,12 +1477,6 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 delay *= 2
 
         if not suppressor_persisted:
-            # If retries all failed, the best we can do is log loudly so
-            # an operator can manually annotate the job doc. The Vertex
-            # training job is already running and is the important
-            # invariant; duplicate dispatch is the residual risk and is
-            # only possible within the short local stale window, not
-            # the old 4-hour Vertex window.
             logger.error(
                 f"FATAL: could not persist Vertex takeover suppressor "
                 f"for job {job_id} after 5 retries (last error: {last_err}). "
@@ -1421,6 +1486,33 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 f"(set vertexJobName and a far-future claimedAt on "
                 f"jobs/{job_id})."
             )
+
+        # Phase 4: reconciliation cancel. If the job was canceled while
+        # we were submitting (the cancel API would have found no
+        # vertexJobName and skipped the Vertex cancel), cancel the
+        # pipeline ourselves now. Run this regardless of whether the
+        # suppressor write succeeded — if it failed, the API has even
+        # less ability to cancel, so we must do it here.
+        if is_job_canceled(job_id):
+            logger.info(
+                f"Job {job_id} was canceled during Vertex submission, "
+                "canceling the just-submitted pipeline"
+            )
+            try:
+                job.cancel()
+            except Exception as cancel_err:
+                logger.error(
+                    f"Failed to cancel Vertex pipeline after late cancel "
+                    f"detection for job {job_id}: {cancel_err}. "
+                    f"Persisting vertexCancelFailed marker for manual retry."
+                )
+                # Persist a marker so operators/cleanup scripts can find
+                # jobs where the Vertex pipeline is still running despite
+                # the app status being 'canceled'.
+                try:
+                    job_ref.update({'vertexCancelFailed': True})
+                except Exception:
+                    pass  # best-effort — already logged the real error
 
     except JobDocumentNotReadyError:
         # Never swallow: callback() must nack for Pub/Sub redelivery.

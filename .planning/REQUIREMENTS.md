@@ -45,53 +45,53 @@ Requirements for production-ready web platform. Each maps to roadmap phases.
 
 ### Frontend Production
 
-- [ ] **FE-01**: React error boundary wraps App component (catches render errors)
-- [ ] **FE-02**: React error boundary wraps high-risk components (Preview, Results)
-- [ ] **FE-03**: Error boundaries display recovery UI (not blank screen)
-- [ ] **FE-04**: Progress indicator shows multi-stage status (Queued → Preprocessing → Training → Scoring)
-- [ ] **FE-05**: Progress indicator displays percent complete for each stage
-- [ ] **FE-06**: Job cancellation UI provides cancel button on job status page
-- [ ] **FE-07**: Job cancellation confirms with user before canceling
-- [ ] **FE-08**: Polling interval cleanup prevents memory leaks on unmount
-- [ ] **FE-09**: Polling stops when job completes (completed/failed/canceled states)
-- [ ] **FE-10**: Polling useEffect dependencies fixed (no stale closures with toast)
-- [ ] **FE-11**: Missing dependency lib/utils.ts created (cn utility for shadcn/ui)
-- [ ] **FE-12**: Missing dependency react-router-dom added to package.json
-- [ ] **FE-13**: Missing dependency serverless-http added to package.json
-- [ ] **FE-14**: Missing npm script build:client added to package.json
-- [ ] **FE-15**: Missing npm script dev:server added to package.json
-- [ ] **FE-16**: TypeScript strict mode enabled (incremental: noImplicitAny → strictNullChecks → strict)
-- [ ] **FE-17**: TypeScript strict mode violations fixed without type assertions
-- [ ] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
-- [ ] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
-- [ ] **FE-20**: Port mismatch fixed (server uses documented port)
-- [ ] **FE-21**: CSV parser uses streaming for preview (prevents memory crash on large files)
-- [ ] **FE-22**: File type validation added to click-upload path (not just drag-and-drop)
+- [x] **FE-01**: React error boundary wraps App component (catches render errors)
+- [x] **FE-02**: React error boundary wraps high-risk components (Preview, Results)
+- [x] **FE-03**: Error boundaries display recovery UI (not blank screen)
+- [x] **FE-04**: Progress indicator shows multi-stage status (Queued → Preprocessing → Training → Scoring)
+- [x] **FE-05**: Progress indicator displays percent complete for each stage
+- [x] **FE-06**: Job cancellation UI provides cancel button on job status page
+- [x] **FE-07**: Job cancellation confirms with user before canceling
+- [x] **FE-08**: Polling interval cleanup prevents memory leaks on unmount
+- [x] **FE-09**: Polling stops when job completes (completed/failed/canceled states)
+- [x] **FE-10**: Polling useEffect dependencies fixed (no stale closures with toast)
+- [x] **FE-11**: Missing dependency lib/utils.ts created (cn utility for shadcn/ui)
+- [x] **FE-12**: Missing dependency react-router-dom added to package.json
+- [x] **FE-13**: Missing dependency serverless-http added to package.json
+- [x] **FE-14**: Missing npm script build:client added to package.json
+- [x] **FE-15**: Missing npm script dev:server added to package.json
+- [x] **FE-16**: TypeScript strict mode enabled (incremental: noImplicitAny → strictNullChecks → strict)
+- [x] **FE-17**: TypeScript strict mode violations fixed without type assertions
+- [x] **FE-18**: GCP client instances deduplicated (single Storage/Firestore/PubSub instance)
+- [x] **FE-19**: Duplicate job-status routes resolved (index.ts vs routes/jobs.ts)
+- [x] **FE-20**: Port mismatch fixed (server uses documented port)
+- [x] **FE-21**: CSV parser uses streaming for preview (prevents memory crash on large files)
+- [x] **FE-22**: File type validation added to click-upload path (not just drag-and-drop)
 
 ### Operational Features
 
-- [ ] **OPS-01**: User can export outlier results as CSV file
-- [ ] **OPS-02**: CSV export prevents formula injection (sanitizes =, +, -, @, \t, \r characters)
-- [ ] **OPS-03**: CSV export includes proper Content-Disposition headers
-- [ ] **OPS-04**: Job cancellation deletes GCS files for canceled jobs
-- [ ] **OPS-05**: Job cancellation cancels Vertex AI job if running
-- [ ] **OPS-06**: Job cancellation updates Firestore status to "canceled"
-- [ ] **OPS-07**: GCS lifecycle rules delete old uploaded files (30-day retention)
-- [ ] **OPS-08**: GCS lifecycle rules delete old result files (90-day retention)
-- [ ] **OPS-09**: User can see per-column outlier contribution scores in results
-- [ ] **OPS-10**: Per-column scores show which survey questions were anomalous
+- [x] **OPS-01**: User can export outlier results as CSV file
+- [x] **OPS-02**: CSV export prevents formula injection (sanitizes =, +, -, @, \t, \r characters)
+- [x] **OPS-03**: CSV export includes proper Content-Disposition headers
+- [x] **OPS-04**: Job cancellation deletes GCS files for canceled jobs
+- [x] **OPS-05**: Job cancellation cancels Vertex AI job if running
+- [x] **OPS-06**: Job cancellation updates Firestore status to "canceled"
+- [x] **OPS-07**: GCS lifecycle rules delete old uploaded files (30-day retention)
+- [x] **OPS-08**: GCS lifecycle rules delete old result files (90-day retention)
+- [x] **OPS-09**: User can see per-column outlier contribution scores in results
+- [x] **OPS-10**: Per-column scores show which survey questions were anomalous
 - [ ] **OPS-11**: User can download failed-rows CSV with specific error descriptions
-- [ ] **OPS-12**: Row-level validation errors indicate encoding issues, missing values, schema mismatches
-- [ ] **OPS-13**: Signed URLs generated on-demand (1-hour expiration, not 7-day)
-- [ ] **OPS-14**: Progress tracking writes stage updates to Firestore throughout processing
+- [x] **OPS-12**: Row-level validation errors indicate encoding issues, missing values, schema mismatches
+- [x] **OPS-13**: Signed URLs generated on-demand (1-hour expiration, not 7-day)
+- [x] **OPS-14**: Progress tracking writes stage updates to Firestore throughout processing
 
 ### GitHub Best Practices
 
-- [ ] **GH-01**: Understand PR workflow (branch strategy, naming conventions)
-- [ ] **GH-02**: Understand commit message conventions (used in this repository)
-- [ ] **GH-03**: Understand code review process (how to request reviews, address feedback)
-- [ ] **GH-04**: Analyze IliasTriant's PR patterns (structure, descriptions, commits)
-- [ ] **GH-05**: Practice creating well-structured PRs for v1.0 features
+- [x] **GH-01**: Understand PR workflow (branch strategy, naming conventions)
+- [x] **GH-02**: Understand commit message conventions (used in this repository)
+- [x] **GH-03**: Understand code review process (how to request reviews, address feedback)
+- [x] **GH-04**: Analyze IliasTriant's PR patterns (structure, descriptions, commits)
+- [x] **GH-05**: Practice creating well-structured PRs for v1.0 features
 
 ## v2.0 Requirements
 
@@ -203,47 +203,47 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WORK-12 | Phase 2 | Complete |
 | WORK-13 | Phase 2 | Complete |
 | WORK-14 | Phase 2 | Complete |
-| FE-01 | Phase 3 | Pending |
-| FE-02 | Phase 3 | Pending |
-| FE-03 | Phase 3 | Pending |
-| FE-04 | Phase 3 | Pending |
-| FE-05 | Phase 3 | Pending |
-| FE-06 | Phase 3 | Pending |
-| FE-07 | Phase 3 | Pending |
-| FE-08 | Phase 3 | Pending |
-| FE-09 | Phase 3 | Pending |
-| FE-10 | Phase 3 | Pending |
-| FE-11 | Phase 3 | Pending |
-| FE-12 | Phase 3 | Pending |
-| FE-13 | Phase 3 | Pending |
-| FE-14 | Phase 3 | Pending |
-| FE-15 | Phase 3 | Pending |
-| FE-16 | Phase 3 | Pending |
-| FE-17 | Phase 3 | Pending |
-| FE-18 | Phase 3 | Pending |
-| FE-19 | Phase 3 | Pending |
-| FE-20 | Phase 3 | Pending |
-| FE-21 | Phase 3 | Pending |
-| FE-22 | Phase 3 | Pending |
-| OPS-01 | Phase 4 | Pending |
-| OPS-02 | Phase 4 | Pending |
-| OPS-03 | Phase 4 | Pending |
-| OPS-04 | Phase 4 | Pending |
-| OPS-05 | Phase 4 | Pending |
-| OPS-06 | Phase 4 | Pending |
-| OPS-07 | Phase 4 | Pending |
-| OPS-08 | Phase 4 | Pending |
-| OPS-09 | Phase 4 | Pending |
-| OPS-10 | Phase 4 | Pending |
+| FE-01 | Phase 3 | Complete |
+| FE-02 | Phase 3 | Complete |
+| FE-03 | Phase 3 | Complete |
+| FE-04 | Phase 3 | Complete |
+| FE-05 | Phase 3 | Complete |
+| FE-06 | Phase 3 | Complete |
+| FE-07 | Phase 3 | Complete |
+| FE-08 | Phase 3 | Complete |
+| FE-09 | Phase 3 | Complete |
+| FE-10 | Phase 3 | Complete |
+| FE-11 | Phase 3 | Complete |
+| FE-12 | Phase 3 | Complete |
+| FE-13 | Phase 3 | Complete |
+| FE-14 | Phase 3 | Complete |
+| FE-15 | Phase 3 | Complete |
+| FE-16 | Phase 3 | Complete |
+| FE-17 | Phase 3 | Complete |
+| FE-18 | Phase 3 | Complete |
+| FE-19 | Phase 3 | Complete |
+| FE-20 | Phase 3 | Complete |
+| FE-21 | Phase 3 | Complete |
+| FE-22 | Phase 3 | Complete |
+| OPS-01 | Phase 4 | Complete |
+| OPS-02 | Phase 4 | Complete |
+| OPS-03 | Phase 4 | Complete |
+| OPS-04 | Phase 4 | Complete |
+| OPS-05 | Phase 4 | Complete |
+| OPS-06 | Phase 4 | Complete |
+| OPS-07 | Phase 4 | Complete |
+| OPS-08 | Phase 4 | Complete |
+| OPS-09 | Phase 4 | Complete |
+| OPS-10 | Phase 4 | Complete |
 | OPS-11 | Phase 4 | Pending |
-| OPS-12 | Phase 4 | Pending |
-| OPS-13 | Phase 4 | Pending |
-| OPS-14 | Phase 4 | Pending |
-| GH-01 | Phase 4 | Pending |
-| GH-02 | Phase 4 | Pending |
-| GH-03 | Phase 4 | Pending |
-| GH-04 | Phase 4 | Pending |
-| GH-05 | Phase 4 | Pending |
+| OPS-12 | Phase 4 | Complete |
+| OPS-13 | Phase 4 | Complete |
+| OPS-14 | Phase 4 | Complete |
+| GH-01 | Phase 4 | Complete |
+| GH-02 | Phase 4 | Complete |
+| GH-03 | Phase 4 | Complete |
+| GH-04 | Phase 4 | Complete |
+| GH-05 | Phase 4 | Complete |
 
 **Coverage:**
 - v1.0 requirements: 71 total
