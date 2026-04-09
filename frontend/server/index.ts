@@ -15,9 +15,13 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
+import { Storage } from "@google-cloud/storage";
+import { Firestore } from "@google-cloud/firestore";
+import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
-import { corsConfig, helmetConfig } from "./middleware/security";
+import { corsConfig, helmetConfig, csrfOriginCheck } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
 import { requireAuth } from "./middleware/auth";
 import { uploadLimiter } from "./middleware/rateLimits";
@@ -30,26 +34,25 @@ import { storage, firestore, pubsub } from "./config/gcp-clients";
 import path from "path";
 
 // --- Configuration ---
-// Environment variables are validated at startup via env module import above
-// Server will fail fast with clear error message if required vars are missing
 const GCS_BUCKET_NAME = env.GCS_BUCKET_NAME;
-const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens to
-
-// GCP clients imported from singleton module (gcp-clients.ts)
-// No local instantiation needed - prevents connection pool exhaustion
+const PUBSUB_TOPIC_NAME = "job-upload-topic";
 
 // --- Multer Middleware (Memory Storage) ---
-// Keeps the file in RAM (req.file.buffer) so we can stream it to GCS
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // Limit to 50MB
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
 export function createServer() {
   const app = express();
 
+  if (env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
+
   // Security middleware - apply BEFORE routes
   app.use(corsConfig);
+  app.use(csrfOriginCheck);
   app.use(helmetConfig);
 
   app.use(express.json());
@@ -83,11 +86,10 @@ export function createServer() {
           userId: (req as any).user?.id
         });
         return res.status(400).json({ error: 'Invalid CSV file format' });
-        // Don't expose validation.reason to client (logged server-side)
       }
 
       const originalName = req.file.originalname;
-      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const uniqueId = uuidv4();
 
       // Generate safe filename (discard user-provided name)
       const safeFilename = generateSafeFilename((req as any).user.id);
@@ -103,7 +105,7 @@ export function createServer() {
 
       await file.save(req.file.buffer, {
         contentType: req.file.mimetype,
-        resumable: false, // Simple upload for small/medium files
+        resumable: false,
       });
 
       logger.info(`File saved to GCS: ${safeFilename}`);
@@ -114,7 +116,7 @@ export function createServer() {
         fileName: originalName,
         gcsPath: safeFilename,
         bucket: GCS_BUCKET_NAME,
-        status: "uploaded", // Initial status
+        status: "queued",
         createdAt: new Date().toISOString(),
         userId: (req as any).user.id,
       };
@@ -134,23 +136,20 @@ export function createServer() {
         logger.info(`Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
       } catch (pubError) {
         logger.warn("Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", { error: pubError });
-        // We don't fail the request here, just warn, so you can test upload without PubSub initially
       }
 
       // 4. Return Response matching UploadResponse interface
       res.json({
-        dataset_id: uniqueId, // <--- CHANGED from jobId to dataset_id
+        dataset_id: uniqueId,
         message: "Upload successful. Processing started.",
       });
 
     } catch (error) {
-      next(error); // Pass to error handler
+      next(error);
     }
   });
 
   // --- Error Handler Middleware (MUST be last) ---
-  // Catches all unhandled errors from routes above
-  // Logs full details server-side, returns generic message in production
   app.use(errorHandler);
 
   return app;
