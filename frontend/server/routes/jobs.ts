@@ -1,11 +1,5 @@
 /**
- * Jobs API Routes - Handles the 3-step upload workflow:
- *
- * 1. POST /upload-url  - Generates a signed GCS URL for direct browser upload
- * 2. POST /start-job   - Creates Firestore doc + publishes Pub/Sub message to trigger worker
- * 3. GET /job-status/:id - Polls Firestore for job status and results
- *
- * Flow: Frontend → (signed URL) → GCS → Pub/Sub → worker.py → Vertex AI → Firestore → Frontend polls
+ * Jobs API Routes
  */
 
 import { Router, Request, Response } from "express";
@@ -20,12 +14,6 @@ import { logger } from '../config/logger';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
 import { cancelVertexAIJob } from '../services/vertexAi';
 
-/**
- * Returns true when a Google Cloud Storage delete error represents
- * "object already gone" - either a 404 from the GCS API or the ENOENT code
- * some clients surface. Treating already-deleted as success keeps the manual
- * cleanup endpoint idempotent (e.g. the lifecycle rule beat the user to it).
- */
 function isGcsNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: unknown };
@@ -34,7 +22,6 @@ function isGcsNotFoundError(error: unknown): boolean {
 
 const router = Router();
 
-// Configuration from Environment Variables
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
@@ -79,10 +66,6 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     const userId = (req as any).user.id;
 
     // Validate that gcsFileName lives within this user's upload namespace.
-    // generateSafeFilename() produces paths like `uploads/{userId}/{uuid}.csv`.
-    // Without this check an authenticated user could submit an arbitrary GCS
-    // key, then call DELETE /api/jobs/:id to delete objects they don't own
-    // within the shared bucket - an authorization bypass on storage deletion.
     const expectedPrefix = `uploads/${userId}/`;
     if (
       !gcsFileName ||
@@ -160,6 +143,25 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
 
     if (job.status !== 'complete') {
       return res.status(400).json({ error: 'Job not complete' });
+    }
+
+    // Server-side expiry check. The UI hides the download button after
+    // 7 days / manual deletion, but a direct API call would still serve
+    // the data. Block that here with a 410 Gone.
+    if (job.filesExpired) {
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+    }
+    // Also enforce the 7-day retention window. Firestore Admin SDK
+    // returns createdAt as a Timestamp with .toDate().
+    const createdAt = job.createdAt?.toDate
+      ? job.createdAt.toDate()
+      : new Date(job.createdAt);
+    if (createdAt instanceof Date && !isNaN(createdAt.getTime())) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 7);
+      if (createdAt < cutoff) {
+        return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+      }
     }
 
     const outliers = job.outliers || [];
