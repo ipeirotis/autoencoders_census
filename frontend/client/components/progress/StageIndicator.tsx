@@ -27,11 +27,15 @@ export function StageIndicator({ currentStage }: StageIndicatorProps) {
     scoring: 'Scoring',
   };
 
-  // When the job has reached a terminal 'complete' state, every stage has
-  // finished - mark them all as completed rather than leaving the indicator
-  // blank (currentIndex would otherwise be -1 for terminal statuses).
-  const isComplete = currentStage === 'complete';
-  const currentIndex = isComplete
+  // Terminal states (complete/error/canceled) all imply every stage is
+  // finished from the indicator's point of view - the dedicated success/
+  // error/canceled cards in JobProgress.tsx convey *which* terminal state
+  // was reached. Without this, indexOf would return -1 for those statuses
+  // and every stage would render as still upcoming, which is misleading
+  // on failed/canceled jobs.
+  const TERMINAL_STATES = new Set(['complete', 'error', 'canceled']);
+  const isTerminal = TERMINAL_STATES.has(currentStage);
+  const currentIndex = isTerminal
     ? STAGES.length
     : STAGES.indexOf(currentStage as typeof STAGES[number]);
 
