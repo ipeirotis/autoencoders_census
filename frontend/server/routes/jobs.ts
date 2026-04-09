@@ -180,12 +180,20 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
     // Set CSV download headers
     res.attachment(`outliers-${id}.csv`);
 
+    // Reserved keys the worker adds to each outlier record for its own
+    // bookkeeping. They are stored inside the record so they round-trip
+    // through Firestore, but they must NOT appear as CSV columns - `__meta`
+    // is a nested object (not a scalar) and the user never asked for it.
+    const RESERVED_OUTLIER_KEYS = new Set(['__meta']);
+
     // Derive the column order from the first outlier. The worker writes
     // outliers as dicts that preserve the original CSV column order, so
     // Object.keys() gives us a stable 1:1 mapping between source columns
-    // and cells.
+    // and cells. Drop worker-added metadata keys before emitting.
     const columnKeys: string[] =
-      outliers.length > 0 ? Object.keys(outliers[0]) : [];
+      outliers.length > 0
+        ? Object.keys(outliers[0]).filter((k) => !RESERVED_OUTLIER_KEYS.has(k))
+        : [];
 
     // IMPORTANT: Sanitize header names by producing a PARALLEL sanitized
     // array rather than rewriting object keys in place. Two distinct
