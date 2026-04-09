@@ -1482,8 +1482,10 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         # Phase 4: reconciliation cancel. If the job was canceled while
         # we were submitting (the cancel API would have found no
         # vertexJobName and skipped the Vertex cancel), cancel the
-        # pipeline ourselves now.
-        if suppressor_persisted and is_job_canceled(job_id):
+        # pipeline ourselves now. Run this regardless of whether the
+        # suppressor write succeeded — if it failed, the API has even
+        # less ability to cancel, so we must do it here.
+        if is_job_canceled(job_id):
             logger.info(
                 f"Job {job_id} was canceled during Vertex submission, "
                 "canceling the just-submitted pipeline"
