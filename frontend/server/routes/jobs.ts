@@ -61,6 +61,22 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
 router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req, res) => {
   try {
     const { jobId, gcsFileName } = req.body;
+    const userId = (req as any).user.id;
+
+    // Authorization: ensure the caller owns the file path. Signed URLs are
+    // issued under `uploads/<userId>/...` (see generateSafeFilename), so any
+    // gcsFileName outside that prefix was not minted for this user. Without
+    // this check, an authenticated user who learned another user's object
+    // path could trigger processing on files outside their namespace.
+    const expectedPrefix = `uploads/${userId}/`;
+    if (typeof gcsFileName !== 'string' || !gcsFileName.startsWith(expectedPrefix)) {
+      logger.warn("start-job rejected: gcsFileName outside caller namespace", {
+        jobId,
+        userId,
+        gcsFileName,
+      });
+      return res.status(403).json({ error: "Forbidden: file path does not belong to caller" });
+    }
 
     // The message format MUST match what worker.py expects
     const messageJson = {
@@ -76,7 +92,7 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     await firestore.collection("jobs").doc(jobId).set({
       status: "uploading", // Initial state
       createdAt: new Date(),
-      userId: (req as any).user.id,
+      userId,
     });
 
     res.json({ success: true, message: "Job started" });
@@ -94,6 +110,7 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = (req as any).user.id;
     const doc = await firestore.collection("jobs").doc(id).get();
 
     if (!doc.exists) {
@@ -101,6 +118,19 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
     }
 
     const data = doc.data();
+
+    // Authorization: only the job owner can read its status/results.
+    // Return 404 (not 403) so callers cannot use the response code to confirm
+    // existence of someone else's job UUIDs.
+    if (!data || data.userId !== userId) {
+      logger.warn("job-status rejected: caller is not job owner", {
+        jobId: id,
+        userId,
+        ownerId: data?.userId,
+      });
+      return res.status(404).json({ status: "not_found" });
+    }
+
     res.json(data);
   } catch (error) {
     logger.error("Error checking status", {
