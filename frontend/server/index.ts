@@ -15,13 +15,9 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
-import { v4 as uuidv4 } from "uuid";
-import { Storage } from "@google-cloud/storage";
-import { Firestore } from "@google-cloud/firestore";
-import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
-import { corsConfig, helmetConfig, csrfOriginCheck } from "./middleware/security";
+import { corsConfig, helmetConfig } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
 import { requireAuth } from "./middleware/auth";
 import { uploadLimiter } from "./middleware/rateLimits";
@@ -37,7 +33,6 @@ import path from "path";
 const GCS_BUCKET_NAME = env.GCS_BUCKET_NAME;
 const PUBSUB_TOPIC_NAME = "job-upload-topic";
 
-// --- Multer Middleware (Memory Storage) ---
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -46,39 +41,27 @@ const upload = multer({
 export function createServer() {
   const app = express();
 
-  if (env.NODE_ENV === "production") {
-    app.set("trust proxy", 1);
-  }
-
-  // Security middleware - apply BEFORE routes
   app.use(corsConfig);
-  app.use(csrfOriginCheck);
   app.use(helmetConfig);
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Session and authentication middleware
   app.use(sessionConfig);
   app.use(passport.initialize());
   app.use(passport.session());
 
-  // Health Check
   app.get("/api/ping", (_req, res) => res.json({ message: "pong" }));
 
-  // Routes
   app.use("/api/auth", authRouter);
   app.use("/api/jobs", jobsRouter);
 
-  // --- The Main Upload Route ---
-  // (keep this as a fallback, but new frontend uses the 'jobsRouter' endpoints instead)
   app.post("/api/upload", requireAuth, uploadLimiter, upload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
-      // Validate CSV content
       const validation = await validateCSVContent(req.file.buffer);
       if (!validation.valid) {
         logger.warn('CSV validation failed', {
@@ -89,9 +72,7 @@ export function createServer() {
       }
 
       const originalName = req.file.originalname;
-      const uniqueId = uuidv4();
-
-      // Generate safe filename (discard user-provided name)
+      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       const safeFilename = generateSafeFilename((req as any).user.id);
 
       logger.info(`Starting upload job: ${uniqueId}`, {
@@ -99,7 +80,6 @@ export function createServer() {
         originalFilename: originalName
       });
 
-      // 1. Stream file to Google Cloud Storage
       const bucket = storage.bucket(GCS_BUCKET_NAME);
       const file = bucket.file(safeFilename);
 
@@ -110,13 +90,12 @@ export function createServer() {
 
       logger.info(`File saved to GCS: ${safeFilename}`);
 
-      // 2. Create Firestore Document (Job Metadata)
       const jobMetadata = {
         jobId: uniqueId,
         fileName: originalName,
         gcsPath: safeFilename,
         bucket: GCS_BUCKET_NAME,
-        status: "queued",
+        status: "uploaded",
         createdAt: new Date().toISOString(),
         userId: (req as any).user.id,
       };
@@ -124,7 +103,6 @@ export function createServer() {
       await firestore.collection("jobs").doc(uniqueId).set(jobMetadata);
       logger.info(`Firestore document created: jobs/${uniqueId}`);
 
-      // 3. Publish Pub/Sub Message (Trigger the Worker)
       const messageBuffer = Buffer.from(JSON.stringify({
         jobId: uniqueId,
         bucket: GCS_BUCKET_NAME,
@@ -135,10 +113,9 @@ export function createServer() {
         await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: messageBuffer });
         logger.info(`Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
       } catch (pubError) {
-        logger.warn("Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", { error: pubError });
+        logger.warn("Failed to publish to Pub/Sub", { error: pubError });
       }
 
-      // 4. Return Response matching UploadResponse interface
       res.json({
         dataset_id: uniqueId,
         message: "Upload successful. Processing started.",
@@ -149,7 +126,6 @@ export function createServer() {
     }
   });
 
-  // --- Error Handler Middleware (MUST be last) ---
   app.use(errorHandler);
 
   return app;
