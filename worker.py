@@ -162,12 +162,7 @@ def is_valid_transition(current_status, new_status):
 
 
 def is_job_canceled(job_id):
-    """Quick Firestore read to check whether the job has been canceled.
-
-    Used as a cooperative cancellation check between long-running phases
-    so the worker can stop early after the API flipped the status to
-    'canceled' via the cancel endpoint's transaction.
-    """
+    """Quick Firestore read to check whether the job has been canceled."""
     snap = db.collection('jobs').document(job_id).get()
     if snap.exists:
         return snap.get('status') == JobStatus.CANCELED
@@ -250,10 +245,6 @@ def validate_csv(csv_bytes, max_size_mb=100):
 def process_upload_local(job_id, bucket_name, file_path, message):
     """Process the uploaded CSV locally: download from GCS, train autoencoder,
     score outliers, and write results to Firestore."""
-    # Lazy imports to avoid tensorflow dependency for tests / lightweight
-    # importers of this module. Both AutoencoderModel and
-    # compute_per_column_contributions transitively pull in TensorFlow via
-    # model.base, so they MUST stay inside the function body.
     from model.autoencoder import AutoencoderModel
     from evaluate.outliers import compute_per_column_contributions
     import tensorflow as tf
@@ -272,13 +263,11 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             logger.warning(f"Failed to update status: {e}")
             return
 
-        # 1. Download from GCS
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_path)
         csv_bytes = blob.download_as_bytes()
 
-        # Validate CSV
         try:
             encoding, col_count, row_count = validate_csv(csv_bytes)
             logger.info(f"CSV validation passed: {row_count} rows, {col_count} columns, {encoding} encoding")
@@ -291,12 +280,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             logger.error(f"CSV validation failed for job {job_id}: {e}")
             return
 
-        # Check for early cancellation before heavy work
         if is_job_canceled(job_id):
             logger.info(f"Job {job_id} was canceled before training, aborting")
             return
 
-        # 2. Load Data
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
         df = loader.load_original_data(csv_bytes)
         logger.info(f"Loaded CSV data. Shape: {df.shape}")
@@ -309,7 +296,6 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         process_df = df.fillna("missing").astype(str)
 
-        # Rule of 9 Filter
         cols_to_keep = []
         for col in process_df.columns:
             unique_count = process_df[col].nunique()
@@ -334,7 +320,6 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         if process_df.shape[1] == 0:
             raise ValueError("All columns were dropped by Rule of 9 filter. No columns have 2-9 unique values.")
 
-        # Vectorization
         model_variable_types = {col: 'categorical' for col in process_df.columns}
         vectorizer = Table2Vector(model_variable_types)
         vectorized_df = vectorizer.vectorize_table(process_df).astype('float32')
@@ -355,15 +340,11 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
-        # Update status to training
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.TRAINING, {
             'stage': 'Training autoencoder model'
         })
 
-        # Cooperative cancellation callback: checks Firestore at the end of
-        # each epoch so the worker stops training promptly after the cancel
-        # API flips the status to 'canceled'.
         class CancellationCallback(tf.keras.callbacks.Callback):
             def on_epoch_end(self, epoch, logs=None):
                 if is_job_canceled(job_id):
@@ -378,18 +359,15 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             callbacks=[CancellationCallback()]
         )
 
-        # Check cancellation after training completes
         if is_job_canceled(job_id):
             logger.info(f"Job {job_id} was canceled after training, aborting scoring")
             return
 
-        # Update status to scoring
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.SCORING, {
             'stage': 'Computing outlier scores'
         })
 
-        # Calculate reconstruction error
         from model.base import VAE
 
         predictions = keras_model.predict(vectorized_df)
@@ -403,17 +381,28 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         )
         df['reconstruction_error'] = reconstruction_loss.numpy()
 
-        # Get top outliers and compute per-column contributions
+        # Get top outliers and compute per-column contributions.
+        # Reuse the batch `predictions` computed above rather than calling
+        # keras_model.predict per row (up to 100 redundant forward passes).
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
 
+        # Convert predictions to a numpy array for positional slicing.
+        predictions_np = predictions if isinstance(predictions, np.ndarray) else np.array(predictions)
+        vectorized_np = vectorized_df.to_numpy()
+
+        # Cap per-outlier contributions to the top N columns by percentage.
+        # This bounds the Firestore document payload: with 100 outliers and
+        # many kept columns, the full contribution list can push the job
+        # document past Firestore's 1 MiB limit. Top-10 preserves the most
+        # informative attribution data while keeping the payload bounded.
+        MAX_CONTRIBUTIONS_PER_OUTLIER = 10
+
         outliers_data = []
         for idx, row in top_outliers.iterrows():
-            row_data = vectorized_df.iloc[idx:idx+1].to_numpy()
-            row_pred = keras_model.predict(row_data, verbose=0)
-
-            if isinstance(row_pred, list):
-                row_pred = row_pred[0]
+            # Slice the already-computed batch predictions by positional index.
+            row_data = vectorized_np[idx:idx+1]
+            row_pred = predictions_np[idx:idx+1]
 
             contributions = compute_per_column_contributions(
                 row_data,
@@ -424,16 +413,19 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
             # Store per-row metadata under a reserved `__meta` namespace so it
             # cannot silently overwrite a user-uploaded column with the same name.
+            # Contributions are sorted descending and capped to limit payload.
+            sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
+            capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
+
             outlier_record = row.to_dict()
             outlier_record['__meta'] = {
                 'contributions': [
                     {'column': col, 'percentage': float(pct)}
-                    for col, pct in contributions
+                    for col, pct in capped_contribs
                 ],
             }
             outliers_data.append(outlier_record)
 
-        # Save to Firestore
         transaction = db.transaction()
         job_ref = db.collection('jobs').document(job_id)
         update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
@@ -491,16 +483,6 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
             sync=False
         )
 
-        # Persist the Vertex-assigned resource name so the cancel endpoint can
-        # stop this training run with the correct identifier.
-        #
-        # IMPORTANT: CustomContainerTrainingJob.run() creates a TrainingPipeline
-        # on the server, not a CustomJob directly. `job.resource_name` therefore
-        # has the form:
-        #   projects/{p}/locations/{l}/trainingPipelines/{vertex_numeric_id}
-        # Cancelling the pipeline IS how you stop the training run, so we store
-        # the pipeline name and let frontend/server/services/vertexAi.ts
-        # route it to PipelineServiceClient.cancelTrainingPipeline.
         vertex_job_name = getattr(job, "resource_name", None)
         if vertex_job_name:
             db.collection('jobs').document(job_id).set(
@@ -511,12 +493,9 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 f"{vertex_job_name}"
             )
 
-            # Reconciliation: if the job was canceled while we were
-            # submitting (the cancel API would have found no
-            # vertexJobName and skipped the Vertex cancel), we need to
-            # cancel the pipeline ourselves now that we know its name.
-            # Without this the Vertex run continues indefinitely and
-            # there is no retry path because the job is already terminal.
+            # Reconciliation: cancel the pipeline if the job was canceled
+            # while we were submitting (the cancel API would have found no
+            # vertexJobName and skipped the Vertex cancel).
             if is_job_canceled(job_id):
                 logger.info(
                     f"Job {job_id} was canceled during Vertex submission, "
@@ -549,7 +528,6 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         extender.stop()
 
 
-# Module-level processing mode, set from __main__
 _processing_mode = "local"
 
 
