@@ -5,7 +5,12 @@
 
 import { Router, Request, Response } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
-import { validateSignup, validateLogin, validateRequestReset } from '../middleware/validation';
+import {
+  validateSignup,
+  validateLogin,
+  validateRequestReset,
+  validateResetPassword,
+} from '../middleware/validation';
 import { authLimiter } from '../middleware/rateLimits';
 import {
   createUser,
@@ -19,7 +24,6 @@ import {
   toPublicUser,
 } from '../models/user';
 import { logger } from '../config/logger';
-import { env } from '../config/env';
 
 const router = Router();
 
@@ -127,9 +131,14 @@ router.post('/send-verification', requireAuth, async (req: Request, res: Respons
     // Generate or regenerate verification token
     const token = user.verificationToken || await createVerificationToken(user.id);
 
-    // STUB: In production, send actual email. For v1, log only.
-    const verificationUrl = `${env.FRONTEND_URL}/verify-email?token=${token}`;
-    logger.info('[EMAIL STUB] Verification link', { url: verificationUrl, userId: user.id });
+    // STUB: In production, send actual email. For v1, log only an event.
+    // Do NOT log the token or full URL: anyone with log-read access could
+    // verify the user's email without mailbox proof and bypass the email
+    // verification control. Dev workflows can fetch the token from Firestore.
+    logger.info('[EMAIL STUB] Verification token issued', {
+      userId: user.id,
+      tokenPrefix: token.slice(0, 8),
+    });
 
     res.json({ message: 'Verification email sent' });
   } catch (error) {
@@ -183,9 +192,15 @@ router.post('/request-reset', authLimiter, validateRequestReset, async (req: Req
     if (user) {
       const token = await createPasswordResetToken(user.id);
 
-      // STUB: In production, send actual email. For v1, log only.
-      const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`;
-      logger.info('[EMAIL STUB] Password reset link', { url: resetUrl, userId: user.id });
+      // STUB: In production, send actual email. For v1, log only an event.
+      // Do NOT log the token or full URL: with that token, anyone with
+      // log-read access (e.g. Cloud Logging viewers) could call
+      // /api/auth/reset-password and take over the account without mailbox
+      // access. Dev workflows can fetch the token from Firestore.
+      logger.info('[EMAIL STUB] Password reset token issued', {
+        userId: user.id,
+        tokenPrefix: token.slice(0, 8),
+      });
     }
 
     // Always return success to prevent email enumeration
@@ -204,17 +219,9 @@ router.post('/request-reset', authLimiter, validateRequestReset, async (req: Req
  * POST /api/auth/reset-password
  * Reset password with token
  */
-router.post('/reset-password', authLimiter, async (req: Request, res: Response) => {
+router.post('/reset-password', authLimiter, validateResetPassword, async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
-
-    if (!token || !newPassword) {
-      return res.status(400).json({ error: 'Token and new password required' });
-    }
-
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
 
     const user = await getUserByResetToken(token);
     if (!user) {
