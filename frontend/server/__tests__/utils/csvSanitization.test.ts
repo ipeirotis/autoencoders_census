@@ -22,6 +22,14 @@ describe('csvSanitization', () => {
       expect(sanitizeFormulaInjection('\t\r\n')).toBe("'\t\r\n");
     });
 
+    it('should prefix string starting with a line feed with single quote', () => {
+      // Spreadsheet clients ignore leading LF and will otherwise evaluate
+      // "\n=HYPERLINK(...)" as a formula.
+      expect(sanitizeFormulaInjection('\n=HYPERLINK("http://evil")')).toBe(
+        "'\n=HYPERLINK(\"http://evil\")"
+      );
+    });
+
     it('should not modify normal text', () => {
       expect(sanitizeFormulaInjection('normal text')).toBe('normal text');
     });

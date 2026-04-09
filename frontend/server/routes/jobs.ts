@@ -93,11 +93,16 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
     await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    // Initialize Firestore document
+    // Initialize Firestore document.
+    // gcsFileName is persisted so the cancel and delete-files endpoints can
+    // find the upload object in GCS later - without this the cleanup paths
+    // silently skip the GCS delete and leave the upload behind.
     await firestore.collection("jobs").doc(jobId).set({
       status: "uploading", // Initial state
       createdAt: new Date(),
       userId: (req as any).user.id,
+      gcsFileName,
+      bucket: BUCKET_NAME,
     });
 
     res.json({ success: true, message: "Job started" });
@@ -208,6 +213,17 @@ router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Resp
       return res.status(404).json({ error: 'Job not found' });
     }
 
+    // Refuse to "cancel" a job that has already reached a terminal state.
+    // Without this guard a stale client tab (or direct API call) could flip
+    // an already-`complete` job to `canceled`, delete its storage artifacts,
+    // and silently invalidate finished results.
+    const TERMINAL_STATUSES = new Set(['complete', 'error', 'canceled']);
+    if (TERMINAL_STATUSES.has(job.status)) {
+      return res.status(409).json({
+        error: `Cannot cancel job in terminal state: ${job.status}`,
+      });
+    }
+
     const gcsFileName = job.gcsFileName || job.file; // Check both possible fields
 
     // 1. Delete GCS uploaded file (best-effort)
@@ -272,27 +288,34 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Only allow deletion of completed/failed jobs (not running jobs)
-    if (!['complete', 'failed', 'canceled'].includes(job.status)) {
+    // Only allow deletion of terminal jobs (not running jobs).
+    // NOTE: worker.py writes failures as JobStatus.ERROR ("error"), not
+    // "failed" - including "failed" in the list previously would have
+    // rejected real failed jobs and left their artifacts orphaned.
+    const DELETABLE_STATUSES = new Set(['complete', 'error', 'canceled']);
+    if (!DELETABLE_STATUSES.has(job.status)) {
       return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
     }
 
     const gcsFileName = job.gcsFileName || job.file;
     let filesDeleted = 0;
+    let uploadDeleteFailed = false;
+    let resultDeleteFailed = false;
 
     // Delete GCS uploaded file (best-effort)
-    try {
-      if (gcsFileName) {
+    if (gcsFileName) {
+      try {
         await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
         filesDeleted++;
         logger.info('Deleted GCS upload file', { jobId: id, file: gcsFileName });
+      } catch (error) {
+        uploadDeleteFailed = true;
+        logger.warn('Failed to delete GCS upload file (may already be deleted)', {
+          jobId: id,
+          file: gcsFileName,
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
-    } catch (error) {
-      logger.warn('Failed to delete GCS upload file (may already be deleted)', {
-        jobId: id,
-        file: gcsFileName,
-        error: error instanceof Error ? error.message : String(error)
-      });
     }
 
     // Delete result files if exist (best-effort)
@@ -302,6 +325,7 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
       filesDeleted++;
       logger.info('Deleted GCS result file', { jobId: id, file: resultFileName });
     } catch (error) {
+      resultDeleteFailed = true;
       logger.warn('Failed to delete GCS result file (may not exist)', {
         jobId: id,
         file: resultFileName,
@@ -309,13 +333,28 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
       });
     }
 
-    // Update Firestore to mark files as expired (optional flag)
+    // Only mark the job as expired if we actually removed something. If the
+    // upload object was present and its deletion failed, we cannot flip
+    // filesExpired to true - that would tell the UI the files are gone while
+    // leaving the CSV sitting in GCS with no retry path for the user.
+    if (gcsFileName && uploadDeleteFailed) {
+      return res.status(502).json({
+        error: 'Failed to delete uploaded file from storage. Please retry.',
+        filesDeleted,
+      });
+    }
+
     await firestore.collection("jobs").doc(id).update({
       filesExpired: true,
       filesDeletedAt: new Date()
     });
 
-    logger.info('Job files deleted manually', { jobId: id, filesDeleted, userId: (req as any).user?.id });
+    logger.info('Job files deleted manually', {
+      jobId: id,
+      filesDeleted,
+      resultDeleteFailed,
+      userId: (req as any).user?.id,
+    });
 
     res.json({ success: true, message: 'Files deleted successfully', filesDeleted });
   } catch (error) {

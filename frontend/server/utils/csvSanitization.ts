@@ -18,8 +18,11 @@ export function sanitizeFormulaInjection(value: any): any {
     return value;
   }
 
-  // Dangerous characters that can trigger formula execution in Excel
-  const dangerousChars = ['=', '+', '-', '@', '\t', '\r'];
+  // Dangerous characters that can trigger formula execution in Excel.
+  // Leading whitespace characters (tab, CR, LF) are all escaped because
+  // spreadsheet clients ignore leading control characters and will still
+  // evaluate e.g. "\n=HYPERLINK(...)" as a formula.
+  const dangerousChars = ['=', '+', '-', '@', '\t', '\r', '\n'];
 
   // Check if string starts with any dangerous character
   if (dangerousChars.some(char => value.startsWith(char))) {
