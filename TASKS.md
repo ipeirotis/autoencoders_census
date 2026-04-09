@@ -2,53 +2,43 @@
 
 ## 1. Stabilize the Core Pipeline
 
-### 1.1 Unify data-loading return format
-The `DataLoader` methods return inconsistent formats -- some return `(df, variable_types)`, others return `(df, metadata_dict)`. The `train` and `find_outliers` commands in `main.py` work around this with nested isinstance checks (lines 174-192, 511-526). Refactor `DataLoader.prepare_original_dataset()` and all `load_*` methods to return a consistent `(DataFrame, dict)` where the dict always has `"variable_types"` and `"ignored_columns"` keys.
+### ~~1.1 Unify data-loading return format~~ DONE
+All `DataLoader` methods now consistently return `(DataFrame, metadata_dict)` where metadata always has `"variable_types"` and `"ignored_columns"` keys. Fixed `load_eval_dataset()` (the only outlier, which returned a nested `((df, base_df), types)` tuple) to use `prepare_original_dataset()` like all other loaders. Removed the isinstance workaround code from both `train()` and `find_outliers()` in `main.py`.
 
-### 1.2 Extract shared data-cleaning logic
-The data-cleaning pipeline (fillna, astype(str), Rule of 9 filter, vectorization, float32 conversion) is duplicated between the `train` command (main.py lines 196-253), the `find_outliers` command (main.py lines 529-570), and `run_training_pipeline()` (main.py lines 57-91). Extract this into a single reusable function (e.g., `prepare_for_model(df) -> (vectorized_df, variable_types, cardinalities)`) and call it from all three places.
+### ~~1.2 Extract shared data-cleaning logic~~ DONE
+Extracted `prepare_for_model(project_data, variable_types)` in `main.py` that performs the full pipeline: fillna("missing") → astype(str) → Rule-of-9 filter → sync variable_types → Table2Vector vectorization → float32 conversion → cardinality computation. Returns `(cleaned_df, vectorized_df, vectorizer, cardinalities)`. Now called from `train()`, `find_outliers()`, and `run_training_pipeline()` — eliminated ~80 lines of duplicated cleaning code.
 
-### 1.3 Consolidate dataset config definitions
-Dataset-specific column configs (`drop_columns`, `rename_columns`, `interest_columns`) are duplicated across `main.py` (in `train`, `find_outliers`, `evaluate_on_condition`, `pca_baseline`) and `utils.py` (`define_necessary_elements`). Move all dataset configs into a single YAML or Python registry to eliminate drift between copies.
+### ~~1.3 Consolidate dataset config definitions~~ DONE
+Replaced the inline dataset config blocks in `evaluate_on_condition` (~340 lines) and `pca_baseline` (~470 lines) with calls to `define_necessary_elements()` from `utils.py` — the single source of truth for all dataset configs. All CLI commands (`train`, `find_outliers`, `evaluate`, `evaluate_on_condition`, `pca_baseline`) now use the same function. Note: the configs that were in `evaluate_on_condition`/`pca_baseline` had slight differences from `utils.py` (documented in task 1.7); those discrepancies should be resolved in task 1.7 by verifying which values are correct.
 
-### 1.4 Fix broken test_loader.py tests
-`tests/dataset/test_loader.py` references `DataLoader.DATASET_URL_2015` and `DataLoader.DATASET_URL_2017` class attributes and calls `DataLoader()` with no arguments. These no longer match the current `DataLoader.__init__` signature which requires `drop_columns`, `rename_columns`, and `columns_of_interest`. Update the tests to match the current API.
+### ~~1.4 Fix broken test_loader.py tests~~ DONE
+The `TestDataLoaderAPI` tests were already rewritten in the prior PR to use the current `DataLoader` API with synthetic data. The remaining issue was the `TestDataLoaderSADCRegression` test which unpacked `load_2017()` as `(df, var_types)` instead of `(df, metadata)` — fixed to use `metadata["variable_types"]` and added assertions for both `variable_types` and `ignored_columns` keys.
 
-### 1.5 Fix broken test_loss.py tests
-`tests/model/test_loss.py` imports `CustomCategoricalCrossentropyVAE` which does not exist in `model/loss.py`. All tests in this file fail with `ImportError`. Fix the import and update tests to match the current loss API.
+### ~~1.5 Fix broken test_loss.py tests~~ DONE
+Fixed in a prior PR: removed the nonexistent `CustomCategoricalCrossentropyVAE` import, rewrote tests to only use `CustomCategoricalCrossentropyAE`, and added `test_get_config_includes_percentile` to verify the serialization fix from task 1.11.
 
-### 1.6 Fix CLI commands that skip data cleaning
-Several CLI commands bypass the `fillna` / `astype(str)` / Rule-of-9 pipeline that `train` and `find_outliers` apply, meaning data seen during evaluation is preprocessed differently from training:
-- `search_hyperparameters` (main.py:334-340)
-- `evaluate` (main.py:411-412)
-- `evaluate_on_condition` (main.py:1056-1073)
-- `pca_baseline` (main.py:1592 — also crashes on `None.split(",")`)
+### ~~1.6 Fix CLI commands that skip data cleaning~~ DONE
+Fixed all CLI commands to use the same `prepare_for_model()` cleaning pipeline as `train`/`find_outliers`:
+- **`search_hyperparameters`**: Already fixed in prior refactoring (uses `prepare_for_model`)
+- **`evaluate`**: Replaced manual `Table2Vector` + `vectorize_table` with `prepare_for_model()` call, ensuring the same fillna/astype(str)/Rule-of-9 pipeline as training
+- **`pca_baseline`**: Same fix — uses `prepare_for_model()` after dropping conditioning columns. Also added None guard for `--column_to_condition` and `--outlier_value` to prevent `None.split(",")` crash
+- **`evaluate_on_condition`**: Added same None guard for required options. This command doesn't vectorize data (it reads pre-computed errors.csv), so no cleaning pipeline change needed
+- Also fixed bare `except:` clause in `find_outliers` to `except Exception:`
 
-Additionally, these commands use `describe().T["unique"]` to get cardinalities, which raises `KeyError` on numeric columns. The `train`/`find_outliers` commands correctly use `nunique()` instead.
+### ~~1.7 Fix dataset config inconsistencies across duplicated blocks~~ DONE
+The column configs in `evaluate_on_condition` / `pca_baseline` previously differed from `define_necessary_elements` (utils.py) because the evaluation blocks included extra attention-check / screening columns as gold labels. These columns are intentionally excluded from COLUMNS_OF_INTEREST in `define_necessary_elements` (they would leak ground truth into training). The fix: modified `find_outlier_data()` and `find_outlier_data_sadc_2017()` in `dataset/loader.py` to temporarily disable COLUMNS_OF_INTEREST filtering when loading data for evaluation, so attention-check columns are always accessible regardless of the training config.
 
-### 1.7 Fix dataset config inconsistencies across duplicated blocks
-The column configs in `evaluate_on_condition` / `pca_baseline` (main.py) differ from `define_necessary_elements` (utils.py) for almost every dataset:
-- `moral_data`: `range(12, 78)` vs `range(12, 77)`
-- `public_opinion`: `range(21, 176)` vs `range(21, 175)`
-- `mturk_ethics`: includes `+ [107, 108]` vs omits them
-- `racial_data`: includes `+ [74,75,76]` vs omits them
-- `bot_bot_mturk`: `range(20, 35)` vs `range(20, 34)` (and 35 appears twice in the main.py version)
-- `inattentive`: includes `3` vs omits it
-- `attention_check`: includes `+ [2]` vs omits it
+### ~~1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch~~ DONE
+Fixed `load_original_data()` to handle both integer positional indices and string column names in COLUMNS_OF_INTEREST. Integer indices now use positional lookup (`original_df.columns[valid]`) while string names use membership check. Previously, integer indices were compared against string column names and never matched, making the filter a no-op.
 
-These produce silently different results depending on which CLI command is used. Blocked by 1.3 (consolidate configs).
+### ~~1.9 Fix `run_training_pipeline` typo~~ DONE
+Fixed typo: `"guassian"` → `"gaussian"` in the default parameter of `run_training_pipeline()`.
 
-### 1.8 Fix `COLUMNS_OF_INTEREST` integer-vs-name mismatch
-`COLUMNS_OF_INTEREST` is set as a list of integer indices in all dataset configs, but `DataLoader.load_original_data()` (loader.py:333-336) filters with `if c in original_df.columns`, comparing integers to string column names. The filter never matches, producing an empty DataFrame. The logic should use `iloc` for integer indices or convert configs to column names.
+### ~~1.10 Fix `generate` command~~ DONE
+Fixed `KeyError` on `prior_means`/`prior_log_vars` — the VAE's `get_config()` never included these keys. Now computes latent-space statistics by running the encoder on the training data (`tf.reduce_mean` of `z_mean`/`z_log_var` across all rows).
 
-### 1.9 Fix `run_training_pipeline` typo
-Default prior is `"guassian"` (main.py:57) but the VAE checks `if prior == "gaussian"`. The misspelling causes the function to always raise `ValueError("Invalid prior")`.
-
-### 1.10 Fix `generate` command
-`generate` (main.py:656-657) accesses `model.get_config()["prior_means"]` and `["prior_log_vars"]`, but the VAE's `get_config()` does not include these keys. The command crashes with `KeyError`.
-
-### 1.11 Fix `CustomCategoricalCrossentropyAE.get_config` missing `percentile`
-`model/loss.py:143-144` omits the `percentile` parameter from `get_config()`. When a model is saved and reloaded, the percentile reverts to the default (80) regardless of the value used during training.
+### ~~1.11 Fix `CustomCategoricalCrossentropyAE.get_config` missing `percentile`~~ DONE
+Fixed in a prior PR: `get_config()` now includes `percentile` in its return dict, ensuring the value is preserved across model save/load cycles. Test coverage added in `test_get_config_includes_percentile`.
 
 ### ~~1.12 Remove DEBUG print statements~~ DONE
 All `print("DEBUG: ...")` statements in `main.py` have been replaced with proper `logger.debug()`, `logger.warning()`, and `logger.error()` calls. Emoji-prefixed error prints were also cleaned up.
@@ -110,7 +100,7 @@ When a user uploads a CSV through the web UI, the system should either auto-sele
 The `get_outliers_list()` function returns an aggregate reconstruction error per row. For interpretability, also compute and return per-column reconstruction error so users can see *which* survey questions a flagged respondent answered anomalously.
 
 ### 3.4 Benchmark model variants
-Run systematic comparisons of AE vs. VAE (Gaussian) vs. VAE (Gumbel) vs. PCA baseline on all built-in datasets. Record metrics (accuracy, lift, ROC AUC from `evaluate` command, plus outlier detection precision from `evaluate_on_condition`) and document which approach works best under what conditions.
+Run systematic comparisons of AE vs. Chow-Liu tree on all built-in datasets. Record metrics (accuracy, lift, ROC AUC from `evaluate` command, plus outlier detection precision from `evaluate_on_condition`) and document which approach works best under what conditions. The Chow-Liu tree (task 10) provides a fast, principled baseline with no training hyperparameters — understanding when the AE adds value over the tree is a key research question.
 
 ### 3.5 Fix numerical stability issues in loss computation
 - **Division by log(1) = 0**: `model/loss.py:62` and `model/base.py:121` normalize per-attribute crossentropy by `np.log(categories)`. If any attribute has cardinality 1, this is division by zero, producing `inf`/`NaN` loss. Commands that skip the Rule-of-9 filter (1.6) are vulnerable. Guard with `max(np.log(categories), epsilon)`.
@@ -119,9 +109,10 @@ Run systematic comparisons of AE vs. VAE (Gaussian) vs. VAE (Gumbel) vs. PCA bas
 ### 3.6 Remove global eager mode
 `tf.config.run_functions_eagerly(True)` is set at module level in `model/base.py:8` and `model/variational_autoencoder.py:13`. This forces all TensorFlow functions in the process to run eagerly, causing 2-10x training slowdown. This was likely added for debugging. Remove it or guard behind a `DEBUG` environment variable.
 
-### 3.7 Fix VAE serialization issues
+### 3.7 Fix VAE serialization issues (LOW PRIORITY)
 - `kl_loss_weight` is overwritten to `0.0` in the constructor (model/base.py:36-40) for warmup scheduling. But `get_config()` (model/base.py:269-270) calls `.numpy()` on `self.kl_loss_weight`, which is a Python float (not a tensor) before the first training step, raising `AttributeError`.
 - After deserialization via `from_config`, the warmup schedule restarts from 0 regardless of where training left off.
+- VAE is not actively used; fix only if VAE work resumes.
 
 ### 3.8 Fix data leakage in feature transformation
 - **MinMaxScaler fit on train+test** (features/transform.py:65-70): The scaler is `fit_transform`'d on the entire DataFrame before train/test split. Test set min/max values leak into training normalization.
@@ -494,7 +485,7 @@ The autoencoder approach is interesting because it can detect multivariate patte
 
 Note that some of the built-in datasets (Pennycook, bot_bot_mturk) include timing data (`time_diff`, `submit_diff` columns), but these are likely dropped by the Rule of 9 because they have too many unique values. The autoencoder never sees the single strongest signal of low-quality responding.
 
-**Recommendation**: Implement at least longstring analysis and Mahalanobis distance as baseline comparisons. The `evaluate_on_condition` command already compares against ground-truth labels — use it to measure whether the autoencoder adds value over these simpler methods. The most impactful improvement may be an **ensemble approach** that combines the autoencoder's reconstruction error with traditional indicators (completion time, straightlining score, attention check failures) into a composite score. Each method has different blind spots; combining them would produce a far more robust quality indicator.
+**Recommendation**: The Chow-Liu tree in `chow_liu_rank.py` (section 10) already provides a principled probabilistic baseline. Once it is integrated into the CLI (task 10.1), benchmark it against the AE using `evaluate_on_condition`. Consider also implementing longstring analysis and Mahalanobis distance. The most impactful improvement may be an **ensemble approach** that combines the autoencoder's reconstruction error with the Chow-Liu log-likelihood and traditional indicators (completion time, straightlining score, attention check failures) into a composite score.
 
 ### 9.3 Evaluation relies on proxy ground truth, not validated labels
 
@@ -553,13 +544,9 @@ The CLI supports training, evaluation, hyperparameter search, generation, PCA ba
 
 This creates a fragmented experience — power users must switch to the CLI, casual users cannot access most functionality. Consider which features from the CLI should be exposed in the web UI, or whether the CLI should be the primary interface with the web UI serving as a simple demo.
 
-### 9.9 VAE adds complexity but unclear value for outlier detection
+### 9.9 VAE adds complexity but unclear value for outlier detection (LOW PRIORITY)
 
-The VAE (Variational Autoencoder) variant adds significant complexity (Gumbel-Softmax prior, KL warmup scheduling, temperature annealing) but the project has no documented evidence that it outperforms the simpler AE for outlier detection.
-
-For the outlier detection use case, the VAE's generative capabilities (sampling, latent interpolation) are not directly useful — what matters is reconstruction error quality. The VAE's KL regularization may actually *hurt* outlier detection by forcing the encoder to use a smooth latent space that compresses outlier information.
-
-**Recommendation**: Run the benchmarks in task 3.4 before investing further in VAE improvements. If the simpler AE performs comparably, consider making VAE an optional advanced feature rather than a co-equal path.
+The VAE is not actively used. The focus is on the standard AE and the Chow-Liu tree baseline. The VAE code remains in the codebase but should not receive further investment unless benchmarks (task 3.4) show it adds clear value over the AE for outlier detection.
 
 ### 9.10 Default latent space dimension is too small
 
@@ -589,19 +576,29 @@ The web frontend requires Google Cloud Storage, Pub/Sub, and Firestore — meani
 
 `chow_liu_rank.py` adds a Chow-Liu tree-based outlier scoring method. It fits a maximum spanning tree of pairwise mutual information on categorical data and computes per-row log-likelihood — rows with low log-likelihood are outliers. This is a fast, non-neural baseline with no training hyperparameters.
 
-### 10.1 Integrate Chow-Liu outlier scoring into the main CLI
+### ~~10.1 Clean up `chow_liu_rank.py`~~ DONE
+Moved `DataLoader` and `define_necessary_elements` imports from module level into `if __name__ == "__main__"` block so the module is a clean, standalone library. The module now only depends on numpy, pandas, typing, and dataclasses. Fixed the `__main__` block to use `error = 1 - pct` (higher = more anomalous) instead of using `pct` directly as error (which was inverted).
 
-`chow_liu_rank.py` contains `CLTree` and `rank_rows_by_chow_liu()` which fit a Chow-Liu tree on categorical data and score rows by log-likelihood. Currently this is a standalone script with hardcoded dataset loading at the bottom of the file. It should be:
-- Integrated as a model option in `main.py` (e.g., `--model_name CL`)
-- The inline script code at the bottom of `chow_liu_rank.py` (lines 251-290) should be removed or moved to a separate runner script
-- The unused imports (`alembic`, `gitdb`) at the top should be removed
+### ~~10.2 Integrate Chow-Liu as a CLI command~~ DONE
+Added `chow_liu_outliers` CLI command in `main.py` that:
+- Uses the same `define_necessary_elements()` → `DataLoader` → `load_data()` pipeline as all other commands
+- Calls `prepare_for_categorical()` (new helper extracted from `prepare_for_model()`) for cleaning: fillna("missing") → astype(str) → Rule-of-9 — no vectorization needed since CLTree operates on raw categorical data
+- Fits CLTree via `rank_rows_by_chow_liu()` with configurable `--alpha` (Laplace smoothing) and `--mi_subsample` options
+- Outputs `errors.csv` with `error = 1 - pct` column, compatible with `evaluate_on_condition`
+- Logs the top-5 strongest tree edges (highest mutual information) for interpretability
 
-### 10.2 Add tests for Chow-Liu tree
+Also extracted `prepare_for_categorical()` from `prepare_for_model()` to avoid duplicating the cleaning logic. `prepare_for_model()` now calls `prepare_for_categorical()` internally for its first two steps.
 
-No tests exist for the Chow-Liu components. Add:
-- Unit tests for `CLTree.fit()` and `CLTree.log_likelihood()` on synthetic data
-- Test that `rank_rows_by_chow_liu()` produces expected scoring columns (`logp`, `avg_logp`, `gmean_prob`, `rank_desc`, `pct`, `z`)
+### ~~10.3 Add Chow-Liu to the model factory (optional)~~ DONE (decided against)
+Decision: Keep as a separate CLI command (`chow_liu_outliers`). The tree has a fundamentally different API (no `fit`/`predict` in the Keras sense, no config YAML, no vectorization step), so forcing it through the autoencoder pipeline would add complexity without benefit.
 
-### 10.3 Benchmark Chow-Liu vs AE for outlier detection
+### ~~10.4 Add tests for Chow-Liu tree~~ DONE
+Added `tests/test_chow_liu.py` with 26 tests across 4 test classes:
+- **`TestCLTreeFit`** (9 tests): schema building, tree structure (correct number of edges, parent/child relationships), root selection, marginal distributions sum to 1, CPT rows sum to 1, explicit root, mi_subsample
+- **`TestCLTreeLogLikelihood`** (4 tests): correct output length, all values negative, no NaN/inf, training data scores higher than random data
+- **`TestRankRowsByChowLiu`** (9 tests): scoring columns present, original columns preserved, rank is valid permutation, pct/gmean_prob in [0,1], z-scores centered at 0, logp/avg_logp consistency
+- **`TestChowLiuOutlierDetection`** (4 tests): injected random rows score lower than correlated rows, error column compatible with evaluate_on_condition, NaN handling, single-column edge case
 
-The Chow-Liu tree provides a principled probabilistic baseline for outlier detection. Run comparisons on all built-in datasets using `evaluate_on_condition` to measure whether the tree-based approach (which is much faster and has no training hyperparameters) matches or exceeds the autoencoder for detecting known bad respondents. This directly addresses the concern in 9.2 about lacking baseline comparisons.
+### 10.5 Benchmark Chow-Liu vs AE for outlier detection
+
+Run comparisons on all built-in datasets using `evaluate_on_condition` to measure whether the tree-based approach (which is much faster and has no training hyperparameters) matches or exceeds the autoencoder for detecting known bad respondents. This directly addresses the concern in 9.2 about lacking baseline comparisons and is a key research question for the project.

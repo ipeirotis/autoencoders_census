@@ -1,6 +1,6 @@
 /**
  * Frontend API client - calls Express endpoints
- * 
+ *
  * This orchestrates the 3-step upload:
  * 1. getUploadUrl()  → POST /api/jobs/upload-url  → Gets signed GCS URL
  * 2. uploadToGcs()   → PUT to signed URL          → Uploads file directly to GCS
@@ -15,7 +15,18 @@ export interface UploadResponse {
 }
 
 export interface JobStatus {
-  status: "uploading" | "processing" | "complete" | "error";
+  // "uploading" is a client-only idle state used by Index.tsx. The server
+  // reports the JobStatus enum values from worker.py (queued, processing,
+  // training, scoring, complete, error, canceled).
+  status:
+    | "uploading"
+    | "queued"
+    | "processing"
+    | "training"
+    | "scoring"
+    | "complete"
+    | "error"
+    | "canceled";
   stats?: any;
   outliers?: any[];
   error?: string;
@@ -36,6 +47,12 @@ async function getUploadUrl(filename: string, contentType: string) {
 }
 
 // 2. Upload File to GCS
+// The Content-Type used for the PUT MUST match whatever the server used
+// when signing the URL - otherwise GCS rejects the upload. The server
+// echoes nothing back; instead it signs using exactly the contentType
+// we sent in step 1 (or omits the constraint entirely if we sent an
+// empty one). We pass the same `file.type` through here for both calls,
+// so the PUT header always matches the signing value.
 async function uploadToGcs(url: string, file: File) {
   const res = await fetch(url, {
     method: "PUT",
@@ -58,15 +75,16 @@ async function startJob(jobId: string, gcsFileName: string) {
 
 // Main Upload Function
 export async function uploadCsv(file: File): Promise<UploadResponse> {
-  // A. Get URL
+  // A. Get URL - pass file.type so the server signs for that exact
+  //    Content-Type (or omits the constraint if file.type is empty).
   const { url, jobId, gcsFileName } = await getUploadUrl(file.name, file.type);
-  
-  // B. Upload
+
+  // B. Upload (sends the same file.type header)
   await uploadToGcs(url, file);
-  
+
   // C. Start Job
   await startJob(jobId, gcsFileName);
-  
+
   return { jobId };
 }
 

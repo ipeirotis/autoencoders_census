@@ -32,6 +32,31 @@ const pubsub = new PubSub();
 const BUCKET_NAME = env.GCS_BUCKET_NAME;
 const TOPIC_ID = env.PUBSUB_TOPIC_ID;
 
+/**
+ * WORK-12: Defense-in-depth CSV validation
+ *
+ * Express layer (quick checks):
+ *   - File extension validation (.csv only) - handled by validateUploadUrl middleware
+ *   - Content-Type passthrough so the signed URL's Content-Type constraint
+ *     matches the client's subsequent PUT (see /upload-url handler).
+ *
+ * Worker layer (deep checks):
+ *   - Encoding detection and validation (chardet)
+ *   - Structure validation (pandas streaming, min rows/cols)
+ *   - Size limit enforcement (>100MB rejection)
+ *   - Edge case handling (unicode, missing values)
+ *
+ * Note: File size validation (WORK-11) happens at the Worker layer via
+ * validate_csv(); the Express layer cannot reliably check size before
+ * the GCS upload completes. The GCS bucket has a 100MB object size
+ * limit configured separately.
+ *
+ * /upload-url uses the dedicated uploadUrlLimiter (separate from the
+ * uploadLimiter used by /start-job) so a normal 3-step upload doesn't
+ * consume two rate-limit slots from the same budget - see
+ * frontend/server/middleware/rateLimits.ts.
+ */
+
 // 1. Get Signed URL for Upload
 router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
   try {
@@ -46,7 +71,9 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
     // the client did not declare a contentType (e.g. browsers that report an
     // empty MIME for `.csv` files), omit it from the signing options entirely
     // so the signature does not constrain the Content-Type header. Otherwise
-    // sign for the exact value the client said it would send so they match.
+    // sign for the exact value the client said it would send so they match -
+    // including Excel-era MIME types like `application/vnd.ms-excel` that
+    // Windows browsers routinely report for CSV files.
     const signOptions: GetSignedUrlConfig = {
       version: "v4",
       action: "write",
@@ -106,55 +133,99 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // authenticated user who learned another user's job UUID (via logs,
     // shared client state, etc.) from overwriting `userId`/status on the
     // existing doc and locking the original owner out of /job-status/:id.
+    //
+    // The persisted status MUST be "queued" (JobStatus.QUEUED in worker.py),
+    // not "uploading". The worker's is_valid_transition(None, ...) state
+    // machine only accepts QUEUED as the valid first status - any other
+    // value would cause update_job_status(..., PROCESSING) to raise
+    // ValueError and leave the job stuck forever without ever running.
+    //
+    // Codex P1 (r3053917215 + follow-up r3053955xxx): publish failure
+    // handling is trickier than just "delete on publish error". If
+    // publishMessage() actually succeeded on the server side but the
+    // client saw a transient network error (timeout, reset), Pub/Sub
+    // still delivers the message and the worker needs the claimed doc
+    // to exist - deleting it would strand a valid job. Conversely, if
+    // publish truly failed we do want the client to be able to retry
+    // with the same jobId (otherwise the 409 guard locks them out).
+    // Squaring this: keep the doc on publish error, and make a
+    // same-user retry with the same jobId idempotent - if the existing
+    // claim is still "queued" and owned by the caller, reuse it and
+    // re-publish. The worker-side dedup (check_idempotency and
+    // mark_message_processed in worker.py) makes a duplicate publish
+    // on retry harmless.
+    // Codex P2 r(retry-file-binding): persist `gcsFileName` on the
+    // claimed job doc and require same-user retries to present the
+    // EXACT same file path. Without this check, a client that retried
+    // /start-job with the same jobId but a different gcsFileName
+    // (accident, bug, or malice) would overwrite the logical meaning
+    // of the claimed job and cause two different files to race under
+    // one jobId, producing nondeterministic results.
+    let claimedExistingDoc = false;
     try {
       await firestore.collection("jobs").doc(jobId).create({
-        status: "uploading", // Initial state
+        status: "queued", // Initial state (matches worker JobStatus.QUEUED)
         createdAt: new Date(),
         userId,
+        gcsFileName, // Pin the retry to this exact object path.
       });
     } catch (createErr: any) {
       // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
-      // existing document. Surface as 409 so the client knows the ID is
-      // taken without leaking ownership details.
-      if (createErr?.code === 6) {
+      // existing document.
+      if (createErr?.code !== 6) {
+        throw createErr;
+      }
+
+      // Same-user retry recovery: if the existing doc is owned by this
+      // caller AND is still in the initial "queued" state AND targets
+      // the exact same uploaded object, treat the request as a publish
+      // retry and reuse the claim. Any other combination is a real
+      // collision / replay attempt and gets the 409.
+      const existingDoc = await firestore.collection("jobs").doc(jobId).get();
+      const existing = existingDoc.exists ? existingDoc.data() : undefined;
+      if (
+        existing &&
+        existing.userId === userId &&
+        existing.status === "queued" &&
+        existing.gcsFileName === gcsFileName
+      ) {
+        claimedExistingDoc = true;
+        logger.info("start-job: reusing pre-existing queued doc for retry", {
+          jobId,
+          userId,
+          gcsFileName,
+        });
+      } else {
         logger.warn("start-job rejected: jobId already claimed", {
           jobId,
           userId,
+          existingOwner: existing?.userId,
+          existingStatus: existing?.status,
+          // Log the file mismatch so operators can see it in the audit
+          // trail. Do NOT log the existing.gcsFileName value if it
+          // belongs to a different user (we already blocked that
+          // above), but here we know the owner matched and only the
+          // file path differed, which is useful forensic data.
+          existingGcsFileName: existing?.gcsFileName,
+          requestedGcsFileName: gcsFileName,
         });
         return res.status(409).json({ error: "Job ID already exists" });
       }
-      throw createErr;
     }
 
-    // Only publish to Pub/Sub once the doc is successfully claimed, so a
-    // collision cannot enqueue work against someone else's job. If publish
-    // fails, release the claim with a best-effort delete so the client can
-    // safely retry the same jobId; otherwise the doc would be stuck in
-    // `uploading` and every retry would deterministically hit the 409 guard.
-    try {
-      await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
-    } catch (publishErr) {
-      logger.error("Pub/Sub publish failed; releasing job claim", {
-        error: publishErr instanceof Error ? publishErr.message : String(publishErr),
-        jobId,
-        userId,
-      });
-      try {
-        await firestore.collection("jobs").doc(jobId).delete();
-      } catch (cleanupErr) {
-        // If cleanup itself fails the doc is left orphaned. Log so an
-        // operator can clean it up manually; do not mask the original
-        // publish error.
-        logger.error("Failed to release job claim after publish error", {
-          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          jobId,
-          userId,
-        });
-      }
-      throw publishErr;
-    }
+    // Publish to Pub/Sub. On failure we do NOT delete the doc: the publish
+    // may have succeeded server-side even though the client saw an error,
+    // and we must not strand a valid job just because the ack was lost in
+    // flight. The client is expected to retry /start-job with the same
+    // jobId on any failure; the same-user reuse branch above will see the
+    // still-"queued" doc and re-publish. The worker's Pub/Sub-level dedup
+    // prevents duplicate processing if the first publish actually landed.
+    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    res.json({ success: true, message: "Job started" });
+    res.json({
+      success: true,
+      message: claimedExistingDoc ? "Job re-enqueued" : "Job started",
+    });
   } catch (error) {
     logger.error("Error starting job", {
       error: error instanceof Error ? error.message : String(error),

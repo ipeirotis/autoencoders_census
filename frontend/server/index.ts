@@ -128,12 +128,21 @@ export function createServer() {
       logger.info(`File saved to GCS: ${safeFilename}`);
 
       // 2. Create Firestore Document (Job Metadata)
+      //
+      // Codex P1 (r3053812511): initial status MUST be "queued"
+      // (JobStatus.QUEUED in worker.py). Any other first status
+      // ("uploaded", "uploading", ...) would fail the worker's
+      // is_valid_transition(None, ...) check, and the job would stay
+      // stuck because update_job_status(..., PROCESSING) would raise
+      // ValueError and the callback would ack the message without
+      // running. See the identical fix in
+      // frontend/server/routes/jobs.ts /start-job for context.
       const jobMetadata = {
         jobId: uniqueId,
         fileName: originalName,
         gcsPath: safeFilename,
         bucket: GCS_BUCKET_NAME,
-        status: "uploaded", // Initial status
+        status: "queued", // Initial status (matches worker JobStatus.QUEUED)
         createdAt: new Date().toISOString(),
         userId: (req as any).user.id,
       };

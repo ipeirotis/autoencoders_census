@@ -61,7 +61,12 @@ Plans:
 5. Worker processes CSV files with unicode characters, mixed types, mostly-missing values, and very wide datasets without crashing
 6. Invalid CSV formats (encoding errors, inconsistent row lengths) return descriptive error messages to user
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Message validation, idempotency, ack deadline extension
+- [ ] 02-02-PLAN.md — Transactional status updates and state machine validation
+- [ ] 02-03-PLAN.md — CSV validation with encoding detection and edge case handling
 
 ---
 
@@ -107,7 +112,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Security Foundation | 6/7 | In Progress | - |
-| 2. Worker Reliability | 0/TBD | Not started | - |
+| 2. Worker Reliability | 0/3 | Not started | - |
 | 3. Frontend Production | 0/TBD | Not started | - |
 | 4. Operational Features | 0/TBD | Not started | - |
 
@@ -128,4 +133,4 @@ Plans:
 ---
 
 *Roadmap created: 2026-03-24*
-*Last updated: 2026-04-02*
+*Last updated: 2026-04-03*
