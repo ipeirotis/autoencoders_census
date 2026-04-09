@@ -139,16 +139,21 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // machine only accepts QUEUED as the valid first status - any other
     // value would cause update_job_status(..., PROCESSING) to raise
     // ValueError and leave the job stuck forever without ever running.
-    // Codex P1 (r3053917215 + follow-up r3053955xxx): if publishMessage()
-    // throws AFTER a successful create(), simply deleting the doc would
-    // lose valid jobs where the publish actually succeeded server-side
-    // but the client saw a transient network error (Pub/Sub delivers the
-    // message anyway and the worker needs the doc to still exist). So
-    // instead of compensating delete, we make /start-job idempotent: a
-    // retry with the same jobId by the same user that still sees "queued"
-    // reuses the existing claim and just (re-)publishes. The worker's
-    // Pub/Sub-level dedup (check_idempotency + mark_message_processed in
-    // worker.py) makes a duplicate publish on retry harmless.
+    //
+    // Codex P1 (r3053917215 + follow-up r3053955xxx): publish failure
+    // handling is trickier than just "delete on publish error". If
+    // publishMessage() actually succeeded on the server side but the
+    // client saw a transient network error (timeout, reset), Pub/Sub
+    // still delivers the message and the worker needs the claimed doc
+    // to exist - deleting it would strand a valid job. Conversely, if
+    // publish truly failed we do want the client to be able to retry
+    // with the same jobId (otherwise the 409 guard locks them out).
+    // Squaring this: keep the doc on publish error, and make a
+    // same-user retry with the same jobId idempotent - if the existing
+    // claim is still "queued" and owned by the caller, reuse it and
+    // re-publish. The worker-side dedup (check_idempotency and
+    // mark_message_processed in worker.py) makes a duplicate publish
+    // on retry harmless.
     let claimedExistingDoc = false;
     try {
       await firestore.collection("jobs").doc(jobId).create({

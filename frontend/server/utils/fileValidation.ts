@@ -74,10 +74,17 @@ export function generateSafeFilename(userId: string): string {
  * @returns Sanitized absolute path if safe, null if traversal detected
  */
 export function sanitizePath(uploadDir: string, unsafePath: string): string | null {
-  const resolved = path.resolve(uploadDir, unsafePath);
+  const normalizedUploadDir = path.resolve(uploadDir);
+  const resolved = path.resolve(normalizedUploadDir, unsafePath);
 
-  // Verify resolved path is within upload directory
-  if (!resolved.startsWith(path.resolve(uploadDir))) {
+  // Verify resolved path is within the upload directory.
+  // Use a trailing separator so sibling directories that share the same
+  // prefix (e.g. `/var/uploads_evil/...` vs `/var/uploads`) are rejected.
+  // Also accept an exact match for the directory itself.
+  if (
+    resolved !== normalizedUploadDir &&
+    !resolved.startsWith(normalizedUploadDir + path.sep)
+  ) {
     return null; // Path traversal attempt
   }
 
