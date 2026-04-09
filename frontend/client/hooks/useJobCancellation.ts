@@ -1,6 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from "@/hooks/use-toast";
 
+// Match the API_BASE convention used by frontend/client/utils/api.ts so
+// that split frontend/backend deployments reach the API server.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+
 /**
  * Hook for job cancellation with TanStack Query mutation.
  *
@@ -17,7 +21,7 @@ export function useJobCancellation() {
 
   return useMutation({
     mutationFn: async (jobId: string) => {
-      const response = await fetch(`/api/jobs/${jobId}`, {
+      const response = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
         method: 'DELETE'
       });
       if (!response.ok) throw new Error('Failed to cancel job');
