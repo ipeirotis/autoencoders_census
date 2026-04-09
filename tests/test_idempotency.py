@@ -210,6 +210,44 @@ def test_first_time_message_processes_then_marks_then_acks():
     message.nack.assert_not_called()
 
 
+def test_duplicate_delivery_while_job_in_progress_nacks_without_marking():
+    """
+    Codex P1 (r3055316xxx): if a duplicate Pub/Sub delivery arrives while
+    another worker is still processing the same job (job doc is in
+    PROCESSING / TRAINING / SCORING and no idempotency marker has been
+    written yet because the original worker hasn't finished), callback()
+    must nack WITHOUT marking the message. Otherwise:
+      - If the original worker later crashes, the job stays stuck in an
+        in-progress state, and
+      - Because this delivery already marked the message as processed,
+        any future redelivery is silently skipped as a duplicate.
+    """
+    from worker import callback, JobInProgressError
+
+    message = Mock()
+    message.data = json.dumps({
+        "jobId": "job-inflight",
+        "bucket": "test-bucket",
+        "file": "test.csv"
+    }).encode("utf-8")
+    message.message_id = "msg-inflight-dup"
+    message.ack = Mock()
+    message.nack = Mock()
+
+    with patch('worker.check_idempotency', return_value=False), \
+         patch(
+             'worker.process_upload_local',
+             side_effect=JobInProgressError("already processing")
+         ), \
+         patch('worker.mark_message_processed') as mock_mark:
+        callback(message)
+
+    # Must nack for future redelivery and must NOT mark as processed.
+    message.nack.assert_called_once()
+    message.ack.assert_not_called()
+    mock_mark.assert_not_called()
+
+
 def test_job_document_not_ready_nacks_without_marking():
     """
     Codex P1 (r3053739500): if /start-job hasn't written the Firestore
