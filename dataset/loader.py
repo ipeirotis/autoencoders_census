@@ -310,26 +310,68 @@ class DataLoader:
         # run preprocessing
         return self.prepare_original_dataset(df, replacements=replacements)
 
-    def load_original_data(self, dataset_source):
+    def load_original_data(self, dataset_source, encoding=None):
         """
         Loads data from a file path (str) or raw bytes (uploaded file).
+
+        Args:
+            dataset_source: str (file path), bytes (raw upload), or file-like.
+            encoding: Optional explicit encoding to try first. Callers that
+                already detected an encoding (e.g. worker.py validate_csv()
+                via chardet) pass it here so parsing uses the same codec as
+                validation and a cp1252-encoded CSV is not silently decoded
+                as Latin-1 or UTF-8, which would corrupt non-ASCII
+                categoricals like smart quotes and em dashes and shift the
+                downstream outlier scores.
         """
-        # 1. Handle Raw Bytes (frontend upload) 
+        # 1. Handle Raw Bytes (frontend upload)
         if isinstance(dataset_source, bytes):
-            try:
-                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="utf-8")
-            except UnicodeDecodeError:
-                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="latin1")
-                
+            # Build the list of encodings to try: caller-provided first,
+            # then the historical UTF-8 -> Latin-1 fallback chain.
+            candidates = []
+            if encoding:
+                candidates.append(encoding)
+            for fallback in ("utf-8", "latin1"):
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+            last_err = None
+            original_df = None
+            for candidate in candidates:
+                try:
+                    original_df = pd.read_csv(
+                        io.BytesIO(dataset_source), encoding=candidate
+                    )
+                    break
+                except UnicodeDecodeError as err:
+                    last_err = err
+                    continue
+            if original_df is None:
+                raise last_err  # exhausted fallbacks
+
         # 2. Handle File-like objects
         elif isinstance(dataset_source, io.IOBase):
-            original_df = pd.read_csv(dataset_source) 
-            
+            original_df = pd.read_csv(dataset_source)
+
         else:
-            try:
-                original_df = pd.read_csv(dataset_source, encoding="utf-8")
-            except UnicodeDecodeError:
-                original_df = pd.read_csv(dataset_source, encoding="latin1")
+            candidates = []
+            if encoding:
+                candidates.append(encoding)
+            for fallback in ("utf-8", "latin1"):
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+            last_err = None
+            original_df = None
+            for candidate in candidates:
+                try:
+                    original_df = pd.read_csv(dataset_source, encoding=candidate)
+                    break
+                except UnicodeDecodeError as err:
+                    last_err = err
+                    continue
+            if original_df is None:
+                raise last_err
                 
         # colummn processing logic
         if self.DROP_COLUMNS:
