@@ -164,7 +164,32 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // after the Firestore write also closes the "worker runs before the
     // job document exists" race - by the time the worker picks up the
     // message, the queued doc is guaranteed to be there.
-    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    //
+    // Codex P1 (discussion_r3053917215): if publishMessage() fails
+    // transiently after we already claimed the job ID via create(), the
+    // Firestore doc is orphaned - claimed but with no matching Pub/Sub
+    // message, and any retry with the same jobId would be rejected as
+    // 409 by create(). Perform a compensating delete on publish failure
+    // so the client can retry the same jobId cleanly. Swallow the delete
+    // error (logged) so the original publish error is the one that
+    // surfaces to the caller and triggers their retry.
+    try {
+      await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    } catch (publishErr) {
+      try {
+        await firestore.collection("jobs").doc(jobId).delete();
+        logger.warn("Rolled back queued job doc after publish failure", {
+          jobId,
+          userId,
+        });
+      } catch (deleteErr) {
+        logger.error(
+          "Compensating delete failed after publish error - job doc is orphaned",
+          { jobId, userId, deleteErr: String(deleteErr) }
+        );
+      }
+      throw publishErr;
+    }
 
     res.json({ success: true, message: "Job started" });
   } catch (error) {
