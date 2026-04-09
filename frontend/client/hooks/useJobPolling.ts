@@ -17,17 +17,19 @@ interface JobStatus {
   errorType?: string;
 }
 
+/** Custom error that preserves the HTTP status code. */
+class HttpError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
+/** HTTP status codes where continuing to poll is pointless. */
+const NON_RETRIABLE_STATUSES = new Set([400, 401, 403, 404]);
+
 /**
  * Hook for polling job status with TanStack Query.
- *
- * Features:
- * - Automatic polling every 2 seconds for active jobs
- * - Stops polling when job reaches terminal state (complete/error/canceled)
- * - Automatic cleanup on component unmount (no memory leaks)
- * - Conditional fetching (only polls if jobId exists)
- *
- * @param jobId - The job ID to poll, or null to disable polling
- * @returns TanStack Query result with job status data
  */
 export function useJobPolling(jobId: string | null) {
   return useQuery<JobStatus>({
@@ -42,16 +44,23 @@ export function useJobPolling(jobId: string | null) {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch job status');
+        throw new HttpError('Failed to fetch job status', response.status);
       }
 
       return response.json();
     },
-    enabled: !!jobId, // Don't poll if no jobId (FE-10)
+    enabled: !!jobId,
     refetchInterval: (query) => {
+      // Stop polling on non-retriable HTTP errors (401 = session expired,
+      // 404 = job not found). Transient 5xx errors keep polling.
+      const err = query.state.error;
+      if (err instanceof HttpError && NON_RETRIABLE_STATUSES.has(err.status)) {
+        return false;
+      }
+
       const status = query.state.data?.status;
 
-      // Terminal states - stop polling (FE-09)
+      // Terminal states - stop polling
       if (status === 'complete' || status === 'error' || status === 'canceled') {
         return false;
       }

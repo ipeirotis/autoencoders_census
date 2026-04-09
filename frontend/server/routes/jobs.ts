@@ -301,20 +301,32 @@ router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
     return res.status(500).json({ error: "Failed to cancel job" });
   }
 
+  // Best-effort cleanup AFTER the canceled state is committed.
+  let gcsCleanupFailed = false;
   try {
     if (gcsFileName) {
       await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
       logger.info('Deleted GCS file for canceled job', { jobId: id, file: gcsFileName });
     }
   } catch (error) {
-    logger.warn('Failed to delete GCS file (continuing cleanup)', {
-      jobId: id, file: gcsFileName,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (!isGcsNotFoundError(error)) {
+      gcsCleanupFailed = true;
+      logger.warn('Failed to delete GCS file', {
+        jobId: id, file: gcsFileName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   await cancelVertexAIJob(vertexJobName, id);
   logger.info('Job canceled successfully', { jobId: id, userId });
+
+  if (gcsCleanupFailed) {
+    return res.status(207).json({
+      success: true,
+      message: 'Job canceled but file cleanup failed. Files may need manual deletion.',
+    });
+  }
   res.json({ success: true, message: 'Job canceled and resources cleaned up' });
 });
 
