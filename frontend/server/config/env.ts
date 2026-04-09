@@ -33,6 +33,9 @@ export const env = cleanEnv(process.env, {
   GCS_BUCKET_NAME: str({
     desc: 'Google Cloud Storage bucket name for file uploads',
   }),
+  PUBSUB_TOPIC_ID: str({
+    desc: 'Pub/Sub topic ID used to dispatch worker jobs',
+  }),
 
   // Required security configuration
   SESSION_SECRET: sessionSecret({

@@ -18,15 +18,19 @@ import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '.
 import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { logger } from '../config/logger';
+import { env } from '../config/env';
 
 const router = Router();
 const storage = new Storage();
 const firestore = new Firestore();
 const pubsub = new PubSub();
 
-// Configuration from Environment Variables
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
-const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
+// Configuration from validated environment variables (see config/env.ts).
+// Using the validated `env` object instead of `process.env` directly so a
+// missing/misspelled topic or bucket fails fast at startup rather than at
+// first request with an opaque "topic not found" runtime error.
+const BUCKET_NAME = env.GCS_BUCKET_NAME;
+const TOPIC_ID = env.PUBSUB_TOPIC_ID;
 
 // 1. Get Signed URL for Upload
 router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
@@ -96,14 +100,35 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     };
 
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
-    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    // Initialize Firestore document
-    await firestore.collection("jobs").doc(jobId).set({
-      status: "uploading", // Initial state
-      createdAt: new Date(),
-      userId,
-    });
+    // Atomically claim the job ID. Use Firestore's `create()` (not `set()`):
+    // it throws ALREADY_EXISTS if the doc is taken, which prevents an
+    // authenticated user who learned another user's job UUID (via logs,
+    // shared client state, etc.) from overwriting `userId`/status on the
+    // existing doc and locking the original owner out of /job-status/:id.
+    try {
+      await firestore.collection("jobs").doc(jobId).create({
+        status: "uploading", // Initial state
+        createdAt: new Date(),
+        userId,
+      });
+    } catch (createErr: any) {
+      // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
+      // existing document. Surface as 409 so the client knows the ID is
+      // taken without leaking ownership details.
+      if (createErr?.code === 6) {
+        logger.warn("start-job rejected: jobId already claimed", {
+          jobId,
+          userId,
+        });
+        return res.status(409).json({ error: "Job ID already exists" });
+      }
+      throw createErr;
+    }
+
+    // Only publish to Pub/Sub once the doc is successfully claimed, so a
+    // collision cannot enqueue work against someone else's job.
+    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
     res.json({ success: true, message: "Job started" });
   } catch (error) {
