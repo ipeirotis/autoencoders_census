@@ -154,12 +154,20 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // re-publish. The worker-side dedup (check_idempotency and
     // mark_message_processed in worker.py) makes a duplicate publish
     // on retry harmless.
+    // Codex P2 r(retry-file-binding): persist `gcsFileName` on the
+    // claimed job doc and require same-user retries to present the
+    // EXACT same file path. Without this check, a client that retried
+    // /start-job with the same jobId but a different gcsFileName
+    // (accident, bug, or malice) would overwrite the logical meaning
+    // of the claimed job and cause two different files to race under
+    // one jobId, producing nondeterministic results.
     let claimedExistingDoc = false;
     try {
       await firestore.collection("jobs").doc(jobId).create({
         status: "queued", // Initial state (matches worker JobStatus.QUEUED)
         createdAt: new Date(),
         userId,
+        gcsFileName, // Pin the retry to this exact object path.
       });
     } catch (createErr: any) {
       // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
@@ -169,22 +177,23 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
       }
 
       // Same-user retry recovery: if the existing doc is owned by this
-      // caller and still in the initial "queued" state (no worker has
-      // picked it up yet), treat the request as a publish retry and
-      // reuse the claim. Any other combination (different owner, or a
-      // status past "queued") is a real collision / replay attempt and
-      // gets the 409.
+      // caller AND is still in the initial "queued" state AND targets
+      // the exact same uploaded object, treat the request as a publish
+      // retry and reuse the claim. Any other combination is a real
+      // collision / replay attempt and gets the 409.
       const existingDoc = await firestore.collection("jobs").doc(jobId).get();
       const existing = existingDoc.exists ? existingDoc.data() : undefined;
       if (
         existing &&
         existing.userId === userId &&
-        existing.status === "queued"
+        existing.status === "queued" &&
+        existing.gcsFileName === gcsFileName
       ) {
         claimedExistingDoc = true;
         logger.info("start-job: reusing pre-existing queued doc for retry", {
           jobId,
           userId,
+          gcsFileName,
         });
       } else {
         logger.warn("start-job rejected: jobId already claimed", {
@@ -192,6 +201,13 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
           userId,
           existingOwner: existing?.userId,
           existingStatus: existing?.status,
+          // Log the file mismatch so operators can see it in the audit
+          // trail. Do NOT log the existing.gcsFileName value if it
+          // belongs to a different user (we already blocked that
+          // above), but here we know the owner matched and only the
+          // file path differed, which is useful forensic data.
+          existingGcsFileName: existing?.gcsFileName,
+          requestedGcsFileName: gcsFileName,
         });
         return res.status(409).json({ error: "Job ID already exists" });
       }

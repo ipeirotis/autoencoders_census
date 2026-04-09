@@ -73,6 +73,20 @@ IDEMPOTENCY_MARKER_TTL_DAYS = 7
 JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS = 60
 JOB_CLAIM_STALE_SECONDS = JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS * 3
 
+# Vertex mode stale threshold. The Vertex dispatcher is a short-lived
+# fire-and-forget call (job.run(sync=False) returns in seconds) and
+# then the worker stops heartbeating because there's nothing locally
+# to keep alive. The actual Vertex training job runs on the Vertex
+# side for potentially 30+ minutes. Using the local 3-minute threshold
+# would let a duplicate Pub/Sub delivery reclaim the doc after a few
+# minutes and submit a SECOND billable Vertex training job for the
+# same logical jobId. Use a much wider window (4 hours) so stale
+# takeover only fires if the Vertex job has been running for an
+# unreasonable amount of time; the post-dispatch "far future
+# claimedAt" write is still an additional defense-in-depth belt on
+# top of this.
+JOB_CLAIM_STALE_SECONDS_VERTEX = 4 * 60 * 60
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -388,26 +402,38 @@ def update_job_status(transaction, job_ref, new_status, additional_fields=None):
     logger.info(f"Job {job_ref.id} status: {current_status} -> {new_status}")
 
 
-def _is_claim_stale(claimed_at, now=None):
+def _is_claim_stale(claimed_at, now=None, threshold_seconds=None):
     """
     Decide whether a job's `claimedAt` timestamp is stale (older than
-    JOB_CLAIM_STALE_SECONDS), meaning the claiming worker's heartbeat has
+    `threshold_seconds`), meaning the claiming worker's heartbeat has
     gone silent long enough that we should treat the claim as abandoned.
 
     Accepts timezone-aware or naive datetimes and tolerates `None`
     (missing field) by treating it as stale so legacy jobs written
     before this field existed can still be recovered.
+
+    Args:
+        claimed_at: The stored claimedAt timestamp (or None).
+        now: Current time (defaults to datetime.now(utc)). Injectable
+            for testing.
+        threshold_seconds: The staleness threshold. Defaults to the
+            local-mode JOB_CLAIM_STALE_SECONDS. Callers processing a
+            Vertex job should pass JOB_CLAIM_STALE_SECONDS_VERTEX
+            instead because the dispatcher stops heartbeating long
+            before the actual Vertex training run finishes.
     """
     if claimed_at is None:
         return True
     if now is None:
         now = datetime.now(timezone.utc)
+    if threshold_seconds is None:
+        threshold_seconds = JOB_CLAIM_STALE_SECONDS
     # Firestore returns timezone-aware datetimes; be defensive if we
     # see a naive value (tests, legacy data) by assuming UTC.
     if claimed_at.tzinfo is None:
         claimed_at = claimed_at.replace(tzinfo=timezone.utc)
     age = (now - claimed_at).total_seconds()
-    return age > JOB_CLAIM_STALE_SECONDS
+    return age > threshold_seconds
 
 
 def try_take_over_stale_claim(job_ref):
@@ -420,9 +446,9 @@ def try_take_over_stale_claim(job_ref):
     doc in an in-progress state and a naive implementation would nack
     forever (infinite redelivery loop, stuck job). This function gives
     us an escape hatch: a duplicate delivery that finds the claim
-    abandoned (no heartbeat refresh for more than JOB_CLAIM_STALE_SECONDS)
-    transactionally bumps `claimedAt` to now and returns True, letting
-    the caller resume processing.
+    abandoned (no heartbeat refresh for more than the mode-specific
+    stale threshold) transactionally bumps `claimedAt` to now and
+    returns True, letting the caller resume processing.
 
     Codex P1 (followup, r(stale-takeover-from-training)): the takeover
     also *resets* the status to PROCESSING, even if the current state
@@ -441,6 +467,16 @@ def try_take_over_stale_claim(job_ref):
     a Vertex training job has already been successfully submitted and
     Vertex itself (not this worker) owns the work. Re-taking it over
     would re-submit the same Vertex training run and double-bill.
+
+    Codex P1 (followup, r(suppressor-write-failure)): the load-bearing
+    guard against duplicate Vertex dispatch is no longer *only* the
+    post-dispatch `vertexJobName` write. Jobs tagged with
+    `mode: "vertex"` in their initial claim (see process_upload_vertex
+    below) use a much wider stale threshold
+    (JOB_CLAIM_STALE_SECONDS_VERTEX, 4 hours) so that even if the
+    post-dispatch metadata write fails, the stale-claim takeover path
+    will not reclaim the job for hours, well after any normal Vertex
+    run would have finished.
 
     The refresh happens inside a Firestore transaction, so two workers
     that both see a stale claim cannot both take over: one wins the
@@ -471,8 +507,17 @@ def try_take_over_stale_claim(job_ref):
         # Re-taking over would re-submit the same training run.
         if snapshot.get('vertexJobName'):
             return False
+        # Mode-aware stale threshold. Vertex jobs use a much wider
+        # window because the dispatcher stops heartbeating as soon as
+        # job.run() returns, and the Vertex training itself can take
+        # tens of minutes to hours to complete.
+        mode = snapshot.get('mode')
+        if mode == 'vertex':
+            threshold = JOB_CLAIM_STALE_SECONDS_VERTEX
+        else:
+            threshold = JOB_CLAIM_STALE_SECONDS
         claimed_at = snapshot.get('claimedAt')
-        if not _is_claim_stale(claimed_at):
+        if not _is_claim_stale(claimed_at, threshold_seconds=threshold):
             return False
         transaction.update(
             ref,
@@ -1019,7 +1064,19 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 transaction,
                 job_ref,
                 JobStatus.PROCESSING,
-                additional_fields={'claimedAt': datetime.now(timezone.utc)},
+                # Codex P1 r(suppressor-write-failure): tag the job as
+                # `mode: "vertex"` in the same transaction that claims
+                # it. try_take_over_stale_claim uses this tag to pick a
+                # much wider stale threshold (4 hours instead of 3
+                # minutes), so even if the post-dispatch suppressor
+                # write (vertexJobName / far-future claimedAt) later
+                # fails, stale takeover still cannot fire during the
+                # expected Vertex run window and we cannot
+                # double-dispatch.
+                additional_fields={
+                    'claimedAt': datetime.now(timezone.utc),
+                    'mode': 'vertex',
+                },
             )
         except ValueError as e:
             if "not found" in str(e):
