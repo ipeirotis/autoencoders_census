@@ -2,76 +2,98 @@
  * Vertex AI service module for job management operations
  */
 
-import { JobServiceClient } from '@google-cloud/aiplatform';
+import { JobServiceClient, PipelineServiceClient } from '@google-cloud/aiplatform';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
 
 const PROJECT_ID = env.GOOGLE_CLOUD_PROJECT;
 const LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
+// Accept either flavor of Vertex resource we might have stored:
+//   projects/{p}/locations/{l}/trainingPipelines/{id}
+//     ^ what CustomContainerTrainingJob.run() yields (what we actually submit)
+//   projects/{p}/locations/{l}/customJobs/{id}
+//     ^ only if the caller extracts the underlying CustomJob explicitly
+const TRAINING_PIPELINE_RE =
+  /^projects\/[^/]+\/locations\/[^/]+\/trainingPipelines\/[^/]+$/;
+const CUSTOM_JOB_RE =
+  /^projects\/[^/]+\/locations\/[^/]+\/customJobs\/[^/]+$/;
+
 /**
- * Cancel a Vertex AI CustomJob using the actual server-generated resource name.
+ * Cancel a Vertex AI training resource using the actual server-generated
+ * resource name persisted by the worker.
  *
- * The Vertex AI API requires the full server-side resource name to cancel a job:
- *   projects/{project}/locations/{location}/customJobs/{vertexJobId}
+ * worker.py submits training via `aiplatform.CustomContainerTrainingJob.run()`
+ * which creates a `TrainingPipeline` on the server. The Python SDK exposes
+ * that pipeline's resource name via `job.resource_name`, in the form
+ *   projects/{p}/locations/{l}/trainingPipelines/{id}
+ * The pipeline in turn orchestrates one or more CustomJobs, but their
+ * server-generated IDs are not directly available from the wrapper before
+ * the job is running. Cancelling the *pipeline* is what actually stops the
+ * work, so that's what we do.
  *
- * The {vertexJobId} segment is a numeric ID assigned by Vertex AI when the
- * CustomJob is created. It is NOT the same as our application's job UUID.
- * The worker stores this resource name in Firestore (`vertexJobName`) when it
- * dispatches the job; cancellation must use that stored value.
+ * This helper also accepts raw customJobs/... resource names for callers
+ * that have extracted them, for backwards compatibility and flexibility.
  *
- * Cancellation is asynchronous and best-effort. The job may already be
+ * Cancellation is asynchronous and best-effort. The resource may already be
  * complete or in a non-cancellable state. This function does not throw on
- * failure to ensure cleanup continues even if cancellation is not possible.
+ * failure, so cleanup can continue even when cancellation is not possible.
  *
- * @param vertexJobName - The full Vertex AI resource name as stored on the
- *   Firestore job document, or null/undefined if the job was never dispatched
- *   to Vertex AI (e.g. local mode).
+ * @param resourceName - Full Vertex AI resource name (trainingPipelines/... or
+ *   customJobs/...) as stored on the Firestore job document, or null/undefined
+ *   if the job was never dispatched to Vertex AI (e.g. local mode).
  * @param appJobId - Application job ID, included in log lines for traceability.
  */
 export async function cancelVertexAIJob(
-  vertexJobName: string | null | undefined,
+  resourceName: string | null | undefined,
   appJobId?: string
 ): Promise<void> {
-  if (!vertexJobName) {
+  if (!resourceName) {
     // Job was never dispatched to Vertex AI (e.g. local mode, or canceled
-    // before the worker submitted the CustomJob). Nothing to cancel.
+    // before the worker submitted the training pipeline). Nothing to cancel.
     logger.info('Skipping Vertex AI cancellation - no resource name stored', {
       appJobId,
     });
     return;
   }
 
-  // Sanity check the resource name format. Reject anything that does not look
-  // like a Vertex resource path - this catches legacy docs where we may have
-  // mistakenly stored an app UUID instead of the real resource name.
-  const isResourceName = /^projects\/[^/]+\/locations\/[^/]+\/customJobs\/[^/]+$/.test(
-    vertexJobName
-  );
-  if (!isResourceName) {
-    logger.warn('Refusing to cancel Vertex AI job - vertexJobName is not a resource path', {
+  const isTrainingPipeline = TRAINING_PIPELINE_RE.test(resourceName);
+  const isCustomJob = CUSTOM_JOB_RE.test(resourceName);
+
+  if (!isTrainingPipeline && !isCustomJob) {
+    // Catches legacy docs where we may have mistakenly stored an app UUID
+    // or some other non-resource string.
+    logger.warn('Refusing to cancel Vertex AI job - not a recognized resource path', {
       appJobId,
-      vertexJobName,
+      resourceName,
     });
     return;
   }
 
-  const client = new JobServiceClient({
-    apiEndpoint: `${LOCATION}-aiplatform.googleapis.com`,
-  });
+  const apiEndpoint = `${LOCATION}-aiplatform.googleapis.com`;
 
   try {
-    await client.cancelCustomJob({ name: vertexJobName });
-    logger.info('Vertex AI job cancellation requested', {
-      appJobId,
-      vertexJobName,
-    });
+    if (isTrainingPipeline) {
+      const client = new PipelineServiceClient({ apiEndpoint });
+      await client.cancelTrainingPipeline({ name: resourceName });
+      logger.info('Vertex AI training pipeline cancellation requested', {
+        appJobId,
+        resourceName,
+      });
+    } else {
+      const client = new JobServiceClient({ apiEndpoint });
+      await client.cancelCustomJob({ name: resourceName });
+      logger.info('Vertex AI custom job cancellation requested', {
+        appJobId,
+        resourceName,
+      });
+    }
   } catch (error) {
-    // Cancellation is asynchronous and best-effort (not guaranteed)
-    // Job may already be complete or not exist
-    logger.warn('Failed to cancel Vertex AI job', {
+    // Cancellation is asynchronous and best-effort (not guaranteed).
+    // Resource may already be complete or not exist.
+    logger.warn('Failed to cancel Vertex AI resource', {
       appJobId,
-      vertexJobName,
+      resourceName,
       error: error instanceof Error ? error.message : String(error),
     });
     // Do NOT throw - cancellation is best-effort

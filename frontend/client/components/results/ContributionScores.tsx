@@ -36,7 +36,11 @@ export function ContributionScores({ contributions }: ContributionScoresProps) {
             </div>
             <Progress
               value={percentage}
-              className={getContributionColorClass(percentage)}
+              // Color the *filled* indicator rather than the track; the
+              // Progress root's className only styles the background track,
+              // which left every bar looking the same regardless of
+              // contribution level.
+              indicatorClassName={getContributionColorClass(percentage)}
             />
           </div>
         ))}
