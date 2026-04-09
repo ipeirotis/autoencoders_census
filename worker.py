@@ -510,6 +510,25 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 f"Stored Vertex training pipeline resource name for job {job_id}: "
                 f"{vertex_job_name}"
             )
+
+            # Reconciliation: if the job was canceled while we were
+            # submitting (the cancel API would have found no
+            # vertexJobName and skipped the Vertex cancel), we need to
+            # cancel the pipeline ourselves now that we know its name.
+            # Without this the Vertex run continues indefinitely and
+            # there is no retry path because the job is already terminal.
+            if is_job_canceled(job_id):
+                logger.info(
+                    f"Job {job_id} was canceled during Vertex submission, "
+                    "canceling the just-submitted pipeline"
+                )
+                try:
+                    job.cancel()
+                except Exception as cancel_err:
+                    logger.warning(
+                        f"Failed to cancel Vertex pipeline after late cancel "
+                        f"detection for job {job_id}: {cancel_err}"
+                    )
         else:
             logger.warning(
                 f"Vertex AI did not return a resource_name for job {job_id}; "
