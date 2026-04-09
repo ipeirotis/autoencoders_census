@@ -350,11 +350,15 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
     }
 
     const resultFileName = `results/${id}.json`;
+    let resultDeleteFailed = false;
     try {
       await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
       filesDeleted++;
     } catch (error) {
-      if (!isGcsNotFoundError(error)) {
+      if (isGcsNotFoundError(error)) {
+        logger.info('GCS result file already absent', { jobId: id, file: resultFileName });
+      } else {
+        resultDeleteFailed = true;
         logger.warn('Failed to delete GCS result file', {
           jobId: id, file: resultFileName,
           error: error instanceof Error ? error.message : String(error)
@@ -362,9 +366,9 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
       }
     }
 
-    if (gcsFileName && uploadDeleteFailed) {
+    if ((gcsFileName && uploadDeleteFailed) || resultDeleteFailed) {
       return res.status(502).json({
-        error: 'Failed to delete uploaded file from storage. Please retry.',
+        error: 'Failed to delete one or more files from storage. Please retry.',
         filesDeleted,
       });
     }
