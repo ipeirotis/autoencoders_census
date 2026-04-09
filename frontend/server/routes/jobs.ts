@@ -127,8 +127,32 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     }
 
     // Only publish to Pub/Sub once the doc is successfully claimed, so a
-    // collision cannot enqueue work against someone else's job.
-    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    // collision cannot enqueue work against someone else's job. If publish
+    // fails, release the claim with a best-effort delete so the client can
+    // safely retry the same jobId; otherwise the doc would be stuck in
+    // `uploading` and every retry would deterministically hit the 409 guard.
+    try {
+      await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    } catch (publishErr) {
+      logger.error("Pub/Sub publish failed; releasing job claim", {
+        error: publishErr instanceof Error ? publishErr.message : String(publishErr),
+        jobId,
+        userId,
+      });
+      try {
+        await firestore.collection("jobs").doc(jobId).delete();
+      } catch (cleanupErr) {
+        // If cleanup itself fails the doc is left orphaned. Log so an
+        // operator can clean it up manually; do not mask the original
+        // publish error.
+        logger.error("Failed to release job claim after publish error", {
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          jobId,
+          userId,
+        });
+      }
+      throw publishErr;
+    }
 
     res.json({ success: true, message: "Job started" });
   } catch (error) {
