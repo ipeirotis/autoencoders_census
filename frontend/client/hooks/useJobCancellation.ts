@@ -17,15 +17,23 @@ export function useJobCancellation() {
         credentials: 'include',
       });
       if (!response.ok) throw new Error('Failed to cancel job');
-      return response.json();
+      const data = await response.json();
+      return { ...data, status: response.status };
     },
     onSuccess: (data, jobId) => {
-      // Invalidate job status query to trigger refetch
       queryClient.invalidateQueries({ queryKey: ['jobStatus', jobId] });
-      toast({
-        title: "Job canceled",
-        description: "The job has been canceled successfully."
-      });
+      if (data.status === 207) {
+        toast({
+          title: "Job canceled",
+          description: "Job was canceled but file cleanup failed. Files may need manual deletion.",
+          variant: "destructive"
+        });
+      } else {
+        toast({
+          title: "Job canceled",
+          description: "The job has been canceled successfully."
+        });
+      }
     },
     onError: (error) => {
       toast({

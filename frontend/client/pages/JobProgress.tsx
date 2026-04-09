@@ -79,6 +79,23 @@ function toDate(value: FirestoreTimestampLike): Date | null {
  * Returns false if the timestamp cannot be parsed - we prefer to keep the
  * cleanup UI visible rather than lock a user out based on corrupt data.
  */
+/**
+ * Derive an approximate overall progress percentage from the job status,
+ * since the worker doesn't write stageProgress/overallProgress fields.
+ * This prevents the bars from showing 0% throughout the entire run.
+ */
+function deriveOverallProgress(status: string): number {
+  switch (status) {
+    case 'queued': return 5;
+    case 'processing': return 20;
+    case 'training': return 50;
+    case 'scoring': return 80;
+    case 'complete': return 100;
+    case 'error': case 'canceled': return 100;
+    default: return 0;
+  }
+}
+
 function isJobExpired(createdAt: FirestoreTimestampLike): boolean {
   const created = toDate(createdAt);
   if (!created) return false;
@@ -126,8 +143,8 @@ export default function JobProgress() {
             <StageIndicator currentStage={job.status} />
 
             <DualProgressBar
-              stageProgress={job.stageProgress || 0}
-              overallProgress={job.overallProgress || 0}
+              stageProgress={job.stageProgress || deriveOverallProgress(job.status)}
+              overallProgress={job.overallProgress || deriveOverallProgress(job.status)}
               stageName={job.status.charAt(0).toUpperCase() + job.status.slice(1)}
             />
 
