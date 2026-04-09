@@ -20,6 +20,18 @@ import { logger } from '../config/logger';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
 import { cancelVertexAIJob } from '../services/vertexAi';
 
+/**
+ * Returns true when a Google Cloud Storage delete error represents
+ * "object already gone" - either a 404 from the GCS API or the ENOENT code
+ * some clients surface. Treating already-deleted as success keeps the manual
+ * cleanup endpoint idempotent (e.g. the lifecycle rule beat the user to it).
+ */
+function isGcsNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: unknown };
+  return e.code === 404 || e.code === 'ENOENT';
+}
+
 const router = Router();
 
 // Configuration from Environment Variables
@@ -168,14 +180,20 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
     // Set CSV download headers
     res.attachment(`outliers-${id}.csv`);
 
-    // Stream CSV with sanitization
+    // Stream CSV with sanitization.
+    //
+    // IMPORTANT: Sanitize *both* the keys and the values. The keys originate
+    // from user-uploaded column names, and with `headers: true` fast-csv
+    // picks them up as CSV header cells verbatim. A header like "=SUM(..)"
+    // would otherwise evaluate as a formula when the file is opened in a
+    // spreadsheet client.
     const csvStream = format({ headers: true });
     csvStream.pipe(res);
 
     outliers.forEach((row: any) => {
       const sanitizedRow = Object.fromEntries(
         Object.entries(row).map(([key, value]) => [
-          key,
+          sanitizeFormulaInjection(key),
           sanitizeFormulaInjection(value)
         ])
       );
@@ -302,41 +320,59 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
     let uploadDeleteFailed = false;
     let resultDeleteFailed = false;
 
-    // Delete GCS uploaded file (best-effort)
+    // Delete GCS uploaded file (best-effort).
+    // A 404 from GCS is not a failure: the object is already gone (lifecycle
+    // rule, previous cleanup, etc.), so cleanup is effectively complete.
     if (gcsFileName) {
       try {
         await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
         filesDeleted++;
         logger.info('Deleted GCS upload file', { jobId: id, file: gcsFileName });
       } catch (error) {
-        uploadDeleteFailed = true;
-        logger.warn('Failed to delete GCS upload file (may already be deleted)', {
-          jobId: id,
-          file: gcsFileName,
-          error: error instanceof Error ? error.message : String(error)
-        });
+        if (isGcsNotFoundError(error)) {
+          logger.info('GCS upload file already absent, treating as deleted', {
+            jobId: id,
+            file: gcsFileName,
+          });
+        } else {
+          uploadDeleteFailed = true;
+          logger.warn('Failed to delete GCS upload file', {
+            jobId: id,
+            file: gcsFileName,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
     }
 
-    // Delete result files if exist (best-effort)
+    // Delete result files if exist (best-effort).
+    // Same 404-is-success semantics - the results file may simply never have
+    // been written (e.g. error'd jobs).
     const resultFileName = `results/${id}.json`;
     try {
       await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
       filesDeleted++;
       logger.info('Deleted GCS result file', { jobId: id, file: resultFileName });
     } catch (error) {
-      resultDeleteFailed = true;
-      logger.warn('Failed to delete GCS result file (may not exist)', {
-        jobId: id,
-        file: resultFileName,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      if (isGcsNotFoundError(error)) {
+        logger.info('GCS result file already absent, treating as deleted', {
+          jobId: id,
+          file: resultFileName,
+        });
+      } else {
+        resultDeleteFailed = true;
+        logger.warn('Failed to delete GCS result file', {
+          jobId: id,
+          file: resultFileName,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     }
 
-    // Only mark the job as expired if we actually removed something. If the
-    // upload object was present and its deletion failed, we cannot flip
-    // filesExpired to true - that would tell the UI the files are gone while
-    // leaving the CSV sitting in GCS with no retry path for the user.
+    // Only mark the job as expired if the upload object was either deleted
+    // now or already absent. If the upload delete threw a real error (not
+    // 404), surface a 502 so the user can retry - we can't flip
+    // filesExpired to true while the CSV is still sitting in GCS.
     if (gcsFileName && uploadDeleteFailed) {
       return res.status(502).json({
         error: 'Failed to delete uploaded file from storage. Please retry.',

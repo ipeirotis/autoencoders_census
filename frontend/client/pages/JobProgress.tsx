@@ -11,10 +11,74 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 /**
- * Helper to check if job files expired (7-day retention)
+ * Firestore Timestamp shapes that show up on the client.
+ *
+ * Firestore serializes Timestamp values differently depending on which SDK /
+ * transport produced them:
+ *   - Admin SDK REST:   { _seconds, _nanoseconds }
+ *   - Client SDK JSON:  { seconds, nanoseconds }
+ *   - toJSON() output:  { toDate?: () => Date } on Timestamp instances
+ * Plus the usual primitives we might synthesize in tests/UI:
+ *   - Date, ISO string, epoch ms number
  */
-function isJobExpired(createdAt: Date | string): boolean {
-  const created = createdAt instanceof Date ? createdAt : new Date(createdAt);
+type FirestoreTimestampLike =
+  | Date
+  | string
+  | number
+  | { _seconds: number; _nanoseconds?: number }
+  | { seconds: number; nanoseconds?: number }
+  | { toDate: () => Date }
+  | null
+  | undefined;
+
+/**
+ * Normalize whatever the job-status endpoint gave us for `createdAt` into a
+ * JS Date, or null if it's unparseable. Used for 7-day retention checks.
+ */
+function toDate(value: FirestoreTimestampLike): Date | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'number' || typeof value === 'string') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === 'object') {
+    // Firestore Timestamp instance (client SDK) exposes .toDate()
+    if (typeof (value as { toDate?: unknown }).toDate === 'function') {
+      try {
+        const d = (value as { toDate: () => Date }).toDate();
+        return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+      } catch {
+        return null;
+      }
+    }
+    // Serialized forms: {_seconds, _nanoseconds} (admin SDK) or
+    // {seconds, nanoseconds} (client SDK / JSON).
+    const seconds =
+      (value as { _seconds?: number })._seconds ??
+      (value as { seconds?: number }).seconds;
+    if (typeof seconds === 'number') {
+      const nanoseconds =
+        (value as { _nanoseconds?: number })._nanoseconds ??
+        (value as { nanoseconds?: number }).nanoseconds ??
+        0;
+      return new Date(seconds * 1000 + Math.floor(nanoseconds / 1e6));
+    }
+  }
+  return null;
+}
+
+/**
+ * Helper to check if job files expired (7-day retention).
+ *
+ * Returns false if the timestamp cannot be parsed - we prefer to keep the
+ * cleanup UI visible rather than lock a user out based on corrupt data.
+ */
+function isJobExpired(createdAt: FirestoreTimestampLike): boolean {
+  const created = toDate(createdAt);
+  if (!created) return false;
   const expirationDate = new Date(created);
   expirationDate.setDate(expirationDate.getDate() + 7);
   return new Date() > expirationDate;
@@ -65,7 +129,10 @@ export default function JobProgress() {
             />
 
             <JobMetadata
-              startTime={new Date(job.createdAt)}
+              // Firestore timestamps can arrive as {_seconds,_nanoseconds}
+              // objects; toDate handles that and falls back to "now" so the
+              // elapsed-time display doesn't render "Invalid Date".
+              startTime={toDate(job.createdAt) ?? new Date()}
               estimatedDuration={15 * 60 * 1000} // 15 minutes
               fileName={job.fileName || 'Unknown'}
               fileSize={job.fileSize || 0}
