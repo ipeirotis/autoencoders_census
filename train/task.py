@@ -112,20 +112,19 @@ def train_and_predict(job_id, bucket_name, file_path):
         common_indices = top_outliers.index.intersection(reconstruction_df.index)
         outlier_reconstruction = reconstruction_df.loc[common_indices]
         
-        # 3. Invert transformation to get categorical values
+        # 3. Invert transformation to get categorical values.
+        # Reset to contiguous 0..N index before tabularize so internal
+        # concat doesn't misalign rows, then map back to common_indices.
         try:
-            decoded_outliers = vectorizer.tabularize_vector(outlier_reconstruction)
-            
+            contiguous = outlier_reconstruction.reset_index(drop=True)
+            decoded_outliers = vectorizer.tabularize_vector(contiguous)
+            decoded_outliers.index = common_indices
+
             # 4. Format the `top_outliers` DataFrame to show "Original -> Predicted"
-            # We only modify the columns that were actually part of the model (cols_to_keep)
             for col in decoded_outliers.columns:
                 if col in top_outliers.columns:
                     original_vals = top_outliers.loc[common_indices, col].fillna("missing").astype(str)
-                    # Reset index so decoded_outliers aligns positionally with
-                    # common_indices (tabularize_vector produces fresh 0..N indexes).
-                    predicted_vals = decoded_outliers[col].reset_index(drop=True)
-                    predicted_vals.index = common_indices
-                    predicted_vals = predicted_vals.fillna("missing").astype(str)
+                    predicted_vals = decoded_outliers.loc[common_indices, col].fillna("missing").astype(str)
                     
                     # zip and format
                     formatted_col = [

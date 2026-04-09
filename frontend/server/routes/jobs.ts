@@ -229,12 +229,14 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
       return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
     }
     const createdAt = job.createdAt?.toDate ? job.createdAt.toDate() : new Date(job.createdAt);
-    if (createdAt instanceof Date && !isNaN(createdAt.getTime())) {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 7);
-      if (createdAt < cutoff) {
-        return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
-      }
+    if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
+      // Fail closed: invalid/missing timestamp treated as expired.
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
+    }
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    if (createdAt < cutoff) {
+      return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
     }
 
     const outliers = job.outliers || [];
