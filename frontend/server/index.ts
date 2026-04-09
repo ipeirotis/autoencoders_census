@@ -14,17 +14,29 @@
 
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
 import { Storage } from "@google-cloud/storage";
 import { Firestore } from "@google-cloud/firestore";
 import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
+import { authRouter } from "./routes/auth";
+import { corsConfig, helmetConfig, csrfOriginCheck } from "./middleware/security";
+import { errorHandler } from "./middleware/errorHandler";
+import { requireAuth } from "./middleware/auth";
+import { uploadLimiter } from "./middleware/rateLimits";
+import { validateCSVContent, generateSafeFilename } from "./utils/fileValidation";
+import { sessionConfig } from "./config/session";
+import { passport } from "./middleware/auth";
+import { env } from "./config/env";
+import { logger } from "./config/logger";
 import path from "path";
 
 // --- Configuration ---
-const GCS_BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name"; // TODO: Set in .env
-const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || "your-project-id"; // TODO: Set in .env
+// Environment variables are validated at startup via env module import above
+// Server will fail fast with clear error message if required vars are missing
+const GCS_BUCKET_NAME = env.GCS_BUCKET_NAME;
+const PROJECT_ID = env.GOOGLE_CLOUD_PROJECT;
 const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens to
 
 // --- Google Cloud Clients ---
@@ -42,28 +54,68 @@ const upload = multer({
 export function createServer() {
   const app = express();
 
-  app.use(cors());
+  // Trust the first proxy hop in production so Express sees the client
+  // protocol/IP forwarded by a TLS-terminating proxy (Cloud Run, Nginx, etc.).
+  // Without this, `cookie.secure: true` on the session causes express-session
+  // to refuse to issue session cookies (it sees req.secure === false), and
+  // every subsequent authenticated request returns 401.
+  if (env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
+
+  // Security middleware - apply BEFORE routes
+  app.use(corsConfig);
+  app.use(csrfOriginCheck); // Reject cross-origin mutating requests from unlisted origins (CSRF defense for sameSite=none)
+  app.use(helmetConfig);
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+
+  // Session and authentication middleware
+  app.use(sessionConfig);
+  app.use(passport.initialize());
+  app.use(passport.session());
 
   // Health Check
   app.get("/api/ping", (_req, res) => res.json({ message: "pong" }));
 
+  // Routes
+  app.use("/api/auth", authRouter);
   app.use("/api/jobs", jobsRouter);
 
   // --- The Main Upload Route ---
   // (keep this as a fallback, but new frontend uses the 'jobsRouter' endpoints instead)
-  app.post("/api/upload", upload.single("file"), async (req, res) => {
+  app.post("/api/upload", requireAuth, uploadLimiter, upload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
-      const originalName = req.file.originalname;
-      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      const safeFilename = `uploads/${uniqueId}/${originalName}`;
+      // Validate CSV content
+      const validation = await validateCSVContent(req.file.buffer);
+      if (!validation.valid) {
+        logger.warn('CSV validation failed', {
+          reason: validation.reason,
+          userId: (req as any).user?.id
+        });
+        return res.status(400).json({ error: 'Invalid CSV file format' });
+        // Don't expose validation.reason to client (logged server-side)
+      }
 
-      console.log(`🚀 Starting upload job: ${uniqueId}`);
+      const originalName = req.file.originalname;
+      // Use a UUID v4 for the job id so it matches the `validateJobId` UUID
+      // check on /api/jobs/job-status/:id. The previous
+      // `job_<timestamp>_<random>` format got rejected at polling time,
+      // leaving the fallback upload flow internally inconsistent.
+      const uniqueId = uuidv4();
+
+      // Generate safe filename (discard user-provided name)
+      const safeFilename = generateSafeFilename((req as any).user.id);
+
+      logger.info(`Starting upload job: ${uniqueId}`, {
+        userId: (req as any).user.id,
+        originalFilename: originalName
+      });
 
       // 1. Stream file to Google Cloud Storage
       const bucket = storage.bucket(GCS_BUCKET_NAME);
@@ -74,20 +126,30 @@ export function createServer() {
         resumable: false, // Simple upload for small/medium files
       });
 
-      console.log(`✅ File saved to GCS: ${safeFilename}`);
+      logger.info(`File saved to GCS: ${safeFilename}`);
 
       // 2. Create Firestore Document (Job Metadata)
+      //
+      // Codex P1 (r3053812511): initial status MUST be "queued"
+      // (JobStatus.QUEUED in worker.py). Any other first status
+      // ("uploaded", "uploading", ...) would fail the worker's
+      // is_valid_transition(None, ...) check, and the job would stay
+      // stuck because update_job_status(..., PROCESSING) would raise
+      // ValueError and the callback would ack the message without
+      // running. See the identical fix in
+      // frontend/server/routes/jobs.ts /start-job for context.
       const jobMetadata = {
         jobId: uniqueId,
         fileName: originalName,
         gcsPath: safeFilename,
         bucket: GCS_BUCKET_NAME,
-        status: "uploaded", // Initial status
+        status: "queued", // Initial status (matches worker JobStatus.QUEUED)
         createdAt: new Date().toISOString(),
+        userId: (req as any).user.id,
       };
 
       await firestore.collection("jobs").doc(uniqueId).set(jobMetadata);
-      console.log(`✅ Firestore document created: jobs/${uniqueId}`);
+      logger.info(`Firestore document created: jobs/${uniqueId}`);
 
       // 3. Publish Pub/Sub Message (Trigger the Worker)
       const messageBuffer = Buffer.from(JSON.stringify({
@@ -98,9 +160,9 @@ export function createServer() {
 
       try {
         await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: messageBuffer });
-        console.log(`✅ Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
+        logger.info(`Pub/Sub message sent to topic: ${PUBSUB_TOPIC_NAME}`);
       } catch (pubError) {
-        console.warn("⚠️ Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", pubError);
+        logger.warn("Failed to publish to Pub/Sub (is the local emulator running or topic missing?)", { error: pubError });
         // We don't fail the request here, just warn, so you can test upload without PubSub initially
       }
 
@@ -111,31 +173,14 @@ export function createServer() {
       });
 
     } catch (error) {
-      console.error("❌ Upload failed:", error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : "Internal Server Error",
-      });
+      next(error); // Pass to error handler
     }
   });
 
-  // --- NEW: Job Status Route ---
-  app.get("/api/jobs/job-status/:jobId", async (req, res) => {
-    try {
-      const { jobId } = req.params;
-      const doc = await firestore.collection("jobs").doc(jobId).get();
-
-      if (!doc.exists) {
-        // If the doc doesn't exist yet, it might be just starting
-        return res.json({ status: "uploading" });
-      }
-
-      const data = doc.data();
-      res.json(data); // Returns { status: 'complete', outliers: [...] }
-    } catch (error) {
-      console.error("Error checking status:", error);
-      res.status(500).json({ error: "Failed to check status" });
-    }
-  });
+  // --- Error Handler Middleware (MUST be last) ---
+  // Catches all unhandled errors from routes above
+  // Logs full details server-side, returns generic message in production
+  app.use(errorHandler);
 
   return app;
 }

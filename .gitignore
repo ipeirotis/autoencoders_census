@@ -24,6 +24,12 @@ venv/
 env/
 ENV/
 
+# The Python `lib/` rule above is greedy (matches at any depth) and was
+# silently swallowing the SPA's `frontend/client/lib/` directory, which holds
+# the shadcn/ui `cn` helper imported by every UI component. Re-include it.
+!frontend/client/lib/
+!frontend/client/lib/**
+
 # Environment variables
 .env
 .env.local
