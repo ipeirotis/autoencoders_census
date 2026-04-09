@@ -743,11 +743,20 @@ def validate_csv(csv_bytes, max_size_mb=100):
 
 
 def is_job_canceled(job_id):
-    """Quick Firestore read to check whether the job has been canceled."""
-    snap = db.collection('jobs').document(job_id).get()
-    if snap.exists:
-        return snap.get('status') == JobStatus.CANCELED
-    return False
+    """Quick Firestore read to check whether the job has been canceled.
+
+    Fails closed: transient Firestore errors return False (not canceled)
+    rather than propagating and crashing the caller's training loop.
+    """
+    try:
+        snap = db.collection('jobs').document(job_id).get()
+        if snap.exists:
+            return snap.get('status') == JobStatus.CANCELED
+        return False
+    except Exception as e:
+        logger.warning(f"is_job_canceled: Firestore read failed for {job_id}, "
+                       f"assuming not canceled: {e}")
+        return False
 
 
 def process_upload_local(job_id, bucket_name, file_path, message):
