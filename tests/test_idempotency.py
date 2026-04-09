@@ -419,6 +419,66 @@ def test_try_take_over_stale_claim_resets_training_to_processing():
         )
 
 
+def test_try_take_over_stale_claim_stamps_mode_from_caller():
+    """
+    Codex P2 r(takeover-mode-tag): when the caller passes mode="vertex",
+    the takeover transaction must also persist `mode: "vertex"` on the
+    recovered doc. Otherwise a duplicate delivery after a post-dispatch
+    suppressor-write failure would still see an untagged doc and fall
+    back to the short local stale threshold, allowing a second
+    (billable) Vertex training submission.
+    """
+    import datetime as _dt
+    from worker import (
+        try_take_over_stale_claim,
+        JobStatus,
+        JOB_CLAIM_STALE_SECONDS_VERTEX,
+    )
+
+    very_old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        seconds=JOB_CLAIM_STALE_SECONDS_VERTEX + 60
+    )
+
+    # Legacy untagged doc - no `mode` field at all.
+    mock_snapshot = Mock()
+    mock_snapshot.exists = True
+    stored = {
+        'status': JobStatus.PROCESSING.value,
+        'claimedAt': very_old,
+    }
+    mock_snapshot.get = Mock(
+        side_effect=lambda field, default=None: stored.get(field, default)
+    )
+
+    mock_ref = Mock()
+    mock_ref.id = "job-legacy"
+    mock_ref.get = Mock(return_value=mock_snapshot)
+
+    mock_transaction = Mock()
+    mock_transaction.update = Mock()
+
+    mock_db = Mock()
+    mock_db.transaction = Mock(return_value=mock_transaction)
+
+    with patch('worker.db', mock_db), \
+         patch('worker.firestore') as mock_firestore:
+        def transactional_decorator(func):
+            def wrapper(transaction, ref):
+                return func(transaction, ref)
+            return wrapper
+        mock_firestore.transactional = transactional_decorator
+
+        result = try_take_over_stale_claim(mock_ref, mode='vertex')
+
+    assert result is True
+    mock_transaction.update.assert_called_once()
+    payload = mock_transaction.update.call_args[0][1]
+    assert payload.get('mode') == 'vertex', (
+        "takeover must stamp mode=vertex on a recovered legacy claim so "
+        "subsequent duplicate deliveries use the Vertex stale threshold"
+    )
+
+
 def test_try_take_over_stale_claim_refuses_vertex_mode_short_window():
     """
     Codex P1 r(suppressor-write-failure): a job tagged `mode: "vertex"`

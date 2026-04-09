@@ -436,7 +436,7 @@ def _is_claim_stale(claimed_at, now=None, threshold_seconds=None):
     return age > threshold_seconds
 
 
-def try_take_over_stale_claim(job_ref):
+def try_take_over_stale_claim(job_ref, mode=None):
     """
     Attempt to atomically reclaim a stale in-progress job.
 
@@ -478,6 +478,21 @@ def try_take_over_stale_claim(job_ref):
     will not reclaim the job for hours, well after any normal Vertex
     run would have finished.
 
+    Codex P2 (followup, r(takeover-mode-tag)): when the caller knows
+    which mode it is going to run the job in (local vs vertex), it
+    should pass `mode=` so the takeover transaction ALSO stamps that
+    tag on the recovered claim. Otherwise a recovered legacy claim
+    would stay untagged, future duplicate deliveries would use the
+    short local stale threshold, and the post-dispatch suppressor
+    write window could still race a duplicate delivery.
+
+    Args:
+        job_ref: Firestore DocumentReference for the job.
+        mode: Optional "vertex" | "local" tag to persist on the
+            recovered doc as part of the takeover transaction. When
+            omitted, `mode` is left untouched on the doc (existing
+            value preserved, legacy docs stay tagless).
+
     The refresh happens inside a Firestore transaction, so two workers
     that both see a stale claim cannot both take over: one wins the
     transaction, the other retries, finds the now-fresh `claimedAt`
@@ -507,31 +522,36 @@ def try_take_over_stale_claim(job_ref):
         # Re-taking over would re-submit the same training run.
         if snapshot.get('vertexJobName'):
             return False
-        # Mode-aware stale threshold. Vertex jobs use a much wider
-        # window because the dispatcher stops heartbeating as soon as
-        # job.run() returns, and the Vertex training itself can take
-        # tens of minutes to hours to complete.
-        mode = snapshot.get('mode')
-        if mode == 'vertex':
+        # Mode-aware stale threshold. Pick the threshold based on the
+        # EFFECTIVE mode: the caller-provided `mode` argument takes
+        # precedence (so a vertex caller looking at a legacy untagged
+        # doc still uses the 4-hour window), otherwise fall back to
+        # whatever the doc itself is tagged as.
+        effective_mode = mode or snapshot.get('mode')
+        if effective_mode == 'vertex':
             threshold = JOB_CLAIM_STALE_SECONDS_VERTEX
         else:
             threshold = JOB_CLAIM_STALE_SECONDS
         claimed_at = snapshot.get('claimedAt')
         if not _is_claim_stale(claimed_at, threshold_seconds=threshold):
             return False
-        transaction.update(
-            ref,
-            {
-                # Reset status back to PROCESSING so the calling pipeline
-                # can restart from the beginning regardless of which
-                # in-progress sub-state (processing/training/scoring) the
-                # dead worker crashed in. This is a direct write that
-                # bypasses the normal state machine transition check,
-                # which is the whole point of this escape hatch.
-                'status': JobStatus.PROCESSING.value,
-                'claimedAt': datetime.now(timezone.utc),
-            },
-        )
+        update_payload = {
+            # Reset status back to PROCESSING so the calling pipeline
+            # can restart from the beginning regardless of which
+            # in-progress sub-state (processing/training/scoring) the
+            # dead worker crashed in. This is a direct write that
+            # bypasses the normal state machine transition check,
+            # which is the whole point of this escape hatch.
+            'status': JobStatus.PROCESSING.value,
+            'claimedAt': datetime.now(timezone.utc),
+        }
+        # Codex P2 r(takeover-mode-tag): persist the mode tag on
+        # recovered claims so subsequent duplicate deliveries use the
+        # correct stale threshold even if the post-dispatch suppressor
+        # write later fails.
+        if mode is not None:
+            update_payload['mode'] = mode
+        transaction.update(ref, update_payload)
         return True
 
     transaction = db.transaction()
@@ -816,8 +836,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 # Stale-takeover path: if the previous worker's heartbeat
                 # has gone silent long enough that we consider the claim
                 # abandoned, reclaim it and fall through to continue
-                # processing instead of nacking.
-                if try_take_over_stale_claim(job_ref):
+                # processing instead of nacking. Pass mode="local" so
+                # the takeover transaction keeps/stamps the tag
+                # consistent with the caller.
+                if try_take_over_stale_claim(job_ref, mode='local'):
                     logger.info(
                         f"Resuming job {job_id} from state "
                         f"{current_status} after stale-claim takeover"
@@ -1122,7 +1144,16 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 # (just long enough to submit the job.run call), so a
                 # stale `claimedAt` here almost certainly means the
                 # previous dispatcher crashed before submitting anything.
-                if try_take_over_stale_claim(job_ref):
+                #
+                # Pass mode="vertex" so the takeover transaction stamps
+                # that tag on the recovered doc atomically. Otherwise a
+                # legacy / untagged recovered doc would use the short
+                # local stale threshold for any subsequent duplicate
+                # deliveries, and the post-dispatch suppressor write
+                # window could still race a duplicate delivery into
+                # submitting a second Vertex training run
+                # (Codex P2 r(takeover-mode-tag)).
+                if try_take_over_stale_claim(job_ref, mode='vertex'):
                     logger.info(
                         f"Resuming Vertex dispatch for job {job_id} "
                         f"from state {current_status} after stale-claim "
