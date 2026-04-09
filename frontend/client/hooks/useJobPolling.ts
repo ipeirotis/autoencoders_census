@@ -52,6 +52,13 @@ export function useJobPolling(jobId: string | null) {
     },
     enabled: !!jobId, // Don't poll if no jobId (FE-10)
     refetchInterval: (query) => {
+      // Stop polling on persistent fetch errors (401 session expiry,
+      // 404 missing/forbidden job, network failures) so the page doesn't
+      // hammer the server with failing requests every 2 seconds.
+      if (query.state.error) {
+        return false;
+      }
+
       const status = query.state.data?.status;
 
       // Terminal states - stop polling (FE-09)
