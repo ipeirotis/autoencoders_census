@@ -33,10 +33,20 @@ async function validateFile(file: File): Promise<{ valid: boolean; error?: strin
   const buffer = await slice.arrayBuffer();
   const type = await fileTypeFromBuffer(new Uint8Array(buffer));
 
-  // CSV files are text/plain or text/csv, may not have magic bytes
-  // If fileTypeFromBuffer returns undefined (text file), that's OK for CSV
-  // If it returns a type, ensure it's NOT a binary format
-  if (type && !['text/csv', 'text/plain'].includes(type.mime)) {
+  // If fileTypeFromBuffer returns undefined (no magic bytes), the file is
+  // text — fine for CSV. If it DOES detect a type, block known dangerous
+  // binary formats rather than allowlisting only text/csv + text/plain.
+  // This avoids rejecting valid CSVs with unusual encodings (UTF-16 BOM,
+  // etc.) that file-type may misclassify.
+  const BLOCKED_MIME_PREFIXES = [
+    'application/x-executable', 'application/x-mach-binary',
+    'application/x-msdownload', 'application/x-elf',
+    'application/zip', 'application/x-rar', 'application/x-7z',
+    'application/gzip', 'application/x-tar',
+    'application/pdf', 'application/java-archive',
+    'image/', 'audio/', 'video/',
+  ];
+  if (type && BLOCKED_MIME_PREFIXES.some(prefix => type.mime.startsWith(prefix))) {
     return { valid: false, error: `Invalid file type: ${type.mime}. Only CSV files allowed.` };
   }
 
