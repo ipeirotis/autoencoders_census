@@ -6,6 +6,19 @@ import { useQuery } from '@tanstack/react-query';
 // Defaults to '' (same origin) for the standard `npm run dev:server` setup.
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
+/** HTTP status codes that indicate the request will never succeed for this
+ *  job/session, so continuing to poll is pointless and wasteful. */
+const NON_RETRIABLE_STATUSES = new Set([401, 403, 404]);
+
+/** Custom error that preserves the HTTP status code from the server response
+ *  so callers (e.g. refetchInterval) can distinguish retriable from terminal. */
+class HttpError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
 interface JobStatus {
   jobId: string;
   // Must mirror worker.py's JobStatus enum - see StageIndicator for details.
@@ -26,6 +39,8 @@ interface JobStatus {
  * Features:
  * - Automatic polling every 2 seconds for active jobs
  * - Stops polling when job reaches terminal state (complete/error/canceled)
+ * - Stops polling on non-retriable HTTP errors (401/403/404)
+ * - Keeps polling through transient errors (5xx, network blips)
  * - Automatic cleanup on component unmount (no memory leaks)
  * - Conditional fetching (only polls if jobId exists)
  *
@@ -45,17 +60,18 @@ export function useJobPolling(jobId: string | null) {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch job status');
+        throw new HttpError('Failed to fetch job status', response.status);
       }
 
       return response.json();
     },
     enabled: !!jobId, // Don't poll if no jobId (FE-10)
     refetchInterval: (query) => {
-      // Stop polling on persistent fetch errors (401 session expiry,
-      // 404 missing/forbidden job, network failures) so the page doesn't
-      // hammer the server with failing requests every 2 seconds.
-      if (query.state.error) {
+      // Stop polling on non-retriable HTTP errors (session expired, job
+      // not found/forbidden). Transient errors (5xx, network blips) keep
+      // polling so the page recovers automatically after a brief outage.
+      const err = query.state.error;
+      if (err instanceof HttpError && NON_RETRIABLE_STATUSES.has(err.status)) {
         return false;
       }
 

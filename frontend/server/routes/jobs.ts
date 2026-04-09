@@ -372,42 +372,53 @@ router.delete("/:id", requireAuth, pollLimiter, validateJobId, async (req: Reque
     const { id } = req.params;
     const userId = (req as any).user.id;
     const docRef = firestore.collection("jobs").doc(id);
-    const doc = await docRef.get();
 
-    if (!doc.exists) {
-      // Return 404 so callers cannot probe for other users' job UUIDs.
-      return res.status(404).json({ error: "Job not found" });
-    }
+    const TERMINAL_STATES = new Set(["complete", "error", "canceled"]);
 
-    const data = doc.data();
+    // Atomic check-and-cancel via a Firestore transaction so the worker
+    // cannot complete the job between our read and our write (Codex P1:
+    // non-atomic read-then-update allowed a race where `update({status:
+    // "canceled"})` clobbered a just-finished `status: "complete"`).
+    const result = await firestore.runTransaction(async (txn) => {
+      const snap = await txn.get(docRef);
 
-    // Authorization: only the job owner can cancel. Match the /job-status
-    // convention and return 404 (not 403) to avoid confirming UUID existence.
-    if (!data || data.userId !== userId) {
-      logger.warn("cancel-job rejected: caller is not job owner", {
-        jobId: id,
-        userId,
-        ownerId: data?.userId,
+      if (!snap.exists) {
+        return { code: 404, body: { error: "Job not found" } };
+      }
+
+      const data = snap.data();
+
+      // Authorization: only the job owner can cancel.
+      if (!data || data.userId !== userId) {
+        logger.warn("cancel-job rejected: caller is not job owner", {
+          jobId: id,
+          userId,
+          ownerId: data?.userId,
+        });
+        return { code: 404, body: { error: "Job not found" } };
+      }
+
+      // Don't re-cancel jobs that already reached a terminal state
+      if (data.status && TERMINAL_STATES.has(data.status)) {
+        return {
+          code: 409,
+          body: {
+            error: "Job has already reached a terminal state",
+            status: data.status,
+          },
+        };
+      }
+
+      txn.update(docRef, {
+        status: "canceled",
+        canceledAt: new Date(),
+        updatedAt: new Date(),
       });
-      return res.status(404).json({ error: "Job not found" });
-    }
 
-    // Don't re-cancel jobs that already reached a terminal state
-    const terminalStates = new Set(["complete", "error", "canceled"]);
-    if (data.status && terminalStates.has(data.status)) {
-      return res.status(409).json({
-        error: "Job has already reached a terminal state",
-        status: data.status,
-      });
-    }
-
-    await docRef.update({
-      status: "canceled",
-      canceledAt: new Date(),
-      updatedAt: new Date(),
+      return { code: 200, body: { success: true, jobId: id, status: "canceled" } };
     });
 
-    res.json({ success: true, jobId: id, status: "canceled" });
+    res.status(result.code).json(result.body);
   } catch (error) {
     logger.error("Error canceling job", {
       error: error instanceof Error ? error.message : String(error),
