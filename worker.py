@@ -79,6 +79,16 @@ def validate_message(data: dict) -> PubSubMessage:
         raise ValueError(f"Invalid message format: {errors}")
 
 
+class JobDocumentNotReadyError(Exception):
+    """
+    Raised when the worker tries to update a job document that has not
+    yet been written by /start-job (pub/sub publish beat the Firestore
+    create on a legacy/out-of-order code path). The outer callback()
+    nacks the message on this exception so Pub/Sub redelivers and the
+    retry can find the document.
+    """
+
+
 def check_idempotency(message_id: str) -> bool:
     """
     Read-only check: has this Pub/Sub message already been marked processed?
@@ -395,14 +405,32 @@ def process_upload_local(job_id, bucket_name, file_path, message):
     try:
         logger.info(f"Starting local processing for job {job_id}")
 
-        # Update status to processing using transaction (WORK-07)
-        transaction = db.transaction()
+        # Update status to processing using transaction (WORK-07).
+        #
+        # Codex P1 (r3053739500): If the worker races ahead of /start-job's
+        # Firestore write and the job document does not yet exist, re-raise
+        # so the outer callback() catches it and nacks the message for
+        # Pub/Sub redelivery instead of silently dropping the job. With
+        # phase-01's "create-then-publish" ordering in jobs.ts this race
+        # should not happen in normal production traffic, but the defensive
+        # branch keeps any legacy fallback or out-of-order write from
+        # wedging a real user job.
         job_ref = db.collection('jobs').document(job_id)
         try:
+            transaction = db.transaction()
             update_job_status(transaction, job_ref, JobStatus.PROCESSING)
         except ValueError as e:
+            if "not found" in str(e):
+                # Bubble up so callback() nacks and we retry on redelivery
+                # - do NOT let the outer try/except in this function catch it,
+                # because that branch writes status=ERROR, which would stick
+                # if the document later shows up.
+                raise JobDocumentNotReadyError(
+                    f"Job {job_id} document not yet written, retry via nack"
+                ) from e
             logger.warning(f"Failed to update status: {e}")
-            # Job may have been canceled or already completed, skip processing
+            # Job is already in a later/terminal state (canceled, complete,
+            # processing, etc.) - skip processing to avoid duplicate work.
             return
 
         # 1. Download from GCS
@@ -487,12 +515,26 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
+        # Codex P1 (r3053724013): advance the state machine through TRAINING
+        # before fit(). Without this, the job skipped directly from PROCESSING
+        # to COMPLETE, which is not an allowed transition (SCORING -> COMPLETE
+        # is the only path to the terminal state), so every successful run
+        # would raise ValueError and mark the job ERROR after the model
+        # actually finished training.
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.TRAINING)
+
         logger.info("Training autoencoder...")
         keras_model.fit(
             X_train, X_train,
             epochs=15, batch_size=32, verbose=2,
             validation_data=(X_test, X_test)
         )
+
+        # Codex P1 (r3053724013): advance TRAINING -> SCORING before scoring
+        # so that the final COMPLETE transition matches ALLOWED_TRANSITIONS.
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.SCORING)
 
         # 8. Calculate reconstruction error
         reconstruction = keras_model.predict(vectorized_df)
@@ -508,7 +550,6 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         # 10. Save to Firestore with transactional status update (WORK-07)
         transaction = db.transaction()
-        job_ref = db.collection('jobs').document(job_id)
         update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
             'stats': stats,
             'outliers': outliers_data,
@@ -517,6 +558,11 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
 
+    except JobDocumentNotReadyError:
+        # Never swallow this: it must reach callback() so the message is
+        # nacked for Pub/Sub redelivery. Do NOT mark the job ERROR - the
+        # document doesn't even exist yet.
+        raise
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
 
@@ -605,14 +651,36 @@ def callback(message):
     """
     try:
         logger.info(f"Received message: {message.data}")
-        data = json.loads(message.data.decode("utf-8"))
+
+        # Codex P2 (r3053739504): deterministic schema / JSON failures are
+        # poison messages, not transient errors. nack()-ing them causes an
+        # infinite redelivery loop against the same bad payload, wasting
+        # worker capacity (we have no DLQ configured). Ack-and-drop with a
+        # log entry instead so an operator can find the payload in the logs
+        # but the queue drains.
+        try:
+            data = json.loads(message.data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.error(
+                f"Dropping non-JSON/invalid-encoding Pub/Sub message "
+                f"{getattr(message, 'message_id', '?')}: {e}"
+            )
+            message.ack()
+            return
 
         # WORK-01/02/03: Validate required fields
         try:
             validated = validate_message(data)
         except ValueError as e:
-            logger.error(f"Message validation failed: {e}")
-            message.nack()  # Reject invalid message
+            # Codex P2 (r3053739504): schema validation failures are
+            # permanent - the payload is malformed and will not become
+            # valid on redelivery. Ack to drop the poison message instead
+            # of nacking into an infinite redelivery loop.
+            logger.error(
+                f"Dropping Pub/Sub message "
+                f"{getattr(message, 'message_id', '?')} with invalid schema: {e}"
+            )
+            message.ack()
             return
 
         # Use validated fields
@@ -631,10 +699,22 @@ def callback(message):
             return
 
         # WORK-05/06: Process with ack extension, ack AFTER processing completes
-        if _processing_mode == "vertex":
-            process_upload_vertex(job_id, bucket, file_path, message)
-        else:
-            process_upload_local(job_id, bucket, file_path, message)
+        try:
+            if _processing_mode == "vertex":
+                process_upload_vertex(job_id, bucket, file_path, message)
+            else:
+                process_upload_local(job_id, bucket, file_path, message)
+        except JobDocumentNotReadyError as not_ready:
+            # Codex P1 (r3053739500): the job document hasn't been written
+            # yet (race with /start-job). nack so Pub/Sub redelivers - do
+            # NOT mark the message as processed, otherwise the retry would
+            # be silently dropped as a duplicate.
+            logger.warning(
+                f"Job {job_id} not ready yet, nacking for Pub/Sub redelivery: "
+                f"{not_ready}"
+            )
+            message.nack()
+            return
 
         # WORK-04: Only now that processing is done do we record the marker,
         # so a crash mid-processing leaves the marker unset and Pub/Sub

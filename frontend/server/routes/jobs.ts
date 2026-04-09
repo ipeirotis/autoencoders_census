@@ -139,6 +139,17 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // machine only accepts QUEUED as the valid first status - any other
     // value would cause update_job_status(..., PROCESSING) to raise
     // ValueError and leave the job stuck forever without ever running.
+    // Codex P1 (r3053917215 + follow-up r3053955xxx): if publishMessage()
+    // throws AFTER a successful create(), simply deleting the doc would
+    // lose valid jobs where the publish actually succeeded server-side
+    // but the client saw a transient network error (Pub/Sub delivers the
+    // message anyway and the worker needs the doc to still exist). So
+    // instead of compensating delete, we make /start-job idempotent: a
+    // retry with the same jobId by the same user that still sees "queued"
+    // reuses the existing claim and just (re-)publishes. The worker's
+    // Pub/Sub-level dedup (check_idempotency + mark_message_processed in
+    // worker.py) makes a duplicate publish on retry harmless.
+    let claimedExistingDoc = false;
     try {
       await firestore.collection("jobs").doc(jobId).create({
         status: "queued", // Initial state (matches worker JobStatus.QUEUED)
@@ -147,51 +158,53 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
       });
     } catch (createErr: any) {
       // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
-      // existing document. Surface as 409 so the client knows the ID is
-      // taken without leaking ownership details.
-      if (createErr?.code === 6) {
+      // existing document.
+      if (createErr?.code !== 6) {
+        throw createErr;
+      }
+
+      // Same-user retry recovery: if the existing doc is owned by this
+      // caller and still in the initial "queued" state (no worker has
+      // picked it up yet), treat the request as a publish retry and
+      // reuse the claim. Any other combination (different owner, or a
+      // status past "queued") is a real collision / replay attempt and
+      // gets the 409.
+      const existingDoc = await firestore.collection("jobs").doc(jobId).get();
+      const existing = existingDoc.exists ? existingDoc.data() : undefined;
+      if (
+        existing &&
+        existing.userId === userId &&
+        existing.status === "queued"
+      ) {
+        claimedExistingDoc = true;
+        logger.info("start-job: reusing pre-existing queued doc for retry", {
+          jobId,
+          userId,
+        });
+      } else {
         logger.warn("start-job rejected: jobId already claimed", {
           jobId,
           userId,
+          existingOwner: existing?.userId,
+          existingStatus: existing?.status,
         });
         return res.status(409).json({ error: "Job ID already exists" });
       }
-      throw createErr;
     }
 
-    // Only publish to Pub/Sub once the doc is successfully claimed, so a
-    // collision cannot enqueue work against someone else's job. Publishing
-    // after the Firestore write also closes the "worker runs before the
-    // job document exists" race - by the time the worker picks up the
-    // message, the queued doc is guaranteed to be there.
-    //
-    // Codex P1 (discussion_r3053917215): if publishMessage() fails
-    // transiently after we already claimed the job ID via create(), the
-    // Firestore doc is orphaned - claimed but with no matching Pub/Sub
-    // message, and any retry with the same jobId would be rejected as
-    // 409 by create(). Perform a compensating delete on publish failure
-    // so the client can retry the same jobId cleanly. Swallow the delete
-    // error (logged) so the original publish error is the one that
-    // surfaces to the caller and triggers their retry.
-    try {
-      await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
-    } catch (publishErr) {
-      try {
-        await firestore.collection("jobs").doc(jobId).delete();
-        logger.warn("Rolled back queued job doc after publish failure", {
-          jobId,
-          userId,
-        });
-      } catch (deleteErr) {
-        logger.error(
-          "Compensating delete failed after publish error - job doc is orphaned",
-          { jobId, userId, deleteErr: String(deleteErr) }
-        );
-      }
-      throw publishErr;
-    }
+    // Publish to Pub/Sub. On failure we do NOT delete the doc: the publish
+    // may have succeeded server-side even though the client saw an error,
+    // and we must not strand a valid job just because the ack was lost in
+    // flight. The client is expected to retry /start-job with the same
+    // jobId on any failure; the same-user reuse branch above will see the
+    // still-"queued" doc and re-publish. The worker's Pub/Sub-level dedup
+    // prevents duplicate processing if the first publish actually landed.
+    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    res.json({ success: true, message: "Job started" });
+    res.json({
+      success: true,
+      message: claimedExistingDoc ? "Job re-enqueued" : "Job started",
+    });
   } catch (error) {
     logger.error("Error starting job", {
       error: error instanceof Error ? error.message : String(error),
