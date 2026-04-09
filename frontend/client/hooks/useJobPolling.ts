@@ -8,7 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 /** HTTP status codes that indicate the request will never succeed for this
  *  job/session, so continuing to poll is pointless and wasteful. */
-const NON_RETRIABLE_STATUSES = new Set([401, 403, 404]);
+const NON_RETRIABLE_STATUSES = new Set([400, 401, 403, 404]);
 
 /** Custom error that preserves the HTTP status code from the server response
  *  so callers (e.g. refetchInterval) can distinguish retriable from terminal. */

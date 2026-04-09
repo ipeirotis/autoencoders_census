@@ -20,8 +20,8 @@ interface DropzoneProps {
  * Checks both extension and magic bytes to prevent binary files disguised as CSV
  */
 async function validateFile(file: File): Promise<{ valid: boolean; error?: string }> {
-  // Check extension
-  if (!file.name.endsWith('.csv')) {
+  // Check extension (case-insensitive — Windows commonly produces .CSV)
+  if (!file.name.toLowerCase().endsWith('.csv')) {
     return { valid: false, error: 'Only CSV files are allowed' };
   }
 
