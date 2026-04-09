@@ -282,6 +282,131 @@ def test_job_document_not_ready_nacks_without_marking():
     mock_mark.assert_not_called()
 
 
+def test_is_claim_stale_true_for_old_timestamp():
+    """
+    _is_claim_stale should treat a claimedAt older than
+    JOB_CLAIM_STALE_SECONDS as stale (eligible for takeover).
+    """
+    import datetime as _dt
+    from worker import _is_claim_stale, JOB_CLAIM_STALE_SECONDS
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    old_claim = now - _dt.timedelta(seconds=JOB_CLAIM_STALE_SECONDS + 30)
+    assert _is_claim_stale(old_claim, now=now) is True
+
+
+def test_is_claim_stale_false_for_recent_timestamp():
+    """A freshly-heartbeated claim must not be treated as stale."""
+    import datetime as _dt
+    from worker import _is_claim_stale, JOB_CLAIM_STALE_SECONDS
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    fresh_claim = now - _dt.timedelta(seconds=max(JOB_CLAIM_STALE_SECONDS // 2, 5))
+    assert _is_claim_stale(fresh_claim, now=now) is False
+
+
+def test_is_claim_stale_missing_timestamp_is_stale():
+    """
+    Legacy jobs written before `claimedAt` existed carry None; treat that
+    as stale so recovery is possible without a data migration.
+    """
+    from worker import _is_claim_stale
+
+    assert _is_claim_stale(None) is True
+
+
+def test_try_take_over_stale_claim_wins_when_claim_is_old():
+    """
+    try_take_over_stale_claim() refreshes `claimedAt` via a Firestore
+    transaction and returns True when the existing claim is stale and
+    the state is in-progress.
+    """
+    import datetime as _dt
+    from worker import try_take_over_stale_claim, JobStatus, JOB_CLAIM_STALE_SECONDS
+
+    old_claim = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        seconds=JOB_CLAIM_STALE_SECONDS + 60
+    )
+
+    mock_snapshot = Mock()
+    mock_snapshot.exists = True
+    def _snapshot_get(field, default=None):
+        return {
+            'status': JobStatus.PROCESSING.value,
+            'claimedAt': old_claim,
+        }.get(field, default)
+    mock_snapshot.get = Mock(side_effect=_snapshot_get)
+
+    mock_ref = Mock()
+    mock_ref.id = "job-stale"
+    mock_ref.get = Mock(return_value=mock_snapshot)
+
+    mock_transaction = Mock()
+    mock_transaction.update = Mock()
+
+    mock_db = Mock()
+    mock_db.transaction = Mock(return_value=mock_transaction)
+
+    with patch('worker.db', mock_db), \
+         patch('worker.firestore') as mock_firestore:
+        def transactional_decorator(func):
+            def wrapper(transaction, ref):
+                return func(transaction, ref)
+            return wrapper
+        mock_firestore.transactional = transactional_decorator
+
+        result = try_take_over_stale_claim(mock_ref)
+
+    assert result is True
+    mock_transaction.update.assert_called_once()
+    # The update payload must refresh claimedAt.
+    payload = mock_transaction.update.call_args[0][1]
+    assert 'claimedAt' in payload
+
+
+def test_try_take_over_stale_claim_rejects_fresh_claim():
+    """
+    try_take_over_stale_claim() must NOT refresh `claimedAt` when the
+    existing heartbeat is still fresh (another worker is alive).
+    """
+    import datetime as _dt
+    from worker import try_take_over_stale_claim, JobStatus
+
+    fresh_claim = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=5)
+
+    mock_snapshot = Mock()
+    mock_snapshot.exists = True
+    def _snapshot_get(field, default=None):
+        return {
+            'status': JobStatus.PROCESSING.value,
+            'claimedAt': fresh_claim,
+        }.get(field, default)
+    mock_snapshot.get = Mock(side_effect=_snapshot_get)
+
+    mock_ref = Mock()
+    mock_ref.id = "job-fresh"
+    mock_ref.get = Mock(return_value=mock_snapshot)
+
+    mock_transaction = Mock()
+    mock_transaction.update = Mock()
+
+    mock_db = Mock()
+    mock_db.transaction = Mock(return_value=mock_transaction)
+
+    with patch('worker.db', mock_db), \
+         patch('worker.firestore') as mock_firestore:
+        def transactional_decorator(func):
+            def wrapper(transaction, ref):
+                return func(transaction, ref)
+            return wrapper
+        mock_firestore.transactional = transactional_decorator
+
+        result = try_take_over_stale_claim(mock_ref)
+
+    assert result is False
+    mock_transaction.update.assert_not_called()
+
+
 def test_crash_mid_processing_does_not_leave_marker():
     """
     Simulate a worker crashing mid-processing. The marker must NOT be set,
