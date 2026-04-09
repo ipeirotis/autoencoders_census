@@ -15,10 +15,10 @@ interface StageIndicatorProps {
  * Implements FE-04 (multi-stage progress indicator).
  */
 export function StageIndicator({ currentStage }: StageIndicatorProps) {
-  const STAGES = ['queued', 'preprocessing', 'training', 'scoring'] as const;
+  const STAGES = ['queued', 'processing', 'training', 'scoring'] as const;
   const STAGE_LABELS: Record<typeof STAGES[number], string> = {
     queued: 'Queued',
-    preprocessing: 'Preprocessing',
+    processing: 'Processing',
     training: 'Training',
     scoring: 'Scoring',
   };
