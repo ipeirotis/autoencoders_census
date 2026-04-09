@@ -9,15 +9,18 @@ import { ContributionScores } from "./ContributionScores";
  *
  * Each record is a flat dict containing:
  *   - all original CSV row values (string keys, arbitrary values)
- *   - reconstruction_error: number (the outlier score)
- *   - contributions: per-column contribution percentages
+ *   - reconstruction_error: number (the outlier score, added by the worker)
+ *   - __meta: reserved namespace for worker-added metadata that must not
+ *     collide with user-uploaded column names (contributions, etc.)
  */
 interface Outlier {
   reconstruction_error: number;
-  contributions: Array<{
-    column: string;
-    percentage: number;
-  }>;
+  __meta?: {
+    contributions?: Array<{
+      column: string;
+      percentage: number;
+    }>;
+  };
   // Original CSV columns are also present as additional keys
   [key: string]: unknown;
 }
@@ -92,7 +95,9 @@ function OutlierRow({ outlier, rowIndex }: { outlier: Outlier; rowIndex: number 
 
         {/* Expanded details */}
         <CollapsibleContent className="px-4 pb-4 bg-slate-50">
-          <ContributionScores contributions={outlier.contributions ?? []} />
+          <ContributionScores
+            contributions={outlier.__meta?.contributions ?? []}
+          />
         </CollapsibleContent>
       </div>
     </Collapsible>
