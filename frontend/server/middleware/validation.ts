@@ -64,6 +64,20 @@ export const validateLogin: (ValidationChain | typeof handleValidationErrors)[] 
 ];
 
 /**
+ * Validation chain for password reset request
+ * - Email must be a valid format and normalized
+ * Mirrors signup/login validation so malformed payloads (e.g. non-string
+ * email) return a consistent 400 instead of crashing downstream string ops.
+ */
+export const validateRequestReset: (ValidationChain | typeof handleValidationErrors)[] = [
+  body('email')
+    .isEmail()
+    .withMessage('Invalid email')
+    .normalizeEmail(),
+  handleValidationErrors,
+];
+
+/**
  * Validation chain for job ID parameter
  * - Must be valid UUID format
  */

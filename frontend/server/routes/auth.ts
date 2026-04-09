@@ -5,7 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
-import { validateSignup, validateLogin } from '../middleware/validation';
+import { validateSignup, validateLogin, validateRequestReset } from '../middleware/validation';
 import { authLimiter } from '../middleware/rateLimits';
 import {
   createUser,
@@ -175,13 +175,9 @@ router.get('/verify-email', async (req: Request, res: Response) => {
  * Email sending is stubbed (logs to console) in v1
  * Always returns success to prevent email enumeration
  */
-router.post('/request-reset', authLimiter, async (req: Request, res: Response) => {
+router.post('/request-reset', authLimiter, validateRequestReset, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
 
     const user = await getUserByEmail(email);
     if (user) {

@@ -18,7 +18,19 @@ const FirestoreStore = firestoreStoreFactory(session);
  * Session middleware configuration
  * Uses Firestore for session persistence across server restarts
  * Cookies are secure in production, 24-hour expiry
+ *
+ * SameSite policy:
+ * - Production uses `sameSite=none` + `secure=true` so the session cookie is
+ *   attached on cross-site `fetch`/XHR requests when the frontend (e.g.
+ *   *.vercel.app) and API (e.g. Cloud Run) are served from different sites.
+ *   CSRF protection is provided by the CORS origin whitelist in
+ *   `middleware/security.ts`, which only allows credentialed requests from
+ *   FRONTEND_URL.
+ * - Development uses `sameSite=lax` because `none` requires `secure=true`,
+ *   which browsers refuse over plain HTTP (localhost dev).
  */
+const isProduction = env.NODE_ENV === 'production';
+
 export const sessionConfig = session({
   store: new FirestoreStore({
     database: firestore,
@@ -28,9 +40,9 @@ export const sessionConfig = session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: env.NODE_ENV === 'production', // HTTPS only in production
+    secure: isProduction, // HTTPS only in production (required for sameSite=none)
     httpOnly: true, // Prevent client-side JavaScript access
-    sameSite: 'lax', // CSRF protection
+    sameSite: isProduction ? 'none' : 'lax', // Allow cross-site auth in prod
     maxAge: 24 * 60 * 60 * 1000, // 24 hours in milliseconds
   },
 });
