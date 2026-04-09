@@ -362,6 +362,16 @@ ALLOWED_TRANSITIONS = {
     JobStatus.CANCELED: []   # Terminal state
 }
 
+# Legacy job statuses written by the pre-state-machine Express API before
+# phase-01/phase-02 migrated `/start-job` and `/api/upload` to persist the
+# canonical JobStatus.QUEUED value. Any job document currently sitting in
+# one of these statuses was created by older client/server code and should
+# be treated as "equivalent to queued" by the worker when it picks the
+# message up - otherwise the state machine rejects the
+# legacy -> PROCESSING transition, callback() silently acks, and the job
+# is permanently dropped (Codex P2 r(legacy-status)).
+LEGACY_INITIAL_STATUSES = frozenset({"uploaded", "uploading"})
+
 
 def is_valid_transition(current_status, new_status):
     """
@@ -904,6 +914,59 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                         f"later redelivery can retry if the active worker "
                         f"fails"
                     ) from e
+            elif current_status in LEGACY_INITIAL_STATUSES:
+                # Legacy-initial-status migration path (Codex P2
+                # r(legacy-status)): the doc was created by the
+                # pre-state-machine Express API (or the /api/upload
+                # fallback) with status="uploaded"/"uploading" instead of
+                # the canonical "queued". update_job_status() just rejected
+                # the transition because the state machine does not know
+                # these legacy values. Without this branch, callback() would
+                # ack the message and the job would be dropped forever.
+                #
+                # Migrate in place: force-write PROCESSING + claimedAt via
+                # a fresh transaction that bypasses is_valid_transition,
+                # then fall through to continue processing. Use a plain
+                # transaction.update() (not update_job_status) so we are
+                # not blocked by the state machine on the legacy->
+                # processing step.
+                logger.info(
+                    f"Job {job_id} in legacy initial status "
+                    f"{current_status!r}; migrating to PROCESSING and "
+                    f"resuming"
+                )
+                migration_txn = db.transaction()
+
+                @firestore.transactional
+                def _migrate_legacy(txn):
+                    snap = job_ref.get(transaction=txn)
+                    if not snap.exists:
+                        raise JobDocumentNotReadyError(
+                            f"Job {job_id} disappeared during legacy "
+                            f"migration"
+                        )
+                    latest = snap.get('status')
+                    # If another worker (or a catch-up /start-job call)
+                    # already migrated the status out from under us,
+                    # just no-op: the normal in-progress branch above
+                    # will handle the next redelivery.
+                    if latest not in LEGACY_INITIAL_STATUSES:
+                        return
+                    txn.update(
+                        job_ref,
+                        {
+                            'status': JobStatus.PROCESSING.value,
+                            'claimedAt': datetime.now(timezone.utc),
+                        },
+                    )
+
+                _migrate_legacy(migration_txn)
+                logger.info(
+                    f"Job {job_id} status: {current_status} -> "
+                    f"{JobStatus.PROCESSING.value} (legacy migration)"
+                )
+                # Fall through past the except block to continue
+                # processing against the migrated doc.
             else:
                 logger.warning(
                     f"Job {job_id} in unexpected state "
