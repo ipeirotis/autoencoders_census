@@ -422,12 +422,25 @@ def try_take_over_stale_claim(job_ref):
     us an escape hatch: a duplicate delivery that finds the claim
     abandoned (no heartbeat refresh for more than JOB_CLAIM_STALE_SECONDS)
     transactionally bumps `claimedAt` to now and returns True, letting
-    the caller continue processing from wherever the dead worker left off.
+    the caller resume processing.
 
-    Only refreshes `claimedAt`. Does NOT change `status`, because the
-    existing state machine already allows transitions OUT of the
-    in-progress buckets (PROCESSING -> TRAINING, TRAINING -> SCORING,
-    etc.), and the caller can resume from the current state.
+    Codex P1 (followup, r(stale-takeover-from-training)): the takeover
+    also *resets* the status to PROCESSING, even if the current state
+    is TRAINING or SCORING. Without that reset, the caller's normal
+    pipeline would try a PROCESSING -> TRAINING transition and hit an
+    "Invalid transition: training -> training" (or scoring -> training)
+    ValueError, which the outer exception handler would then mark as
+    ERROR. Crash recovery from TRAINING or SCORING would deterministically
+    fail instead of restarting the pipeline. Resetting to PROCESSING
+    means we redo the work (download, train, score) from scratch - that
+    is the safe choice because we have no way to know how far the dead
+    worker actually got before it crashed.
+
+    Codex P1 (followup, r(vertex-stale-redispatch)): suppress takeover
+    when the job doc carries a `vertexJobName`, because that indicates
+    a Vertex training job has already been successfully submitted and
+    Vertex itself (not this worker) owns the work. Re-taking it over
+    would re-submit the same Vertex training run and double-bill.
 
     The refresh happens inside a Firestore transaction, so two workers
     that both see a stale claim cannot both take over: one wins the
@@ -436,8 +449,8 @@ def try_take_over_stale_claim(job_ref):
 
     Returns:
         bool: True if the claim was successfully taken over, False if
-        the claim is still fresh or the doc is not in a recoverable
-        in-progress state.
+        the claim is still fresh, the doc is not in a recoverable
+        in-progress state, or a Vertex job is already dispatched.
     """
     in_progress_states = {
         JobStatus.PROCESSING.value,
@@ -453,12 +466,26 @@ def try_take_over_stale_claim(job_ref):
         current_status = snapshot.get('status')
         if current_status not in in_progress_states:
             return False
+        # Vertex guard: if the dispatcher already handed the job off to
+        # Vertex, it is Vertex's responsibility to run and update status.
+        # Re-taking over would re-submit the same training run.
+        if snapshot.get('vertexJobName'):
+            return False
         claimed_at = snapshot.get('claimedAt')
         if not _is_claim_stale(claimed_at):
             return False
         transaction.update(
             ref,
-            {'claimedAt': datetime.now(timezone.utc)},
+            {
+                # Reset status back to PROCESSING so the calling pipeline
+                # can restart from the beginning regardless of which
+                # in-progress sub-state (processing/training/scoring) the
+                # dead worker crashed in. This is a direct write that
+                # bypasses the normal state machine transition check,
+                # which is the whole point of this escape hatch.
+                'status': JobStatus.PROCESSING.value,
+                'claimedAt': datetime.now(timezone.utc),
+            },
         )
         return True
 
@@ -467,7 +494,8 @@ def try_take_over_stale_claim(job_ref):
     if took_over:
         logger.warning(
             f"Stale claim taken over for job {getattr(job_ref, 'id', '?')} "
-            f"(previous worker appears to have crashed)"
+            f"(previous worker appears to have crashed); status reset to "
+            f"PROCESSING to restart the pipeline"
         )
     return took_over
 
@@ -1063,6 +1091,53 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         )
 
         logger.info("Job submitted to Vertex AI.")
+
+        # Codex P1 r(vertex-stale-redispatch): the dispatcher is about
+        # to return, but the Vertex training job it just submitted will
+        # keep running for many minutes. If we left the job doc as-is,
+        # the `claimedAt` heartbeat would stop and after 3 minutes a
+        # duplicate Pub/Sub delivery could trigger stale-claim takeover
+        # and re-submit the same Vertex training run -> duplicate billing
+        # and duplicate writes to the same job doc.
+        #
+        # Mitigations, in order:
+        #
+        # 1. Stop the AckExtender heartbeat BEFORE writing our suppressor
+        #    values, so the heartbeat timer cannot race with us and
+        #    overwrite our far-future claimedAt.
+        #
+        # 2. Record the Vertex job resource name on the job doc. That
+        #    field gates try_take_over_stale_claim: if `vertexJobName`
+        #    is set, the takeover function treats the job as externally
+        #    owned and refuses to re-dispatch.
+        #
+        # 3. As a defense-in-depth belt to the vertexJobName suspenders,
+        #    also set `claimedAt` to a timestamp far in the future
+        #    (100 years) so even if some future reader ignores
+        #    `vertexJobName`, _is_claim_stale still reports "fresh" and
+        #    the takeover path still rejects the duplicate delivery.
+        extender.stop()
+        try:
+            vertex_job_name = getattr(job, 'resource_name', None) or \
+                getattr(job, 'name', None) or \
+                f"vertex-dispatched-{job_id}"
+            far_future_claim = datetime.now(timezone.utc) + timedelta(
+                days=365 * 100
+            )
+            job_ref.update({
+                'vertexJobName': vertex_job_name,
+                'claimedAt': far_future_claim,
+            })
+        except Exception as meta_err:
+            # If we can't persist the suppressor fields, the worst case
+            # is that a duplicate delivery will trigger a second Vertex
+            # dispatch after JOB_CLAIM_STALE_SECONDS. Log so the operator
+            # can see the gap and continue - the job is already running
+            # on Vertex, which is the important invariant.
+            logger.warning(
+                f"Failed to persist Vertex takeover suppressor for "
+                f"job {job_id}: {meta_err}"
+            )
 
     except JobDocumentNotReadyError:
         # Never swallow: callback() must nack for Pub/Sub redelivery.

@@ -315,6 +315,36 @@ def test_is_claim_stale_missing_timestamp_is_stale():
     assert _is_claim_stale(None) is True
 
 
+def _make_stale_claim_mocks(status_value, claimed_at, vertex_job_name=None):
+    """Shared fixture for try_take_over_stale_claim tests."""
+    mock_snapshot = Mock()
+    mock_snapshot.exists = True
+
+    stored = {
+        'status': status_value,
+        'claimedAt': claimed_at,
+    }
+    if vertex_job_name is not None:
+        stored['vertexJobName'] = vertex_job_name
+
+    def _snapshot_get(field, default=None):
+        return stored.get(field, default)
+
+    mock_snapshot.get = Mock(side_effect=_snapshot_get)
+
+    mock_ref = Mock()
+    mock_ref.id = f"job-{status_value}"
+    mock_ref.get = Mock(return_value=mock_snapshot)
+
+    mock_transaction = Mock()
+    mock_transaction.update = Mock()
+
+    mock_db = Mock()
+    mock_db.transaction = Mock(return_value=mock_transaction)
+
+    return mock_ref, mock_transaction, mock_db
+
+
 def test_try_take_over_stale_claim_wins_when_claim_is_old():
     """
     try_take_over_stale_claim() refreshes `claimedAt` via a Firestore
@@ -328,24 +358,9 @@ def test_try_take_over_stale_claim_wins_when_claim_is_old():
         seconds=JOB_CLAIM_STALE_SECONDS + 60
     )
 
-    mock_snapshot = Mock()
-    mock_snapshot.exists = True
-    def _snapshot_get(field, default=None):
-        return {
-            'status': JobStatus.PROCESSING.value,
-            'claimedAt': old_claim,
-        }.get(field, default)
-    mock_snapshot.get = Mock(side_effect=_snapshot_get)
-
-    mock_ref = Mock()
-    mock_ref.id = "job-stale"
-    mock_ref.get = Mock(return_value=mock_snapshot)
-
-    mock_transaction = Mock()
-    mock_transaction.update = Mock()
-
-    mock_db = Mock()
-    mock_db.transaction = Mock(return_value=mock_transaction)
+    mock_ref, mock_transaction, mock_db = _make_stale_claim_mocks(
+        JobStatus.PROCESSING.value, old_claim
+    )
 
     with patch('worker.db', mock_db), \
          patch('worker.firestore') as mock_firestore:
@@ -359,9 +374,83 @@ def test_try_take_over_stale_claim_wins_when_claim_is_old():
 
     assert result is True
     mock_transaction.update.assert_called_once()
-    # The update payload must refresh claimedAt.
     payload = mock_transaction.update.call_args[0][1]
     assert 'claimedAt' in payload
+    # Codex P1 followup: takeover must ALSO reset status to PROCESSING
+    # so the downstream pipeline can restart from scratch instead of
+    # hitting an invalid "training -> training" transition.
+    assert payload['status'] == JobStatus.PROCESSING.value
+
+
+def test_try_take_over_stale_claim_resets_training_to_processing():
+    """
+    Codex P1 r(stale-takeover-from-training): if the crashed worker had
+    already transitioned the job past PROCESSING (e.g. to TRAINING), the
+    takeover must still restart the pipeline from PROCESSING so the
+    normal PROCESSING -> TRAINING -> SCORING -> COMPLETE flow works
+    without hitting an invalid "training -> training" transition.
+    """
+    import datetime as _dt
+    from worker import try_take_over_stale_claim, JobStatus, JOB_CLAIM_STALE_SECONDS
+
+    old_claim = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        seconds=JOB_CLAIM_STALE_SECONDS + 60
+    )
+
+    for stuck_state in (JobStatus.TRAINING.value, JobStatus.SCORING.value):
+        mock_ref, mock_transaction, mock_db = _make_stale_claim_mocks(
+            stuck_state, old_claim
+        )
+
+        with patch('worker.db', mock_db), \
+             patch('worker.firestore') as mock_firestore:
+            def transactional_decorator(func):
+                def wrapper(transaction, ref):
+                    return func(transaction, ref)
+                return wrapper
+            mock_firestore.transactional = transactional_decorator
+
+            result = try_take_over_stale_claim(mock_ref)
+
+        assert result is True, f"takeover should succeed from {stuck_state}"
+        payload = mock_transaction.update.call_args[0][1]
+        assert payload['status'] == JobStatus.PROCESSING.value, (
+            f"takeover from {stuck_state} must reset status to processing"
+        )
+
+
+def test_try_take_over_stale_claim_refuses_when_vertex_dispatched():
+    """
+    Codex P1 r(vertex-stale-redispatch): if the job doc already carries
+    a `vertexJobName`, Vertex owns the training run. Re-taking over
+    would resubmit a duplicate (billable) Vertex job. Even if the
+    stored `claimedAt` looks stale, takeover must refuse.
+    """
+    import datetime as _dt
+    from worker import try_take_over_stale_claim, JobStatus, JOB_CLAIM_STALE_SECONDS
+
+    old_claim = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        seconds=JOB_CLAIM_STALE_SECONDS + 60
+    )
+
+    mock_ref, mock_transaction, mock_db = _make_stale_claim_mocks(
+        JobStatus.PROCESSING.value,
+        old_claim,
+        vertex_job_name="projects/x/locations/us-central1/customJobs/123",
+    )
+
+    with patch('worker.db', mock_db), \
+         patch('worker.firestore') as mock_firestore:
+        def transactional_decorator(func):
+            def wrapper(transaction, ref):
+                return func(transaction, ref)
+            return wrapper
+        mock_firestore.transactional = transactional_decorator
+
+        result = try_take_over_stale_claim(mock_ref)
+
+    assert result is False
+    mock_transaction.update.assert_not_called()
 
 
 def test_try_take_over_stale_claim_rejects_fresh_claim():
