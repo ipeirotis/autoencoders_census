@@ -38,36 +38,19 @@ const router = Router();
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "your-bucket-name";
 const TOPIC_ID = process.env.PUBSUB_TOPIC_ID || "your-topic-id";
 
-// 1. Get Signed URL for Upload
-// WORK-12: Defense-in-depth CSV validation
-// Express layer (quick checks):
-//   - File extension validation (.csv only) - handled by validateUploadUrl middleware
-//   - Content-Type validation (warn on unexpected types, allow for browser compatibility)
-// Worker layer (deep checks):
-//   - Encoding detection and validation (chardet)
-//   - Structure validation (pandas streaming, min rows/cols)
-//   - Size limit enforcement (>100MB rejection)
-//   - Edge case handling (unicode, missing values)
-// Note: File size validation (WORK-11) happens at Worker layer via validate_csv()
-// Express layer cannot reliably check size before GCS upload completes
-// GCS bucket has 100MB object size limit configured separately
 router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async (req: Request, res: Response) => {
   try {
     const { filename, contentType } = req.body;
     const jobId = uuidv4();
 
-    // WORK-12: Content-Type validation (defensive, not strict)
-    // Some browsers send different MIME types for CSV files
     if (contentType && contentType !== 'text/csv' && contentType !== 'application/vnd.ms-excel') {
       logger.warn('Unexpected content type for CSV upload', {
         contentType,
         filename,
         userId: (req as any).user.id
       });
-      // Allow but log - browser MIME type detection is inconsistent
     }
 
-    // Use safe filename - discard user-provided filename for storage path
     const gcsFileName = generateSafeFilename((req as any).user.id);
 
     const [url] = await storage
@@ -76,8 +59,8 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
       .getSignedUrl({
         version: "v4",
         action: "write",
-        expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        contentType: 'text/csv',  // Force CSV content type for GCS
+        expires: Date.now() + 15 * 60 * 1000,
+        contentType: 'text/csv',
       });
 
     res.json({ url, jobId, gcsFileName, originalFilename: filename });
@@ -90,12 +73,26 @@ router.post("/upload-url", requireAuth, uploadLimiter, validateUploadUrl, async 
   }
 });
 
-// 2. Start Processing (Trigger Pub/Sub)
 router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req: Request, res: Response) => {
   try {
     const { jobId, gcsFileName } = req.body;
+    const userId = (req as any).user.id;
 
-    // The message format MUST match what worker.py expects
+    // Validate that gcsFileName lives within this user's upload namespace.
+    // generateSafeFilename() produces paths like `uploads/{userId}/{uuid}.csv`.
+    // Without this check an authenticated user could submit an arbitrary GCS
+    // key, then call DELETE /api/jobs/:id to delete objects they don't own
+    // within the shared bucket - an authorization bypass on storage deletion.
+    const expectedPrefix = `uploads/${userId}/`;
+    if (
+      !gcsFileName ||
+      typeof gcsFileName !== 'string' ||
+      !gcsFileName.startsWith(expectedPrefix) ||
+      !gcsFileName.endsWith('.csv')
+    ) {
+      return res.status(400).json({ error: 'Invalid file reference' });
+    }
+
     const messageJson = {
       jobId: jobId,
       bucket: BUCKET_NAME,
@@ -105,14 +102,10 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
     await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
 
-    // Initialize Firestore document.
-    // gcsFileName is persisted so the cancel and delete-files endpoints can
-    // find the upload object in GCS later - without this the cleanup paths
-    // silently skip the GCS delete and leave the upload behind.
     await firestore.collection("jobs").doc(jobId).set({
-      status: "uploading", // Initial state
+      status: "uploading",
       createdAt: new Date(),
-      userId: (req as any).user.id,
+      userId,
       gcsFileName,
       bucket: BUCKET_NAME,
     });
@@ -128,7 +121,6 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
   }
 });
 
-// 3. Check Job Status
 router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -150,13 +142,10 @@ router.get("/job-status/:id", requireAuth, pollLimiter, validateJobId, async (re
   }
 });
 
-// 4. Export Outlier Results as CSV
-// Mounted at /api/jobs, so this becomes GET /api/jobs/:id/export
 router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Fetch job from Firestore
     const doc = await firestore.collection("jobs").doc(id).get();
 
     if (!doc.exists) {
@@ -165,48 +154,25 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
 
     const job = doc.data();
 
-    // Enforce job ownership - prevent users from exporting other users' data
     if (job.userId && job.userId !== (req as any).user.id) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Only export completed jobs
     if (job.status !== 'complete') {
       return res.status(400).json({ error: 'Job not complete' });
     }
 
     const outliers = job.outliers || [];
 
-    // Set CSV download headers
     res.attachment(`outliers-${id}.csv`);
 
-    // Reserved keys the worker adds to each outlier record for its own
-    // bookkeeping. They are stored inside the record so they round-trip
-    // through Firestore, but they must NOT appear as CSV columns - `__meta`
-    // is a nested object (not a scalar) and the user never asked for it.
     const RESERVED_OUTLIER_KEYS = new Set(['__meta']);
 
-    // Derive the column order from the first outlier. The worker writes
-    // outliers as dicts that preserve the original CSV column order, so
-    // Object.keys() gives us a stable 1:1 mapping between source columns
-    // and cells. Drop worker-added metadata keys before emitting.
     const columnKeys: string[] =
       outliers.length > 0
         ? Object.keys(outliers[0]).filter((k) => !RESERVED_OUTLIER_KEYS.has(k))
         : [];
 
-    // IMPORTANT: Sanitize header names by producing a PARALLEL sanitized
-    // array rather than rewriting object keys in place. Two distinct
-    // source columns can otherwise collapse to the same sanitized key
-    // (for example "=Q1" and "'=Q1" both become "'=Q1"), which would
-    // silently overwrite row values during Object.fromEntries.
-    //
-    // Instead, we emit the sanitized names directly as the header row
-    // and write each row as a positional array of sanitized values in
-    // columnKeys order. fast-csv with `headers: <array>` writes the
-    // array as the header row and treats subsequent array rows as
-    // positional, so the 1:1 mapping between source columns and cells
-    // is preserved regardless of any collisions in the sanitized space.
     const sanitizedHeaders = columnKeys.map(
       (key) => String(sanitizeFormulaInjection(key))
     );
@@ -232,24 +198,10 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
   }
 });
 
-// 5. Cancel Job with Full Resource Cleanup
-// Mounted at /api/jobs, so this becomes DELETE /api/jobs/:id
 router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Response) => {
   const { id } = req.params;
   const userId = (req as any).user.id;
 
-  // Atomically verify the job exists, belongs to this user, and is in a
-  // non-terminal state, then flip it to "canceled". Doing this in a
-  // transaction closes the TOCTOU race where the worker could finish and
-  // write "complete" between our initial read and the cancel write - the
-  // old code re-read the job up top and then did an unconditional update()
-  // at the bottom, so a job that completed mid-cancel would have its
-  // terminal success overwritten (and its artifacts deleted) after the
-  // fact.
-  //
-  // We also capture gcsFileName/vertexJobName inside the transaction so
-  // cleanup uses the values that were valid at the exact moment of the
-  // state transition.
   const TERMINAL_STATUSES = new Set(['complete', 'error', 'canceled']);
   let gcsFileName: string | undefined;
   let vertexJobName: string | undefined;
@@ -264,7 +216,6 @@ router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Resp
       }
       const job = snap.data() || {};
 
-      // Ownership check inside the transaction - don't leak existence.
       if (job.userId && job.userId !== userId) {
         throw new Error('NOT_FOUND');
       }
@@ -298,10 +249,6 @@ router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Resp
     return res.status(500).json({ error: "Failed to cancel job" });
   }
 
-  // Best-effort cleanup AFTER the canceled state is committed. At this
-  // point the worker's next transactional update_job_status() will fail the
-  // "invalid transition" check (canceled is terminal), so it cannot race us
-  // and write results over the canceled state.
   try {
     if (gcsFileName) {
       await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
@@ -313,27 +260,18 @@ router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Resp
       file: gcsFileName,
       error: error instanceof Error ? error.message : String(error),
     });
-    // Continue with other cleanup steps
   }
 
-  // Cancel Vertex AI training pipeline (best-effort, async).
-  // Use the actual server-generated Vertex resource name stored when the
-  // job was dispatched. If absent (e.g. local mode or job never reached
-  // Vertex), cancelVertexAIJob will skip the call.
   await cancelVertexAIJob(vertexJobName, id);
 
   logger.info('Job canceled successfully', { jobId: id, userId });
   res.json({ success: true, message: 'Job canceled and resources cleaned up' });
 });
 
-// 6. Manual File Deletion (Completed Jobs)
-// Separate from cancellation endpoint (which is for running jobs)
-// Mounted at /api/jobs, so this becomes DELETE /api/jobs/:id/files
 router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Fetch job
     const doc = await firestore.collection("jobs").doc(id).get();
 
     if (!doc.exists) {
@@ -342,15 +280,10 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
 
     const job = doc.data();
 
-    // Enforce job ownership - prevent users from deleting other users' files
     if (job.userId && job.userId !== (req as any).user.id) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Only allow deletion of terminal jobs (not running jobs).
-    // NOTE: worker.py writes failures as JobStatus.ERROR ("error"), not
-    // "failed" - including "failed" in the list previously would have
-    // rejected real failed jobs and left their artifacts orphaned.
     const DELETABLE_STATUSES = new Set(['complete', 'error', 'canceled']);
     if (!DELETABLE_STATUSES.has(job.status)) {
       return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
@@ -361,9 +294,6 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
     let uploadDeleteFailed = false;
     let resultDeleteFailed = false;
 
-    // Delete GCS uploaded file (best-effort).
-    // A 404 from GCS is not a failure: the object is already gone (lifecycle
-    // rule, previous cleanup, etc.), so cleanup is effectively complete.
     if (gcsFileName) {
       try {
         await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
@@ -386,9 +316,6 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
       }
     }
 
-    // Delete result files if exist (best-effort).
-    // Same 404-is-success semantics - the results file may simply never have
-    // been written (e.g. error'd jobs).
     const resultFileName = `results/${id}.json`;
     try {
       await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
@@ -410,10 +337,6 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
       }
     }
 
-    // Only mark the job as expired if the upload object was either deleted
-    // now or already absent. If the upload delete threw a real error (not
-    // 404), surface a 502 so the user can retry - we can't flip
-    // filesExpired to true while the CSV is still sitting in GCS.
     if (gcsFileName && uploadDeleteFailed) {
       return res.status(502).json({
         error: 'Failed to delete uploaded file from storage. Please retry.',
