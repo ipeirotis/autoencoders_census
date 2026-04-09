@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Index from "./pages/Index";
 import JobProgress from "./pages/JobProgress";
 import AuthScreen from "./pages/AuthScreen";
@@ -50,6 +50,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<AuthGate />} />
             <Route path="/job/:id" element={<JobProgress />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
       </TooltipProvider>
