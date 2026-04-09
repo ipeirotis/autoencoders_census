@@ -72,10 +72,6 @@ class TestDataLoaderAPI(unittest.TestCase):
             df.to_csv(f, index=False)
             path = f.name
         try:
-            # Note: all dataset configs pass integer indices for columns_of_interest,
-            # but load_original_data() compares with `in original_df.columns` (string names),
-            # so integer indices never match. This is a known bug (TASKS.md 1.8).
-            # Here we test with string column names to verify the filtering logic works.
             loader = DataLoader(
                 drop_columns=[],
                 rename_columns={},
@@ -85,6 +81,48 @@ class TestDataLoaderAPI(unittest.TestCase):
             self.assertEqual(result.shape[1], 2)
             self.assertIn("a", result.columns)
             self.assertIn("c", result.columns)
+        finally:
+            os.unlink(path)
+
+    def test_load_original_data_selects_columns_of_interest_by_index(self):
+        """Integer indices in columns_of_interest should select positional columns.
+
+        Regression test for the int-vs-name mismatch (TASKS.md 1.8): all built-in
+        dataset configs pass integer positional indices, so the loader must
+        translate them to column names rather than do a string `in` lookup.
+        """
+        df = pd.DataFrame({"a": [1], "b": [2], "c": [3], "d": [4]})
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+            df.to_csv(f, index=False)
+            path = f.name
+        try:
+            loader = DataLoader(
+                drop_columns=[],
+                rename_columns={},
+                columns_of_interest=[0, 2],  # select 'a' and 'c' positionally
+            )
+            result = loader.load_original_data(path)
+            self.assertEqual(result.shape[1], 2)
+            self.assertIn("a", result.columns)
+            self.assertIn("c", result.columns)
+        finally:
+            os.unlink(path)
+
+    def test_load_original_data_columns_of_interest_ignores_out_of_range_indices(self):
+        """Out-of-range integer indices should be silently dropped, not crash."""
+        df = pd.DataFrame({"a": [1], "b": [2]})
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+            df.to_csv(f, index=False)
+            path = f.name
+        try:
+            loader = DataLoader(
+                drop_columns=[],
+                rename_columns={},
+                columns_of_interest=[0, 99],  # 99 is out of range
+            )
+            result = loader.load_original_data(path)
+            self.assertEqual(result.shape[1], 1)
+            self.assertIn("a", result.columns)
         finally:
             os.unlink(path)
 
@@ -146,7 +184,11 @@ class TestDataLoaderSADCRegression(unittest.TestCase):
         )
 
     def test_load_2017_succeeds(self):
-        project_data, var_types = self.loader.load_2017()
+        project_data, metadata = self.loader.load_2017()
         self.assertGreater(len(project_data), 0)
+        self.assertIsInstance(metadata, dict)
+        self.assertIn("variable_types", metadata)
+        self.assertIn("ignored_columns", metadata)
+        var_types = metadata["variable_types"]
         self.assertIsInstance(var_types, dict)
         self.assertTrue(all(v in ("numeric", "categorical") for v in var_types.values()))
