@@ -601,17 +601,26 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         )
 
         # Persist the Vertex-assigned resource name so the cancel endpoint can
-        # call cancelCustomJob with the correct identifier. The app job_id (a
-        # client-generated UUID) is NOT a valid Vertex AI customJobs id, so
-        # cancellation by app id will silently fail. resource_name takes the
-        # form: projects/{p}/locations/{l}/customJobs/{vertex_numeric_id}
+        # stop this training run with the correct identifier. The app job_id
+        # (a client-generated UUID) is NOT a valid Vertex resource id.
+        #
+        # IMPORTANT: CustomContainerTrainingJob.run() creates a TrainingPipeline
+        # on the server, not a CustomJob directly. `job.resource_name` therefore
+        # has the form:
+        #   projects/{p}/locations/{l}/trainingPipelines/{vertex_numeric_id}
+        # The pipeline internally orchestrates a CustomJob, but the underlying
+        # CustomJob's resource name is not exposed synchronously here.
+        # Cancelling the pipeline IS how you stop the training run, so we store
+        # the pipeline name and let frontend/server/services/vertexAi.ts
+        # route it to PipelineServiceClient.cancelTrainingPipeline.
         vertex_job_name = getattr(job, "resource_name", None)
         if vertex_job_name:
             db.collection('jobs').document(job_id).set(
                 {"vertexJobName": vertex_job_name}, merge=True
             )
             logger.info(
-                f"Stored Vertex resource name for job {job_id}: {vertex_job_name}"
+                f"Stored Vertex training pipeline resource name for job {job_id}: "
+                f"{vertex_job_name}"
             )
         else:
             logger.warning(
