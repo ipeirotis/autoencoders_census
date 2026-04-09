@@ -865,6 +865,24 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 )
                 return
             if current_status in in_progress_states:
+                # Codex P2 r(vertex-dispatched-ack): if the doc carries
+                # `vertexJobName`, the previous run has already handed
+                # the job off to Vertex and Vertex owns it. A duplicate
+                # /start-job republish (or Pub/Sub redelivery) should
+                # NOT bounce around in an infinite
+                # JobInProgressError -> nack -> redeliver loop; there
+                # is no local work to do here, Vertex itself will
+                # update the job status. Treat this as a clean skip
+                # (return) so callback() acks and marks the duplicate
+                # message as processed.
+                if snapshot.get('vertexJobName'):
+                    logger.info(
+                        f"Job {job_id} already dispatched to Vertex "
+                        f"(vertexJobName set), skipping duplicate local "
+                        f"delivery"
+                    )
+                    return
+
                 # Stale-takeover path: if the previous worker's heartbeat
                 # has gone silent long enough that we consider the claim
                 # abandoned, reclaim it and fall through to continue
@@ -1171,6 +1189,24 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 )
                 return
             if current_status in in_progress_states:
+                # Codex P2 r(vertex-dispatched-ack): if the doc already
+                # carries `vertexJobName`, a previous delivery already
+                # successfully submitted the job to Vertex. Nothing
+                # more for the dispatcher to do here - Vertex owns the
+                # training run now. Treat the duplicate as a clean
+                # skip (return) so callback() acks and marks it; the
+                # alternative (raise JobInProgressError -> nack -> Pub/Sub
+                # redelivers) would create an infinite redelivery loop
+                # that burns worker capacity until Vertex finishes and
+                # updates status on its own.
+                if snapshot.get('vertexJobName'):
+                    logger.info(
+                        f"Job {job_id} already dispatched to Vertex "
+                        f"(vertexJobName set), skipping duplicate Vertex "
+                        f"dispatch"
+                    )
+                    return
+
                 # Try stale-claim takeover before giving up. For Vertex
                 # mode the dispatcher's active time is normally seconds
                 # (just long enough to submit the job.run call), so a
@@ -1179,12 +1215,8 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 #
                 # Pass mode="vertex" so the takeover transaction stamps
                 # that tag on the recovered doc atomically. Otherwise a
-                # legacy / untagged recovered doc would use the short
-                # local stale threshold for any subsequent duplicate
-                # deliveries, and the post-dispatch suppressor write
-                # window could still race a duplicate delivery into
-                # submitting a second Vertex training run
-                # (Codex P2 r(takeover-mode-tag)).
+                # legacy / untagged recovered doc would lose the mode
+                # tag for any subsequent duplicate deliveries.
                 if try_take_over_stale_claim(job_ref, mode='vertex'):
                     logger.info(
                         f"Resuming Vertex dispatch for job {job_id} "
