@@ -40,7 +40,9 @@ export function useJobPolling(jobId: string | null) {
         throw new Error('Job ID is required');
       }
 
-      const response = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`);
+      const response = await fetch(`${API_BASE}/api/jobs/job-status/${jobId}`, {
+        credentials: 'include',
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch job status');

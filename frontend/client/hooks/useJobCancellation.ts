@@ -22,7 +22,8 @@ export function useJobCancellation() {
   return useMutation({
     mutationFn: async (jobId: string) => {
       const response = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        credentials: 'include',
       });
       if (!response.ok) throw new Error('Failed to cancel job');
       return response.json();
