@@ -1493,10 +1493,18 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
             try:
                 job.cancel()
             except Exception as cancel_err:
-                logger.warning(
+                logger.error(
                     f"Failed to cancel Vertex pipeline after late cancel "
-                    f"detection for job {job_id}: {cancel_err}"
+                    f"detection for job {job_id}: {cancel_err}. "
+                    f"Persisting vertexCancelFailed marker for manual retry."
                 )
+                # Persist a marker so operators/cleanup scripts can find
+                # jobs where the Vertex pipeline is still running despite
+                # the app status being 'canceled'.
+                try:
+                    job_ref.update({'vertexCancelFailed': True})
+                except Exception:
+                    pass  # best-effort — already logged the real error
 
     except JobDocumentNotReadyError:
         # Never swallow: callback() must nack for Pub/Sub redelivery.
