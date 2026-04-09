@@ -1,5 +1,6 @@
 import "./global.css";
 
+import React from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { createRoot } from "react-dom/client";
 import { Toaster as Sonner } from "@/components/ui/sonner";
@@ -13,6 +14,29 @@ import { RootErrorBoundary } from "@/components/error-boundaries/RootErrorBounda
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 const queryClient = new QueryClient();
+
+/**
+ * RequireAuth redirects unauthenticated users to "/" (which renders
+ * AuthGate → AuthScreen). Used for routes whose backing API endpoints
+ * are protected by requireAuth on the server.
+ */
+const RequireAuth = ({ children }: { children: React.ReactNode }) => {
+  const { user, isLoading } = useCurrentUser();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-spin w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+};
 
 /**
  * AuthGate decides which top-level page to render based on session state.
@@ -49,7 +73,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<AuthGate />} />
-            <Route path="/job/:id" element={<JobProgress />} />
+            <Route path="/job/:id" element={<RequireAuth><JobProgress /></RequireAuth>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
