@@ -115,21 +115,24 @@ def train_and_predict(job_id, bucket_name, file_path):
         # 3. Invert transformation to get categorical values
         try:
             decoded_outliers = vectorizer.tabularize_vector(outlier_reconstruction)
-            
+            # tabularize_vector internally rebuilds DataFrames with a fresh
+            # 0-based index (inverse_transform drops the original sparse
+            # indices). Restore the outlier indices so .loc alignment and
+            # the zip below pair the correct rows.
+            decoded_outliers.index = common_indices
+
             # 4. Format the `top_outliers` DataFrame to show "Original -> Predicted"
             # We only modify the columns that were actually part of the model (cols_to_keep)
             for col in decoded_outliers.columns:
                 if col in top_outliers.columns:
-                    # We need to compare strings. fillna to ensure we don't crash on NaNs
                     original_vals = top_outliers.loc[common_indices, col].fillna("missing").astype(str)
-                    predicted_vals = decoded_outliers[col].fillna("missing").astype(str)
-                    
-                    # zip and format
+                    predicted_vals = decoded_outliers.loc[common_indices, col].fillna("missing").astype(str)
+
                     formatted_col = [
                         f"{orig} -> {pred}" if orig != pred else orig
                         for orig, pred in zip(original_vals, predicted_vals)
                     ]
-                    
+
                     top_outliers.loc[common_indices, col] = formatted_col
         except Exception as e:
             logger.error(f"Failed to decode reconstruction: {e}")
