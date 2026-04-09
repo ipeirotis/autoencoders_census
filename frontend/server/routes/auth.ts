@@ -5,7 +5,13 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { passport, requireAuth } from '../middleware/auth';
-import { validateSignup, validateLogin } from '../middleware/validation';
+import {
+  validateSignup,
+  validateLogin,
+  validateRequestReset,
+  validateResetPassword,
+} from '../middleware/validation';
+import { authLimiter } from '../middleware/rateLimits';
 import {
   createUser,
   createVerificationToken,
@@ -15,9 +21,9 @@ import {
   createPasswordResetToken,
   getUserByResetToken,
   updatePassword,
+  toPublicUser,
 } from '../models/user';
 import { logger } from '../config/logger';
-import { env } from '../config/env';
 
 const router = Router();
 
@@ -25,14 +31,12 @@ const router = Router();
  * POST /api/auth/signup
  * Create a new user account
  */
-router.post('/signup', validateSignup, async (req: Request, res: Response) => {
+router.post('/signup', authLimiter, validateSignup, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    // Create user (validation already handled by middleware)
     const user = await createUser(email, password);
 
-    // Log the user in
     req.login(user, (err) => {
       if (err) {
         logger.error('Login after signup failed', { error: err });
@@ -40,7 +44,7 @@ router.post('/signup', validateSignup, async (req: Request, res: Response) => {
       }
 
       logger.info('User signed up and logged in', { userId: user.id, email: user.email });
-      res.status(201).json({ user });
+      res.status(201).json({ user: toPublicUser(user) });
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'Email already registered') {
@@ -56,7 +60,7 @@ router.post('/signup', validateSignup, async (req: Request, res: Response) => {
  * POST /api/auth/login
  * Authenticate user with email and password
  */
-router.post('/login', validateLogin, (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', authLimiter, validateLogin, (req: Request, res: Response, next: NextFunction) => {
   passport.authenticate('local', (err: any, user: any, info: any) => {
     if (err) {
       logger.error('Login error', { error: err });
@@ -74,17 +78,13 @@ router.post('/login', validateLogin, (req: Request, res: Response, next: NextFun
       }
 
       logger.info('User logged in', { userId: user.id, email: user.email });
-
-      // Don't send passwordHash to client
-      const { passwordHash, ...userPublic } = user;
-      res.json({ user: userPublic });
+      res.json({ user: toPublicUser(user) });
     });
   })(req, res, next);
 });
 
 /**
  * POST /api/auth/logout
- * End user session
  */
 router.post('/logout', (req: Request, res: Response) => {
   const userId = (req.user as any)?.id;
@@ -102,19 +102,14 @@ router.post('/logout', (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Get current authenticated user
  */
 router.get('/me', requireAuth, (req: Request, res: Response) => {
-  // Don't send passwordHash to client
   const user = req.user as any;
-  const { passwordHash, ...userPublic } = user;
-  res.json({ user: userPublic });
+  res.json({ user: toPublicUser(user) });
 });
 
 /**
  * POST /api/auth/send-verification
- * Send email verification link
- * Email sending is stubbed (logs to console) in v1
  */
 router.post('/send-verification', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -124,12 +119,12 @@ router.post('/send-verification', requireAuth, async (req: Request, res: Respons
       return res.status(400).json({ error: 'Email already verified' });
     }
 
-    // Generate or regenerate verification token
     const token = user.verificationToken || await createVerificationToken(user.id);
 
-    // STUB: In production, send actual email. For v1, log only.
-    const verificationUrl = `${env.FRONTEND_URL}/verify-email?token=${token}`;
-    logger.info('[EMAIL STUB] Verification link', { url: verificationUrl, userId: user.id });
+    logger.info('[EMAIL STUB] Verification token issued', {
+      userId: user.id,
+      tokenPrefix: token.slice(0, 8),
+    });
 
     res.json({ message: 'Verification email sent' });
   } catch (error) {
@@ -142,7 +137,6 @@ router.post('/send-verification', requireAuth, async (req: Request, res: Respons
 
 /**
  * GET /api/auth/verify-email?token=xxx
- * Verify email with token
  */
 router.get('/verify-email', async (req: Request, res: Response) => {
   try {
@@ -171,28 +165,21 @@ router.get('/verify-email', async (req: Request, res: Response) => {
 
 /**
  * POST /api/auth/request-reset
- * Request password reset link
- * Email sending is stubbed (logs to console) in v1
- * Always returns success to prevent email enumeration
  */
-router.post('/request-reset', async (req: Request, res: Response) => {
+router.post('/request-reset', authLimiter, validateRequestReset, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
 
     const user = await getUserByEmail(email);
     if (user) {
       const token = await createPasswordResetToken(user.id);
 
-      // STUB: In production, send actual email. For v1, log only.
-      const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`;
-      logger.info('[EMAIL STUB] Password reset link', { url: resetUrl, userId: user.id });
+      logger.info('[EMAIL STUB] Password reset token issued', {
+        userId: user.id,
+        tokenPrefix: token.slice(0, 8),
+      });
     }
 
-    // Always return success to prevent email enumeration
     res.json({
       message: 'If an account exists with that email, a reset link has been sent',
     });
@@ -206,19 +193,10 @@ router.post('/request-reset', async (req: Request, res: Response) => {
 
 /**
  * POST /api/auth/reset-password
- * Reset password with token
  */
-router.post('/reset-password', async (req: Request, res: Response) => {
+router.post('/reset-password', authLimiter, validateResetPassword, async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
-
-    if (!token || !newPassword) {
-      return res.status(400).json({ error: 'Token and new password required' });
-    }
-
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
 
     const user = await getUserByResetToken(token);
     if (!user) {
