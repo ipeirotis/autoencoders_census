@@ -129,7 +129,7 @@ router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Resp
       const job = snap.data() || {};
       if (job.userId && job.userId !== userId) throw new Error('NOT_FOUND');
       if (TERMINAL_STATUSES.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
-      gcsFileName = job.gcsFileName || job.file;
+      gcsFileName = job.gcsFileName || job.gcsPath || job.file;
       vertexJobName = job.vertexJobName;
       tx.update(docRef, { status: 'canceled', canceledAt: new Date() });
     });
@@ -167,7 +167,7 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req: Request, res
     const DELETABLE_STATUSES = new Set(['complete', 'error', 'canceled']);
     if (!DELETABLE_STATUSES.has(job.status)) return res.status(400).json({ error: 'Cannot delete files from running job. Cancel job first.' });
 
-    const gcsFileName = job.gcsFileName || job.file;
+    const gcsFileName = job.gcsFileName || job.gcsPath || job.file;
     let filesDeleted = 0;
     let uploadDeleteFailed = false;
 
