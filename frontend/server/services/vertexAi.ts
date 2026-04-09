@@ -47,12 +47,12 @@ const CUSTOM_JOB_RE =
 export async function cancelVertexAIJob(
   resourceName: string | null | undefined,
   appJobId?: string
-): Promise<void> {
+): Promise<boolean> {
   if (!resourceName) {
     logger.info('Skipping Vertex AI cancellation - no resource name stored', {
       appJobId,
     });
-    return;
+    return true; // nothing to cancel = success
   }
 
   const isTrainingPipeline = TRAINING_PIPELINE_RE.test(resourceName);
@@ -63,7 +63,7 @@ export async function cancelVertexAIJob(
       appJobId,
       resourceName,
     });
-    return;
+    return false;
   }
 
   // Derive the regional API endpoint from the location segment embedded in the
@@ -91,12 +91,14 @@ export async function cancelVertexAIJob(
         resourceName,
       });
     }
+    return true;
   } catch (error) {
     logger.warn('Failed to cancel Vertex AI resource', {
       appJobId,
       resourceName,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 

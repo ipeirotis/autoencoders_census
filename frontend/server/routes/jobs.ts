@@ -318,13 +318,13 @@ router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
     }
   }
 
-  await cancelVertexAIJob(vertexJobName, id);
+  const vertexCancelOk = await cancelVertexAIJob(vertexJobName, id);
   logger.info('Job canceled successfully', { jobId: id, userId });
 
-  if (gcsCleanupFailed) {
+  if (gcsCleanupFailed || !vertexCancelOk) {
     return res.status(207).json({
       success: true,
-      message: 'Job canceled but file cleanup failed. Files may need manual deletion.',
+      message: 'Job canceled but some cleanup failed. Resources may need manual attention.',
     });
   }
   res.json({ success: true, message: 'Job canceled and resources cleaned up' });

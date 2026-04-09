@@ -203,8 +203,10 @@ export default function JobProgress() {
                     </Button>
                   )}
 
-                  {/* Manual delete button - only show if files not expired and job complete */}
-                  {!isJobExpired(job.createdAt) && !job.filesExpired && (
+                  {/* Manual delete - show unless already marked expired.
+                       Don't gate on isJobExpired: if lifecycle deletion is
+                       delayed/misconfigured, users need the cleanup path. */}
+                  {!job.filesExpired && (
                     <DeleteJobDialog jobId={id!} />
                   )}
                 </div>

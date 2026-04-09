@@ -71,7 +71,7 @@ describe('vertexAi service', () => {
     // Should not throw
     await expect(
       cancelVertexAIJob(VALID_TRAINING_PIPELINE, 'app-job-2')
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
 
     // Should log warning
     expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -87,7 +87,7 @@ describe('vertexAi service', () => {
     // Should not throw
     await expect(
       cancelVertexAIJob(VALID_CUSTOM_JOB, 'app-job-3')
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
 
     // Should log warning
     expect(mockLogger.warn).toHaveBeenCalled();
