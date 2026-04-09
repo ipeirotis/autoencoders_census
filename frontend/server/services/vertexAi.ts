@@ -49,8 +49,6 @@ export async function cancelVertexAIJob(
   appJobId?: string
 ): Promise<void> {
   if (!resourceName) {
-    // Job was never dispatched to Vertex AI (e.g. local mode, or canceled
-    // before the worker submitted the training pipeline). Nothing to cancel.
     logger.info('Skipping Vertex AI cancellation - no resource name stored', {
       appJobId,
     });
@@ -61,8 +59,6 @@ export async function cancelVertexAIJob(
   const isCustomJob = CUSTOM_JOB_RE.test(resourceName);
 
   if (!isTrainingPipeline && !isCustomJob) {
-    // Catches legacy docs where we may have mistakenly stored an app UUID
-    // or some other non-resource string.
     logger.warn('Refusing to cancel Vertex AI job - not a recognized resource path', {
       appJobId,
       resourceName,
@@ -70,7 +66,14 @@ export async function cancelVertexAIJob(
     return;
   }
 
-  const apiEndpoint = `${LOCATION}-aiplatform.googleapis.com`;
+  // Derive the regional API endpoint from the location segment embedded in the
+  // resource name itself, rather than the global VERTEX_AI_LOCATION env var.
+  // The worker submits jobs with a hardcoded location ("us-central1") which may
+  // differ from the server's env config; using the wrong region sends the
+  // cancel request to the wrong endpoint where it silently no-ops.
+  const locationMatch = resourceName.match(/\/locations\/([^/]+)\//);
+  const location = locationMatch ? locationMatch[1] : LOCATION;
+  const apiEndpoint = `${location}-aiplatform.googleapis.com`;
 
   try {
     if (isTrainingPipeline) {
@@ -89,16 +92,12 @@ export async function cancelVertexAIJob(
       });
     }
   } catch (error) {
-    // Cancellation is asynchronous and best-effort (not guaranteed).
-    // Resource may already be complete or not exist.
     logger.warn('Failed to cancel Vertex AI resource', {
       appJobId,
       resourceName,
       error: error instanceof Error ? error.message : String(error),
     });
-    // Do NOT throw - cancellation is best-effort
   }
 }
 
-// Re-export resolved config for tests / diagnostics
 export const __vertexAiConfig = { PROJECT_ID, LOCATION };
