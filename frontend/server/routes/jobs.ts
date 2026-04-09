@@ -273,9 +273,10 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
 router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
   const { id } = req.params;
   const userId = (req as any).user.id;
-  const TERMINAL_STATUSES = new Set(['complete', 'error', 'canceled']);
+  const NON_CANCELABLE = new Set(['complete', 'error']);
   let gcsFileName: string | undefined;
   let vertexJobName: string | undefined;
+  let alreadyCanceled = false;
 
   try {
     await firestore.runTransaction(async (tx) => {
@@ -284,10 +285,17 @@ router.delete("/:id", requireAuth, validateJobId, async (req, res) => {
       if (!snap.exists) throw new Error('NOT_FOUND');
       const job = snap.data() || {};
       if (job.userId !== userId) throw new Error('NOT_FOUND');
-      if (TERMINAL_STATUSES.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
+      if (NON_CANCELABLE.has(job.status)) throw new Error(`TERMINAL:${job.status}`);
+
       gcsFileName = job.gcsFileName || job.gcsPath || job.file;
       vertexJobName = job.vertexJobName;
-      tx.update(docRef, { status: 'canceled', canceledAt: new Date() });
+
+      if (job.status === 'canceled') {
+        // Already canceled — skip the status write but proceed to retry cleanup.
+        alreadyCanceled = true;
+      } else {
+        tx.update(docRef, { status: 'canceled', canceledAt: new Date() });
+      }
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
