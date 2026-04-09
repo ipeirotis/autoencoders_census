@@ -432,11 +432,11 @@ def test_try_take_over_stale_claim_stamps_mode_from_caller():
     from worker import (
         try_take_over_stale_claim,
         JobStatus,
-        JOB_CLAIM_STALE_SECONDS_VERTEX,
+        JOB_CLAIM_STALE_SECONDS,
     )
 
     very_old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-        seconds=JOB_CLAIM_STALE_SECONDS_VERTEX + 60
+        seconds=JOB_CLAIM_STALE_SECONDS + 60
     )
 
     # Legacy untagged doc - no `mode` field at all.
@@ -479,38 +479,38 @@ def test_try_take_over_stale_claim_stamps_mode_from_caller():
     )
 
 
-def test_try_take_over_stale_claim_refuses_vertex_mode_short_window():
+def test_try_take_over_stale_claim_pre_dispatch_vertex_uses_short_window():
     """
-    Codex P1 r(suppressor-write-failure): a job tagged `mode: "vertex"`
-    must NOT be reclaimed after the 3-minute local stale window, because
-    the Vertex training run itself routinely takes much longer than that.
-    A claimedAt just 10 minutes old is well past the local threshold but
-    comfortably inside the Vertex threshold, and takeover should refuse.
+    Codex P1 r(pre-dispatch-vertex): a vertex-tagged claim that has
+    NOT yet crossed the dispatch boundary (no `vertexJobName` field)
+    must use the short local stale threshold so a crashed dispatcher
+    can be recovered within minutes, not hours. The previous
+    implementation forced the 4-hour Vertex threshold whenever the
+    caller passed `mode='vertex'`, which meant any pre-dispatch crash
+    locked the job out of recovery for four hours.
     """
     import datetime as _dt
     from worker import try_take_over_stale_claim, JobStatus, JOB_CLAIM_STALE_SECONDS
 
-    ten_minutes_old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=10)
-    assert (
-        _dt.datetime.now(_dt.timezone.utc) - ten_minutes_old
-    ).total_seconds() > JOB_CLAIM_STALE_SECONDS, (
-        "precondition: 10 minutes should be past the local stale threshold"
+    stale_but_not_vertex_stale = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        seconds=JOB_CLAIM_STALE_SECONDS + 30
     )
 
-    # Same fixture helper, but with mode=vertex in the stored doc.
     mock_snapshot = Mock()
     mock_snapshot.exists = True
     stored = {
         'status': JobStatus.PROCESSING.value,
-        'claimedAt': ten_minutes_old,
+        'claimedAt': stale_but_not_vertex_stale,
         'mode': 'vertex',
+        # vertexJobName intentionally absent: the dispatcher never
+        # reached job.run() (or crashed before the suppressor write).
     }
     mock_snapshot.get = Mock(
         side_effect=lambda field, default=None: stored.get(field, default)
     )
 
     mock_ref = Mock()
-    mock_ref.id = "job-vertex-10min"
+    mock_ref.id = "job-vertex-pre-dispatch"
     mock_ref.get = Mock(return_value=mock_snapshot)
 
     mock_transaction = Mock()
@@ -527,64 +527,10 @@ def test_try_take_over_stale_claim_refuses_vertex_mode_short_window():
             return wrapper
         mock_firestore.transactional = transactional_decorator
 
-        result = try_take_over_stale_claim(mock_ref)
-
-    assert result is False, (
-        "mode=vertex jobs must not be reclaimed at the local stale "
-        "threshold, otherwise a post-dispatch metadata-write failure "
-        "would allow a duplicate Vertex training submission"
-    )
-    mock_transaction.update.assert_not_called()
-
-
-def test_try_take_over_stale_claim_reclaims_vertex_after_long_window():
-    """
-    Conversely, a `mode: "vertex"` job really is recoverable once it
-    exceeds the Vertex stale threshold (4 hours). This proves the
-    takeover path is still reachable for a truly crashed Vertex
-    dispatcher, just with a much more conservative window.
-    """
-    import datetime as _dt
-    from worker import (
-        try_take_over_stale_claim,
-        JobStatus,
-        JOB_CLAIM_STALE_SECONDS_VERTEX,
-    )
-
-    very_old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-        seconds=JOB_CLAIM_STALE_SECONDS_VERTEX + 60
-    )
-
-    mock_snapshot = Mock()
-    mock_snapshot.exists = True
-    stored = {
-        'status': JobStatus.PROCESSING.value,
-        'claimedAt': very_old,
-        'mode': 'vertex',
-    }
-    mock_snapshot.get = Mock(
-        side_effect=lambda field, default=None: stored.get(field, default)
-    )
-
-    mock_ref = Mock()
-    mock_ref.id = "job-vertex-verystale"
-    mock_ref.get = Mock(return_value=mock_snapshot)
-
-    mock_transaction = Mock()
-    mock_transaction.update = Mock()
-
-    mock_db = Mock()
-    mock_db.transaction = Mock(return_value=mock_transaction)
-
-    with patch('worker.db', mock_db), \
-         patch('worker.firestore') as mock_firestore:
-        def transactional_decorator(func):
-            def wrapper(transaction, ref):
-                return func(transaction, ref)
-            return wrapper
-        mock_firestore.transactional = transactional_decorator
-
-        result = try_take_over_stale_claim(mock_ref)
+        # Caller (process_upload_vertex) passes mode='vertex', but the
+        # doc has no vertexJobName, so takeover should still use the
+        # short window and succeed.
+        result = try_take_over_stale_claim(mock_ref, mode='vertex')
 
     assert result is True
     mock_transaction.update.assert_called_once()
