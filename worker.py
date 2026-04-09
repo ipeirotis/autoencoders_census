@@ -651,13 +651,19 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
     job_ref = db.collection('jobs').document(job_id)
 
-    # WORK-05/06: Start ack deadline extension. job_ref is passed in so the
-    # extender can also heartbeat `claimedAt` at the same cadence, which is
-    # what makes stale-claim takeover safe (see _is_claim_stale).
+    # WORK-05/06: Start ack deadline extension, but *without* a job_ref
+    # yet so the heartbeat only refreshes the Pub/Sub ack deadline at
+    # this stage and does NOT refresh `claimedAt`. Codex P1 flagged that
+    # refreshing the claim before we actually own it rewrites a
+    # crashed-worker's stale claim to "fresh" on every redelivery, so
+    # try_take_over_stale_claim would then always reject takeover and
+    # crash recovery would be impossible. We attach the job_ref below
+    # AFTER the queued -> processing transition (or stale takeover)
+    # confirms that we are the rightful owner of this job.
     extender = AckExtender(
         message,
         interval_seconds=JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS,
-        job_ref=job_ref,
+        job_ref=None,
     )
     extender.start()
 
@@ -788,6 +794,16 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                     f"({e}); acking and skipping"
                 )
                 return
+
+        # Ownership is now confirmed (either via the normal queued ->
+        # processing transition, or via try_take_over_stale_claim). Wire
+        # the job_ref onto the heartbeat extender now so subsequent
+        # extend() ticks will refresh `claimedAt`. We intentionally did
+        # NOT do this earlier, because the extender's auto-refresh would
+        # have rewritten a crashed worker's stale claim to "fresh"
+        # before we got a chance to run stale-takeover, making crash
+        # recovery impossible (Codex P1 r3055xxxxx).
+        extender.job_ref = job_ref
 
         # 1. Download from GCS
         storage_client = storage.Client()
@@ -962,13 +978,19 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
 
     job_ref = db.collection('jobs').document(job_id)
 
-    # WORK-05/06: Start ack deadline extension. Passing job_ref enables
-    # the claimedAt heartbeat so stale-takeover can distinguish a live
-    # dispatcher from a crashed one (same rationale as process_upload_local).
+    # WORK-05/06: Start ack deadline extension. job_ref is intentionally
+    # left unset at this point so the heartbeat only refreshes the
+    # Pub/Sub ack deadline, not `claimedAt`. Codex P1 flagged that an
+    # eager claim heartbeat on a redelivered message rewrites a
+    # crashed worker's stale claim to "fresh" before we've even run
+    # stale-takeover, which then always rejects takeover and wedges
+    # crash recovery. We attach job_ref below, after the queued ->
+    # processing transition (or stale-claim takeover) confirms we
+    # actually own this job.
     extender = AckExtender(
         message,
         interval_seconds=JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS,
-        job_ref=job_ref,
+        job_ref=None,
     )
     extender.start()
 
@@ -1063,6 +1085,17 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                     f"({e}); acking and skipping Vertex dispatch"
                 )
                 return
+
+        # Ownership is now confirmed (either via the normal queued ->
+        # processing transition, or via try_take_over_stale_claim).
+        # Wire the job_ref onto the heartbeat extender so subsequent
+        # extend() ticks refresh `claimedAt`, matching the
+        # process_upload_local ordering for the same reason (Codex P1
+        # r3055xxxxx). Note: the Vertex dispatcher only needs the claim
+        # heartbeat for the few seconds until job.run() returns - after
+        # that, the post-dispatch suppressor path (below) stops the
+        # extender and writes a far-future `claimedAt`.
+        extender.job_ref = job_ref
 
         container_uri = f"us-central1-docker.pkg.dev/{PROJECT_ID}/autoencoder-repo/trainer:v1"
         logger.info(f"Target Image: {container_uri}")
