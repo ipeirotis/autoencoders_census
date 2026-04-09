@@ -31,6 +31,13 @@ interface JobStatus {
   updatedAt: string;
   error?: string;
   errorType?: string;
+  // Populated by the worker when status reaches 'complete'
+  outliers?: Array<Record<string, any>>;
+  stats?: {
+    total_rows: number;
+    kept_columns: Array<{ name: string; unique_values: number }>;
+    ignored_columns: Array<{ name: string; unique_values: number }>;
+  };
 }
 
 /**
