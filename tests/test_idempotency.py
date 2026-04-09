@@ -248,6 +248,41 @@ def test_duplicate_delivery_while_job_in_progress_nacks_without_marking():
     mock_mark.assert_not_called()
 
 
+def test_duplicate_delivery_for_vertex_dispatched_job_acks_cleanly():
+    """
+    Codex P2 r(vertex-dispatched-ack): a duplicate delivery for a job
+    whose doc already carries `vertexJobName` must be ack-dropped, not
+    nacked. Nacking would create an infinite Pub/Sub redelivery loop
+    against a job that Vertex is already running, burning worker
+    capacity with no path to progress.
+
+    We simulate this by having process_upload_local / _vertex return
+    normally (as they will after the new "vertexJobName short-circuit"
+    branch in the invalid-transition handler). callback() should then
+    ack + mark the message as processed, not nack.
+    """
+    from worker import callback
+
+    message = Mock()
+    message.data = json.dumps({
+        "jobId": "job-vertex-dup",
+        "bucket": "test-bucket",
+        "file": "test.csv"
+    }).encode("utf-8")
+    message.message_id = "msg-vertex-dup"
+    message.ack = Mock()
+    message.nack = Mock()
+
+    with patch('worker.check_idempotency', return_value=False), \
+         patch('worker.process_upload_local', return_value=None), \
+         patch('worker.mark_message_processed') as mock_mark:
+        callback(message)
+
+    message.ack.assert_called_once()
+    message.nack.assert_not_called()
+    mock_mark.assert_called_once()
+
+
 def test_job_document_not_ready_nacks_without_marking():
     """
     Codex P1 (r3053739500): if /start-job hasn't written the Firestore
