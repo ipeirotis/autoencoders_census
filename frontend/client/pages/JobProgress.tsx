@@ -198,12 +198,22 @@ export default function JobProgress() {
               <div className="p-4 bg-red-50 border border-red-200 rounded-md">
                 <p className="text-red-800 font-semibold">Job failed</p>
                 <p className="text-red-700 text-sm mt-1">{job.error || 'Unknown error occurred'}</p>
+                {!job.filesExpired && (
+                  <div className="mt-3">
+                    <DeleteJobDialog jobId={id!} />
+                  </div>
+                )}
               </div>
             )}
 
             {job.status === 'canceled' && (
               <div className="p-4 bg-gray-50 border border-gray-200 rounded-md">
                 <p className="text-gray-800 font-semibold">Job was canceled</p>
+                {!job.filesExpired && (
+                  <div className="mt-3">
+                    <DeleteJobDialog jobId={id!} />
+                  </div>
+                )}
               </div>
             )}
 

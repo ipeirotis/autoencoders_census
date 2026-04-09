@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useCallback, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Dropzone } from "@/components/Dropzone";
@@ -26,6 +27,7 @@ export default function Index() {
   const [stats, setStats] = useState<any>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
   const { user, setUser } = useCurrentUser();
 
   const handleLogout = useCallback(async () => {
@@ -97,8 +99,9 @@ export default function Index() {
 
     try {
       const response = await uploadCsv(file);
-      setJobId(response.jobId);
-      // Polling useEffect will take over now
+      // Navigate to the dedicated progress page so the user gets the
+      // full monitoring/cancel/export UI introduced in Phase 4.
+      navigate(`/job/${response.jobId}`);
     } catch (err: any) {
       // Session expired between page load and upload - bounce back to auth.
       if (err instanceof ApiError && err.status === 401) {
