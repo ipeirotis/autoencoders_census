@@ -11,9 +11,18 @@ import path from 'path';
  * Validates that a buffer contains valid CSV content
  * Checks for:
  * - Not a known binary format (via file-type detection)
- * - Valid UTF-8 encoding
+ * - Text-decodable content (tolerates non-UTF-8 encodings like Windows-1252)
  * - Contains comma separators
  * - Has at least 2 rows (header + data)
+ *
+ * Encoding note: the worker-side `validate_csv()` uses chardet to detect
+ * the actual encoding and then decodes accordingly, so non-UTF-8 CSVs
+ * (e.g. Excel exports with smart quotes in Windows-1252) are fully
+ * supported downstream. This Express-layer check intentionally does NOT
+ * enforce UTF-8 — it only rejects files that are clearly binary (via
+ * file-type magic-number detection) and verifies basic CSV structure so
+ * that obviously-wrong uploads fail fast without burning a Pub/Sub +
+ * worker round trip.
  *
  * @param buffer - File content as Buffer
  * @returns {valid: true} or {valid: false, reason: string}
@@ -27,16 +36,16 @@ export async function validateCSVContent(
     return { valid: false, reason: 'File appears to be binary, not CSV' };
   }
 
-  // Try to decode as UTF-8
+  // Decode as UTF-8 for the structural checks below. Non-UTF-8 bytes are
+  // decoded as U+FFFD replacement characters, but that does NOT mean the
+  // file is invalid — it just uses a different encoding (Windows-1252,
+  // Latin-1, etc.) which the worker handles via chardet. We only reject
+  // files that fail the structural checks (no commas, too few rows).
   let content: string;
   try {
     content = buffer.toString('utf-8');
-    // Check for invalid UTF-8 sequences (replacement character)
-    if (content.includes('\ufffd')) {
-      return { valid: false, reason: 'Invalid file encoding' };
-    }
   } catch {
-    return { valid: false, reason: 'Invalid file encoding' };
+    return { valid: false, reason: 'Unable to read file content' };
   }
 
   // Check CSV structure
