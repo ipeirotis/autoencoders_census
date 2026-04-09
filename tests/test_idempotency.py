@@ -103,6 +103,12 @@ def test_mark_message_processed_writes_marker():
     payload = call_args[0][1]
     assert payload['jobId'] == "job-456"
     assert 'processedAt' in payload
+    # Codex P2: expiresAt must be a future timestamp (now + TTL), not the
+    # current SERVER_TIMESTAMP sentinel, otherwise a Firestore TTL policy
+    # would delete the marker immediately.
+    import datetime as _dt
+    assert isinstance(payload['expiresAt'], _dt.datetime)
+    assert payload['expiresAt'] > _dt.datetime.now(_dt.timezone.utc)
 
 
 def test_mark_message_processed_is_idempotent_on_existing_marker():
@@ -202,6 +208,40 @@ def test_first_time_message_processes_then_marks_then_acks():
         "Must process first, then mark the message as processed, then ack."
     )
     message.nack.assert_not_called()
+
+
+def test_job_document_not_ready_nacks_without_marking():
+    """
+    Codex P1 (r3053739500): if /start-job hasn't written the Firestore
+    document yet and the worker picks the message up first, the worker
+    raises JobDocumentNotReadyError. callback() must nack (so Pub/Sub
+    redelivers) and must NOT mark the message as processed, otherwise
+    the retry would be silently dropped as a duplicate.
+    """
+    from worker import callback, JobDocumentNotReadyError
+
+    message = Mock()
+    message.data = json.dumps({
+        "jobId": "job-not-ready",
+        "bucket": "test-bucket",
+        "file": "test.csv"
+    }).encode("utf-8")
+    message.message_id = "msg-not-ready"
+    message.ack = Mock()
+    message.nack = Mock()
+
+    with patch('worker.check_idempotency', return_value=False), \
+         patch(
+             'worker.process_upload_local',
+             side_effect=JobDocumentNotReadyError("Job not ready")
+         ), \
+         patch('worker.mark_message_processed') as mock_mark:
+        callback(message)
+
+    # Must nack for redelivery and must NOT mark as processed.
+    message.nack.assert_called_once()
+    message.ack.assert_not_called()
+    mock_mark.assert_not_called()
 
 
 def test_crash_mid_processing_does_not_leave_marker():
