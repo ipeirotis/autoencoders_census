@@ -120,9 +120,12 @@ def train_and_predict(job_id, bucket_name, file_path):
             # We only modify the columns that were actually part of the model (cols_to_keep)
             for col in decoded_outliers.columns:
                 if col in top_outliers.columns:
-                    # We need to compare strings. fillna to ensure we don't crash on NaNs
                     original_vals = top_outliers.loc[common_indices, col].fillna("missing").astype(str)
-                    predicted_vals = decoded_outliers[col].fillna("missing").astype(str)
+                    # Reset index so decoded_outliers aligns positionally with
+                    # common_indices (tabularize_vector produces fresh 0..N indexes).
+                    predicted_vals = decoded_outliers[col].reset_index(drop=True)
+                    predicted_vals.index = common_indices
+                    predicted_vals = predicted_vals.fillna("missing").astype(str)
                     
                     # zip and format
                     formatted_col = [
