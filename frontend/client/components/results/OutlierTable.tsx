@@ -7,22 +7,17 @@ import { ContributionScores } from "./ContributionScores";
 /**
  * Outlier record shape as written by worker.py.
  *
- * Each record is a flat dict containing:
- *   - all original CSV row values (string keys, arbitrary values)
- *   - reconstruction_error: number (the outlier score, added by the worker)
- *   - __meta: reserved namespace for worker-added metadata that must not
- *     collide with user-uploaded column names (contributions, etc.)
+ * User data (original CSV columns) lives under `data` and system metadata
+ * lives at the top level, so no system key can ever collide with arbitrary
+ * user-uploaded column names.
  */
 interface Outlier {
+  data: Record<string, unknown>;
   reconstruction_error: number;
-  __meta?: {
-    contributions?: Array<{
-      column: string;
-      percentage: number;
-    }>;
-  };
-  // Original CSV columns are also present as additional keys
-  [key: string]: unknown;
+  contributions?: Array<{
+    column: string;
+    percentage: number;
+  }>;
 }
 
 interface OutlierTableProps {
@@ -64,8 +59,6 @@ export function OutlierTable({ outliers }: OutlierTableProps) {
 function OutlierRow({ outlier, rowIndex }: { outlier: Outlier; rowIndex: number }) {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Defensive: reconstruction_error may be missing if the backend payload
-  // shape changes. Show "—" rather than crash with toFixed on undefined.
   const score =
     typeof outlier.reconstruction_error === "number"
       ? outlier.reconstruction_error.toFixed(3)
@@ -74,7 +67,6 @@ function OutlierRow({ outlier, rowIndex }: { outlier: Outlier; rowIndex: number 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div>
-        {/* Main row - clickable to expand */}
         <div className="flex items-center px-4 py-3 hover:bg-slate-50 cursor-pointer">
           <CollapsibleTrigger asChild>
             <Button variant="ghost" size="sm" className="p-0 h-auto">
@@ -93,10 +85,9 @@ function OutlierRow({ outlier, rowIndex }: { outlier: Outlier; rowIndex: number 
           </div>
         </div>
 
-        {/* Expanded details */}
         <CollapsibleContent className="px-4 pb-4 bg-slate-50">
           <ContributionScores
-            contributions={outlier.__meta?.contributions ?? []}
+            contributions={outlier.contributions ?? []}
           />
         </CollapsibleContent>
       </div>
