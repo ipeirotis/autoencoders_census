@@ -64,6 +64,44 @@ export const validateLogin: (ValidationChain | typeof handleValidationErrors)[] 
 ];
 
 /**
+ * Validation chain for password reset request
+ * - Email must be a valid format and normalized
+ * Mirrors signup/login validation so malformed payloads (e.g. non-string
+ * email) return a consistent 400 instead of crashing downstream string ops.
+ */
+export const validateRequestReset: (ValidationChain | typeof handleValidationErrors)[] = [
+  body('email')
+    .isEmail()
+    .withMessage('Invalid email')
+    .normalizeEmail(),
+  handleValidationErrors,
+];
+
+/**
+ * Validation chain for password reset confirmation
+ * - Token must be a non-empty string
+ * - newPassword must be a string of 8-128 characters
+ * Strict string checks so non-string payloads (e.g. `{ newPassword: {} }`)
+ * are rejected with 400 instead of bypassing the length guard and crashing
+ * inside bcrypt with a 500.
+ */
+export const validateResetPassword: (ValidationChain | typeof handleValidationErrors)[] = [
+  body('token')
+    .isString()
+    .withMessage('Token required')
+    .bail()
+    .notEmpty()
+    .withMessage('Token required'),
+  body('newPassword')
+    .isString()
+    .withMessage('Password must be a string')
+    .bail()
+    .isLength({ min: 8, max: 128 })
+    .withMessage('Password must be 8-128 characters'),
+  handleValidationErrors,
+];
+
+/**
  * Validation chain for job ID parameter
  * - Must be valid UUID format
  */

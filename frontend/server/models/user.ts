@@ -11,10 +11,27 @@ import crypto from 'crypto';
 // Initialize Firestore
 const firestore = new Firestore();
 const USERS_COLLECTION = 'users';
+/**
+ * Firestore collection used as a unique-email index. Document ID is the
+ * normalized email, value is `{ userId }`. Writing to this collection inside
+ * the same transaction that creates the user document gives us atomic email
+ * uniqueness: two concurrent signups for the same email cannot both commit.
+ */
+const EMAIL_INDEX_COLLECTION = 'email_index';
 const BCRYPT_ROUNDS = 12;
 
 /**
- * User interface (public - without sensitive fields)
+ * Normalize an email for storage and for use as the `email_index` document
+ * key. Kept simple (lowercase + trim) so it is stable and deterministic;
+ * Firestore document IDs allow `@` and `.`, so no escaping is needed.
+ */
+function normalizeEmail(email: string): string {
+  return email.toLowerCase().trim();
+}
+
+/**
+ * User interface (without passwordHash, but still contains sensitive fields
+ * like verificationToken/resetToken that must never be sent to API clients)
  */
 export interface User {
   id: string;
@@ -34,36 +51,74 @@ interface UserInternal extends User {
 }
 
 /**
- * Create a new user with hashed password
+ * Public user interface - safe to return in API responses.
+ * Excludes passwordHash, verificationToken, resetToken, and resetTokenExpiry
+ * so clients can never read credentials or verification/reset secrets.
+ */
+export interface PublicUser {
+  id: string;
+  email: string;
+  createdAt: string;
+  emailVerified: boolean;
+}
+
+/**
+ * Strip all sensitive fields from a user object before returning it to clients.
+ * Removes passwordHash, verificationToken, resetToken, and resetTokenExpiry.
+ */
+export function toPublicUser(user: User | UserInternal): PublicUser {
+  return {
+    id: user.id,
+    email: user.email,
+    createdAt: user.createdAt,
+    emailVerified: user.emailVerified,
+  };
+}
+
+/**
+ * Create a new user with hashed password.
+ *
+ * Email uniqueness is enforced atomically using a Firestore transaction and
+ * a dedicated `email_index` collection keyed by the normalized email. The
+ * transaction reads the email index doc and, only if it does not exist,
+ * writes both the user document and the email index doc in a single commit.
+ * Two concurrent signups for the same email therefore cannot both succeed:
+ * the second transaction will see the first write and throw.
+ *
  * @param email - User's email address
  * @param password - Plain text password (will be hashed)
  * @returns User object without passwordHash
  * @throws Error if email already exists
  */
 export async function createUser(email: string, password: string): Promise<User> {
-  // Check if email already exists
-  const existingUser = await getUserByEmail(email);
-  if (existingUser) {
-    throw new Error('Email already registered');
-  }
+  const normalizedEmail = normalizeEmail(email);
 
-  // Generate user ID and hash password
+  // Generate user ID and hash password up front (hashing is CPU-bound, keep
+  // it outside the transaction so we don't hold the transaction open).
   const userId = uuidv4();
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   const verificationToken = crypto.randomBytes(32).toString('hex');
 
-  // Create user document
   const userData: UserInternal = {
     id: userId,
-    email,
+    email: normalizedEmail,
     passwordHash,
     createdAt: new Date().toISOString(),
     emailVerified: false,
     verificationToken,
   };
 
-  // Save to Firestore
-  await firestore.collection(USERS_COLLECTION).doc(userId).set(userData);
+  const userRef = firestore.collection(USERS_COLLECTION).doc(userId);
+  const emailRef = firestore.collection(EMAIL_INDEX_COLLECTION).doc(normalizedEmail);
+
+  await firestore.runTransaction(async (tx) => {
+    const existing = await tx.get(emailRef);
+    if (existing.exists) {
+      throw new Error('Email already registered');
+    }
+    tx.set(userRef, userData);
+    tx.set(emailRef, { userId, createdAt: userData.createdAt });
+  });
 
   // Return user without passwordHash
   const { passwordHash: _, ...userPublic } = userData;
@@ -78,7 +133,7 @@ export async function createUser(email: string, password: string): Promise<User>
 export async function getUserByEmail(email: string): Promise<UserInternal | null> {
   const snapshot = await firestore
     .collection(USERS_COLLECTION)
-    .where('email', '==', email)
+    .where('email', '==', normalizeEmail(email))
     .limit(1)
     .get();
 

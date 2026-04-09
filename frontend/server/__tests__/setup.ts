@@ -9,6 +9,7 @@ process.env.NODE_ENV = 'test';
 process.env.FRONTEND_URL = 'http://localhost:5173';
 process.env.GOOGLE_CLOUD_PROJECT = 'test-project';
 process.env.GCS_BUCKET_NAME = 'test-bucket';
+process.env.PUBSUB_TOPIC_ID = 'test-topic';
 process.env.SESSION_SECRET = 'test-secret-key-minimum-32-characters-long';
 
 // Note: Google Cloud client mocks (Firestore, Storage, PubSub) should be

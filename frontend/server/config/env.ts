@@ -3,7 +3,23 @@
  * Validates required environment variables at startup and provides type-safe access
  */
 
-import { cleanEnv, str, port } from 'envalid';
+import { cleanEnv, str, port, makeValidator, EnvError } from 'envalid';
+
+/**
+ * Validator for the session signing secret. Enforces a minimum length so that
+ * misconfigured deployments fail fast at startup instead of running with a
+ * weak secret. Express-session signs cookies with this value, so a short
+ * secret materially weakens session integrity.
+ */
+const SESSION_SECRET_MIN_LENGTH = 32;
+const sessionSecret = makeValidator<string>((input) => {
+  if (typeof input !== 'string' || input.length < SESSION_SECRET_MIN_LENGTH) {
+    throw new EnvError(
+      `SESSION_SECRET must be at least ${SESSION_SECRET_MIN_LENGTH} characters`
+    );
+  }
+  return input;
+});
 
 /**
  * Validated environment variables
@@ -17,9 +33,12 @@ export const env = cleanEnv(process.env, {
   GCS_BUCKET_NAME: str({
     desc: 'Google Cloud Storage bucket name for file uploads',
   }),
+  PUBSUB_TOPIC_ID: str({
+    desc: 'Pub/Sub topic ID used to dispatch worker jobs',
+  }),
 
   // Required security configuration
-  SESSION_SECRET: str({
+  SESSION_SECRET: sessionSecret({
     desc: 'Secret key for session signing (min 32 characters)',
   }),
   FRONTEND_URL: str({
