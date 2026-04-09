@@ -433,7 +433,8 @@ def update_job_status(transaction, job_ref, new_status, additional_fields=None):
         update_data.update(additional_fields)
 
     transaction.update(job_ref, update_data)
-    logger.info(f"Job {job_ref.id} status: {current_status} -> {new_status}")
+    new_val = new_status.value if isinstance(new_status, JobStatus) else new_status
+    logger.info(f"Job {job_ref.id} status: {current_status} -> {new_val}")
 
 
 def _is_claim_stale(claimed_at, now=None, threshold_seconds=None):
