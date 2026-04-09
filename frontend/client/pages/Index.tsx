@@ -9,7 +9,9 @@ import { Dropzone } from "@/components/Dropzone";
 import { PreviewTable } from "@/components/PreviewTable"; // We reuse this for results!
 import { ResultCard } from "@/components/ResultCard";
 import { parseCSVFile, type CSVParseResult } from "@/utils/csv-parser";
-import { uploadCsv, checkJobStatus, type JobStatus } from "@/utils/api";
+import { uploadCsv, checkJobStatus, ApiError, type JobStatus } from "@/utils/api";
+import { logout as logoutRequest } from "@/utils/auth";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { cn } from "@/lib/utils";
 import { PreviewErrorBoundary } from "@/components/error-boundaries/PreviewErrorBoundary";
 import { ResultsErrorBoundary } from "@/components/error-boundaries/ResultsErrorBoundary";
@@ -21,8 +23,25 @@ export default function Index() {
   const [status, setStatus] = useState<JobStatus["status"]>("uploading"); // Reusing for idle state
   const [results, setResults] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<any>(null); 
+  const [stats, setStats] = useState<any>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const { toast } = useToast();
+  const { user, setUser } = useCurrentUser();
+
+  const handleLogout = useCallback(async () => {
+    setLoggingOut(true);
+    try {
+      await logoutRequest();
+    } catch (err) {
+      // Even if the server call fails (e.g. session already gone), clear
+      // local state so the user is bounced back to the auth screen.
+      console.error("Logout request failed", err);
+    } finally {
+      // Clearing the cached user flips <AuthGate> back to <AuthScreen>.
+      setUser(null);
+      setLoggingOut(false);
+    }
+  }, [setUser]);
 
   // Polling Logic
   useEffect(() => {
@@ -43,12 +62,19 @@ export default function Index() {
           clearInterval(interval);
         }
       } catch (e) {
+        // If the session expired mid-poll, bounce the user back to the
+        // auth screen so they can log in again instead of looping on 401s.
+        if (e instanceof ApiError && e.status === 401) {
+          clearInterval(interval);
+          setUser(null);
+          return;
+        }
         console.error("Polling error", e);
       }
     }, 2000); // Check every 2 seconds
 
     return () => clearInterval(interval);
-  }, [jobId, status, toast]);
+  }, [jobId, status, toast, setUser]);
 
   const handleFileSelect = useCallback(async (selectedFile: File) => {
     setFile(selectedFile);
@@ -74,10 +100,15 @@ export default function Index() {
       setJobId(response.jobId);
       // Polling useEffect will take over now
     } catch (err: any) {
+      // Session expired between page load and upload - bounce back to auth.
+      if (err instanceof ApiError && err.status === 401) {
+        setUser(null);
+        return;
+      }
       setError(err.message);
       setStatus("error");
     }
-  }, [file]);
+  }, [file, setUser]);
 
   const handleReset = () => {
     setFile(null);
@@ -107,9 +138,26 @@ export default function Index() {
       <div className="max-w-5xl mx-auto space-y-6">
         
         {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <img src="/AutoEncoder_logo_black.png" alt="Logo" className="w-16 h-16 object-contain" />
-          <h1 className="text-4xl font-bold text-gray-900">Outlier Detection</h1>
+        <div className="flex items-center justify-between gap-4 mb-8">
+          <div className="flex items-center gap-4">
+            <img src="/AutoEncoder_logo_black.png" alt="Logo" className="w-16 h-16 object-contain" />
+            <h1 className="text-4xl font-bold text-gray-900">Outlier Detection</h1>
+          </div>
+          {user && (
+            <div className="flex items-center gap-3 text-sm">
+              <span className="text-gray-600 hidden sm:inline" title={user.email}>
+                {user.email}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLogout}
+                disabled={loggingOut}
+              >
+                {loggingOut ? "Signing out..." : "Sign out"}
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* 1. Upload Section */}

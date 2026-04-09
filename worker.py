@@ -28,6 +28,7 @@ import sys
 import json
 import logging
 import threading
+import time
 import io
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -55,6 +56,40 @@ SUBSCRIPTION_ID = os.getenv("PUBSUB_SUBSCRIPTION_ID")
 # message will still find the marker and get ack-dropped.
 IDEMPOTENCY_MARKER_TTL_DAYS = 7
 
+# Lease / heartbeat for the per-job `processing` claim. When a worker
+# transitions a job out of QUEUED it also writes `claimedAt` to the job
+# document, and refreshes that timestamp periodically via the
+# AckExtender heartbeat. A duplicate Pub/Sub delivery that arrives while
+# the state is still in an in-progress bucket (PROCESSING / TRAINING /
+# SCORING) will compare `claimedAt` against this threshold:
+#   - fresh (within threshold)  -> raise JobInProgressError (nack, retry)
+#   - stale (older than threshold) -> atomically take over the claim
+#     and resume processing. Firestore transactions serialize the
+#     takeover so two workers cannot both win.
+# The threshold must be long enough to survive the worst case where the
+# heartbeat thread is briefly blocked (slow GC pause, thread scheduling
+# latency during CPU-bound model training) but short enough that a truly
+# crashed worker is reclaimed promptly. Three times the heartbeat
+# interval is a reasonable compromise.
+JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS = 60
+JOB_CLAIM_STALE_SECONDS = JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS * 3
+
+# Vertex mode note: an earlier version of this file had a separate
+# JOB_CLAIM_STALE_SECONDS_VERTEX = 4 hours constant used when a claim
+# was tagged `mode: "vertex"`, on the theory that a long-running
+# Vertex training job would otherwise be falsely considered stale.
+# Codex P1 r(pre-dispatch-vertex) pointed out that this also blocked
+# crash recovery for the full 4 hours when a Vertex dispatcher
+# crashed BEFORE job.run() ever submitted - which is the more common
+# failure mode. The vertex-dispatched guard in
+# try_take_over_stale_claim now relies instead on the presence of
+# `vertexJobName` on the doc: a populated vertexJobName refuses the
+# takeover outright (Vertex owns the job), and an absent vertexJobName
+# means pre-dispatch / unconfirmed and uses the short local window
+# for fast recovery. The small residual race (crash between
+# job.run() returning and the suppressor write) is mitigated by the
+# retry loop around the suppressor write in process_upload_vertex.
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -68,12 +103,15 @@ class PubSubMessage(BaseModel):
     file: str = Field(..., min_length=1, description="GCS file path")
 
 
-def validate_message(data: dict) -> PubSubMessage:
+def validate_message(data) -> PubSubMessage:
     """
     Validate message fields, raise ValueError with clear error.
 
     Args:
-        data: Dictionary containing message payload
+        data: Parsed JSON payload. Normally a mapping, but we tolerate
+            any type and translate non-mapping inputs (list, None, str,
+            int, etc.) into a ValueError so callback() can drop them as
+            poison messages via its existing ack-on-ValueError path.
 
     Returns:
         PubSubMessage: Validated message object
@@ -81,11 +119,29 @@ def validate_message(data: dict) -> PubSubMessage:
     Raises:
         ValueError: If validation fails with description of missing/invalid fields
     """
+    # Codex P2 r(non-object-json): PubSubMessage(**data) raises TypeError
+    # when data is valid JSON but not a mapping (for example [], null,
+    # a JSON string, or a number). callback() ack-drops ValueError but
+    # nacks on bare TypeError, which would create an avoidable
+    # redelivery loop against a deterministically bad payload. Map
+    # non-mapping inputs to ValueError up front so they get the same
+    # poison-message treatment as schema failures.
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid message format: expected JSON object, got "
+            f"{type(data).__name__}"
+        )
     try:
         return PubSubMessage(**data)
     except ValidationError as e:
         errors = '; '.join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
         raise ValueError(f"Invalid message format: {errors}")
+    except TypeError as e:
+        # Pydantic can also raise TypeError for unexpected kwargs
+        # (e.g. {"jobId": 1, "bucket": "b", "file": "f", "extra": 2})
+        # depending on config. Normalize to ValueError so the poison
+        # path handles it.
+        raise ValueError(f"Invalid message format: {e}")
 
 
 class JobDocumentNotReadyError(Exception):
@@ -95,6 +151,24 @@ class JobDocumentNotReadyError(Exception):
     create on a legacy/out-of-order code path). The outer callback()
     nacks the message on this exception so Pub/Sub redelivers and the
     retry can find the document.
+    """
+
+
+class JobInProgressError(Exception):
+    """
+    Raised when a duplicate Pub/Sub delivery arrives while another worker
+    is actively processing the same job (the job document is in a
+    non-terminal in-progress state - PROCESSING / TRAINING / SCORING -
+    but no idempotency marker has been written yet because the original
+    worker has not finished).
+
+    The outer callback() nacks the message on this exception so Pub/Sub
+    will redeliver later. Crucially, it does NOT write the idempotency
+    marker in this case: if the original worker later crashes and
+    leaves the job stuck in an in-progress state, a subsequent
+    redelivery must still be able to retry. Acking (and marking) a
+    duplicate that overlapped with an in-flight run would permanently
+    hide that recovery path - Codex P1 r3055316xxx.
     """
 
 
@@ -175,20 +249,61 @@ class AckExtender:
     (longer than the default 10-second ack deadline). Uses threading.Timer
     to extend deadline every 60 seconds.
 
+    Also refreshes the `claimedAt` heartbeat on the job document in the
+    same cadence (Codex P1 r(stale-takeover)). A duplicate Pub/Sub
+    delivery that arrives while the state is still PROCESSING / TRAINING
+    / SCORING uses this timestamp to tell "another worker is alive and
+    working" (don't take over) apart from "the claiming worker has
+    crashed and left the job stuck" (stale -> take over). Without the
+    heartbeat the worker would have to pick a single hard-coded "stale
+    after N minutes" threshold that either reclaims too aggressively
+    (killing a legitimately slow job) or leaves crashed jobs wedged for
+    too long.
+
     WORK-05: Ack deadline extension pattern
     """
-    def __init__(self, message, interval_seconds=60):
+    def __init__(
+        self,
+        message,
+        interval_seconds=JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS,
+        job_ref=None,
+    ):
         """
         Initialize AckExtender.
 
         Args:
             message: Pub/Sub message object with modify_ack_deadline() method
-            interval_seconds: How often to extend deadline (default: 60 seconds)
+            interval_seconds: How often to extend deadline and refresh the
+                job claim heartbeat (default: 60 seconds)
+            job_ref: Optional Firestore DocumentReference for the job. When
+                provided, every extension tick also updates `claimedAt` on
+                the job doc so a concurrent duplicate delivery can tell the
+                claim is still live. Best-effort: refresh failures are
+                logged but do not abort the job.
         """
         self.message = message
         self.interval = interval_seconds
+        self.job_ref = job_ref
         self.timer = None
         self.stopped = False
+
+    def _refresh_claimed_at(self):
+        """Best-effort heartbeat write of `claimedAt` on the job doc."""
+        if self.job_ref is None:
+            return
+        try:
+            self.job_ref.update(
+                {'claimedAt': datetime.now(timezone.utc)}
+            )
+        except Exception as e:
+            # Don't fail the job because of a heartbeat hiccup - a stale
+            # takeover would only happen if the claim goes unrefreshed
+            # for 3x the heartbeat interval, which requires multiple
+            # consecutive refresh failures.
+            logger.warning(
+                f"Failed to refresh claimedAt heartbeat for "
+                f"{getattr(self.job_ref, 'id', '?')}: {e}"
+            )
 
     def extend(self):
         """Extend deadline and schedule next extension."""
@@ -200,6 +315,11 @@ class AckExtender:
             except Exception as e:
                 # CONTEXT.md: Log warning and continue (rely on idempotency)
                 logger.warning(f"Failed to extend ack deadline: {e}")
+
+            # Heartbeat the job claim at the same cadence so stale-takeover
+            # can correctly distinguish "worker still running" from
+            # "worker crashed".
+            self._refresh_claimed_at()
 
             # Schedule next extension
             self.timer = threading.Timer(self.interval, self.extend)
@@ -241,6 +361,16 @@ ALLOWED_TRANSITIONS = {
     JobStatus.ERROR: [],     # Terminal state
     JobStatus.CANCELED: []   # Terminal state
 }
+
+# Legacy job statuses written by the pre-state-machine Express API before
+# phase-01/phase-02 migrated `/start-job` and `/api/upload` to persist the
+# canonical JobStatus.QUEUED value. Any job document currently sitting in
+# one of these statuses was created by older client/server code and should
+# be treated as "equivalent to queued" by the worker when it picks the
+# message up - otherwise the state machine rejects the
+# legacy -> PROCESSING transition, callback() silently acks, and the job
+# is permanently dropped (Codex P2 r(legacy-status)).
+LEGACY_INITIAL_STATUSES = frozenset({"uploaded", "uploading"})
 
 
 def is_valid_transition(current_status, new_status):
@@ -306,6 +436,177 @@ def update_job_status(transaction, job_ref, new_status, additional_fields=None):
     logger.info(f"Job {job_ref.id} status: {current_status} -> {new_status}")
 
 
+def _is_claim_stale(claimed_at, now=None, threshold_seconds=None):
+    """
+    Decide whether a job's `claimedAt` timestamp is stale (older than
+    `threshold_seconds`), meaning the claiming worker's heartbeat has
+    gone silent long enough that we should treat the claim as abandoned.
+
+    Accepts timezone-aware or naive datetimes and tolerates `None`
+    (missing field) by treating it as stale so legacy jobs written
+    before this field existed can still be recovered.
+
+    Args:
+        claimed_at: The stored claimedAt timestamp (or None).
+        now: Current time (defaults to datetime.now(utc)). Injectable
+            for testing.
+        threshold_seconds: The staleness threshold. Defaults to
+            JOB_CLAIM_STALE_SECONDS.
+    """
+    if claimed_at is None:
+        return True
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if threshold_seconds is None:
+        threshold_seconds = JOB_CLAIM_STALE_SECONDS
+    # Firestore returns timezone-aware datetimes; be defensive if we
+    # see a naive value (tests, legacy data) by assuming UTC.
+    if claimed_at.tzinfo is None:
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+    age = (now - claimed_at).total_seconds()
+    return age > threshold_seconds
+
+
+def try_take_over_stale_claim(job_ref, mode=None):
+    """
+    Attempt to atomically reclaim a stale in-progress job.
+
+    Codex P1 r(stale-takeover): if a worker crashed after taking the
+    queued -> processing claim but before writing a terminal state,
+    subsequent redeliveries of the same Pub/Sub message will see the
+    doc in an in-progress state and a naive implementation would nack
+    forever (infinite redelivery loop, stuck job). This function gives
+    us an escape hatch: a duplicate delivery that finds the claim
+    abandoned (no heartbeat refresh for more than the mode-specific
+    stale threshold) transactionally bumps `claimedAt` to now and
+    returns True, letting the caller resume processing.
+
+    Codex P1 (followup, r(stale-takeover-from-training)): the takeover
+    also *resets* the status to PROCESSING, even if the current state
+    is TRAINING or SCORING. Without that reset, the caller's normal
+    pipeline would try a PROCESSING -> TRAINING transition and hit an
+    "Invalid transition: training -> training" (or scoring -> training)
+    ValueError, which the outer exception handler would then mark as
+    ERROR. Crash recovery from TRAINING or SCORING would deterministically
+    fail instead of restarting the pipeline. Resetting to PROCESSING
+    means we redo the work (download, train, score) from scratch - that
+    is the safe choice because we have no way to know how far the dead
+    worker actually got before it crashed.
+
+    Codex P1 (followup, r(vertex-stale-redispatch)): suppress takeover
+    when the job doc carries a `vertexJobName`, because that indicates
+    a Vertex training job has already been successfully submitted and
+    Vertex itself (not this worker) owns the work. Re-taking it over
+    would re-submit the same Vertex training run and double-bill.
+
+    Codex P1 (followup, r(pre-dispatch-vertex)): the guard against
+    duplicate Vertex dispatch is the `vertexJobName` field only. The
+    earlier `mode: "vertex"` + 4-hour window scheme was too coarse:
+    it delayed recovery of a dispatcher that crashed BEFORE
+    job.run() submitted anything, for the full 4 hours. Now the only
+    condition that refuses a stale takeover on a vertex-mode doc is
+    `vertexJobName` being set; absent that, the short local window
+    applies and a pre-dispatch crash recovers in minutes. The small
+    residual race between "job.run() returned" and "suppressor write
+    committed" is mitigated by the retry loop around the suppressor
+    write in process_upload_vertex.
+
+    Codex P2 (followup, r(takeover-mode-tag)): when the caller knows
+    which mode it is going to run the job in (local vs vertex), it
+    can pass `mode=` so the takeover transaction ALSO stamps that
+    tag on the recovered claim. The tag is mainly operator-facing
+    (audit / debugging) now that the stale threshold is uniform.
+
+    Args:
+        job_ref: Firestore DocumentReference for the job.
+        mode: Optional "vertex" | "local" tag to persist on the
+            recovered doc as part of the takeover transaction. When
+            omitted, `mode` is left untouched on the doc (existing
+            value preserved, legacy docs stay tagless).
+
+    The refresh happens inside a Firestore transaction, so two workers
+    that both see a stale claim cannot both take over: one wins the
+    transaction, the other retries, finds the now-fresh `claimedAt`
+    and returns False.
+
+    Returns:
+        bool: True if the claim was successfully taken over, False if
+        the claim is still fresh, the doc is not in a recoverable
+        in-progress state, or a Vertex job is already dispatched.
+    """
+    in_progress_states = {
+        JobStatus.PROCESSING.value,
+        JobStatus.TRAINING.value,
+        JobStatus.SCORING.value,
+    }
+
+    @firestore.transactional
+    def _takeover(transaction, ref):
+        snapshot = ref.get(transaction=transaction)
+        if not snapshot.exists:
+            return False
+        current_status = snapshot.get('status')
+        if current_status not in in_progress_states:
+            return False
+        # Vertex-dispatched guard (Codex P1 r(vertex-stale-redispatch)):
+        # once the dispatcher has actually handed the job off to
+        # Vertex (proved by vertexJobName being persisted), Vertex
+        # itself owns the work. Re-taking over would re-submit the
+        # same (billable) training run, so refuse the takeover
+        # outright regardless of how old the claimedAt heartbeat is.
+        if snapshot.get('vertexJobName'):
+            return False
+        # No vertexJobName means either:
+        #   (a) this is a local-mode job, or
+        #   (b) a Vertex-mode dispatcher claimed the doc but either
+        #       crashed before job.run() submitted anything, or crashed
+        #       in the brief window after job.run() returned but before
+        #       the suppressor write committed.
+        #
+        # Codex P1 r(pre-dispatch-vertex): the previous "always use the
+        # 4-hour Vertex window when mode is vertex" heuristic was too
+        # coarse - it made case (b)-without-suppressor-write safer but
+        # at the cost of pinning case (a) / case (b)-crashed-before-
+        # dispatch for four hours on every crash. The dispatcher is a
+        # fire-and-forget call that normally takes seconds, so a crash
+        # there should recover promptly. Use the short local window in
+        # all non-dispatched cases; the rare "suppressor write failed
+        # moments after job.run() succeeded" case is mitigated by the
+        # retry loop on the suppressor write itself (see
+        # process_upload_vertex below).
+        claimed_at = snapshot.get('claimedAt')
+        if not _is_claim_stale(claimed_at):
+            return False
+        update_payload = {
+            # Reset status back to PROCESSING so the calling pipeline
+            # can restart from the beginning regardless of which
+            # in-progress sub-state (processing/training/scoring) the
+            # dead worker crashed in. This is a direct write that
+            # bypasses the normal state machine transition check,
+            # which is the whole point of this escape hatch.
+            'status': JobStatus.PROCESSING.value,
+            'claimedAt': datetime.now(timezone.utc),
+        }
+        # Codex P2 r(takeover-mode-tag): persist the mode tag on
+        # recovered claims so subsequent duplicate deliveries use the
+        # correct stale threshold even if the post-dispatch suppressor
+        # write later fails.
+        if mode is not None:
+            update_payload['mode'] = mode
+        transaction.update(ref, update_payload)
+        return True
+
+    transaction = db.transaction()
+    took_over = _takeover(transaction, job_ref)
+    if took_over:
+        logger.warning(
+            f"Stale claim taken over for job {getattr(job_ref, 'id', '?')} "
+            f"(previous worker appears to have crashed); status reset to "
+            f"PROCESSING to restart the pipeline"
+        )
+    return took_over
+
+
 def validate_environment():
     """Validate required environment variables. Exits if any are missing."""
     # Read environment variables fresh each time (for testability)
@@ -355,51 +656,90 @@ def validate_csv(csv_bytes, max_size_mb=100):
     if size_mb > max_size_mb:
         raise ValueError(f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
 
-    # WORK-09: Detect encoding
+    # WORK-09: Detect encoding. Try the chardet guess first, then fall back
+    # through a small list of Windows/Western European codecs before finally
+    # trying UTF-8. Doing the fallback as a candidate list (rather than just
+    # jumping to UTF-8 on low confidence) keeps real cp1252 files (smart
+    # quotes, em dashes, Windows Excel exports) decodable even when chardet
+    # hedges with a low-confidence Mac-* guess.
     detection = chardet.detect(csv_bytes[:100000])  # Sample first 100KB
-    encoding = detection['encoding']
-    confidence = detection['confidence']
+    detected_encoding = detection.get('encoding')
+    detected_confidence = detection.get('confidence') or 0.0
 
-    if confidence < 0.7:
-        logger.warning(f"Low encoding confidence: {confidence:.2f} for {encoding}, falling back to UTF-8")
-        encoding = 'utf-8'
+    # Only trust chardet's guess when it is confident. On low-confidence
+    # guesses (e.g. "MacLatin2" with 0.03 for a straight cp1252 file)
+    # we skip the guess entirely and fall through to the well-known
+    # Western European codecs - cp1252 is the real answer for almost
+    # every Excel-exported CSV on Windows, so trying it explicitly is
+    # more reliable than whatever obscure codec chardet picked.
+    candidate_encodings = []
+    if detected_encoding and detected_confidence >= 0.7:
+        candidate_encodings.append(detected_encoding)
+    else:
+        logger.warning(
+            f"Low encoding confidence: {detected_confidence:.2f} for "
+            f"{detected_encoding!r}, skipping the guess and trying "
+            f"standard fallback encodings"
+        )
+    for fallback in ("utf-8", "cp1252", "latin-1"):
+        if fallback not in candidate_encodings:
+            candidate_encodings.append(fallback)
 
     # WORK-10, WORK-13, WORK-14: Validate structure with streaming
-    try:
-        chunk_iterator = pd.read_csv(
-            io.BytesIO(csv_bytes),
-            encoding=encoding,
-            chunksize=10000,
-            engine='python'       # Better error messages, detects inconsistent columns
-        )
+    last_unicode_err = None
+    for candidate in candidate_encodings:
+        try:
+            chunk_iterator = pd.read_csv(
+                io.BytesIO(csv_bytes),
+                encoding=candidate,
+                chunksize=10000,
+                engine='python'       # Better error messages, detects inconsistent columns
+            )
 
-        first_chunk = next(chunk_iterator)
-        expected_columns = len(first_chunk.columns)
-        total_rows = len(first_chunk)
+            first_chunk = next(chunk_iterator)
+            expected_columns = len(first_chunk.columns)
+            total_rows = len(first_chunk)
 
-        # Validate subsequent chunks have same structure
-        for chunk in chunk_iterator:
-            if len(chunk.columns) != expected_columns:
-                raise ValueError(f"Inconsistent column count: expected {expected_columns}, got {len(chunk.columns)}")
-            total_rows += len(chunk)
+            # Validate subsequent chunks have same structure
+            for chunk in chunk_iterator:
+                if len(chunk.columns) != expected_columns:
+                    raise ValueError(
+                        f"Inconsistent column count: expected {expected_columns}, "
+                        f"got {len(chunk.columns)}"
+                    )
+                total_rows += len(chunk)
 
-        # Minimum data requirements
-        if total_rows < 10:
-            raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
-        if expected_columns < 2:
-            raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
+            # Minimum data requirements
+            if total_rows < 10:
+                raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
+            if expected_columns < 2:
+                raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
 
-        logger.info(f"CSV validation passed: {total_rows} rows, {expected_columns} columns, {encoding} encoding")
-        return encoding, expected_columns, total_rows
+            logger.info(
+                f"CSV validation passed: {total_rows} rows, {expected_columns} columns, "
+                f"{candidate} encoding"
+            )
+            return candidate, expected_columns, total_rows
 
-    except pd.errors.ParserError as e:
-        raise ValueError(f"CSV parsing error: {str(e)}")
-    except pd.errors.EmptyDataError as e:
-        raise ValueError("CSV file is empty")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"Encoding error with {encoding}: {str(e)}")
-    except StopIteration:
-        raise ValueError("CSV file is empty")
+        except UnicodeDecodeError as e:
+            last_unicode_err = e
+            logger.info(
+                f"Candidate encoding {candidate} rejected by read_csv: {e}; "
+                f"trying next candidate"
+            )
+            continue
+        except pd.errors.ParserError as e:
+            raise ValueError(f"CSV parsing error: {str(e)}")
+        except pd.errors.EmptyDataError:
+            raise ValueError("CSV file is empty")
+        except StopIteration:
+            raise ValueError("CSV file is empty")
+
+    # All candidate encodings failed with UnicodeDecodeError.
+    raise ValueError(
+        f"Encoding error: no candidate encoding from {candidate_encodings} "
+        f"could decode the CSV ({last_unicode_err})"
+    )
 
 
 def process_upload_local(job_id, bucket_name, file_path, message):
@@ -416,8 +756,22 @@ def process_upload_local(job_id, bucket_name, file_path, message):
     # Lazy import to avoid tensorflow dependency for tests
     from model.autoencoder import AutoencoderModel
 
-    # WORK-05/06: Start ack deadline extension
-    extender = AckExtender(message, interval_seconds=60)
+    job_ref = db.collection('jobs').document(job_id)
+
+    # WORK-05/06: Start ack deadline extension, but *without* a job_ref
+    # yet so the heartbeat only refreshes the Pub/Sub ack deadline at
+    # this stage and does NOT refresh `claimedAt`. Codex P1 flagged that
+    # refreshing the claim before we actually own it rewrites a
+    # crashed-worker's stale claim to "fresh" on every redelivery, so
+    # try_take_over_stale_claim would then always reject takeover and
+    # crash recovery would be impossible. We attach the job_ref below
+    # AFTER the queued -> processing transition (or stale takeover)
+    # confirms that we are the rightful owner of this job.
+    extender = AckExtender(
+        message,
+        interval_seconds=JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS,
+        job_ref=None,
+    )
     extender.start()
 
     try:
@@ -433,10 +787,19 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # should not happen in normal production traffic, but the defensive
         # branch keeps any legacy fallback or out-of-order write from
         # wedging a real user job.
-        job_ref = db.collection('jobs').document(job_id)
+        #
+        # Also writes `claimedAt` alongside the status so a later
+        # duplicate delivery can distinguish "another worker is actively
+        # processing" from "a previous worker crashed mid-processing"
+        # (see JobInProgressError + try_take_over_stale_claim below).
         try:
             transaction = db.transaction()
-            update_job_status(transaction, job_ref, JobStatus.PROCESSING)
+            update_job_status(
+                transaction,
+                job_ref,
+                JobStatus.PROCESSING,
+                additional_fields={'claimedAt': datetime.now(timezone.utc)},
+            )
         except ValueError as e:
             if "not found" in str(e):
                 # Bubble up so callback() nacks and we retry on redelivery
@@ -446,10 +809,181 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 raise JobDocumentNotReadyError(
                     f"Job {job_id} document not yet written, retry via nack"
                 ) from e
-            logger.warning(f"Failed to update status: {e}")
-            # Job is already in a later/terminal state (canceled, complete,
-            # processing, etc.) - skip processing to avoid duplicate work.
-            return
+
+            # The transition was rejected because the job is in a state
+            # other than QUEUED. Split by category:
+            #
+            #   - Terminal states (COMPLETE, ERROR, CANCELED): the work is
+            #     done by another worker, safe to let callback() ack and
+            #     mark the message as processed. Just return.
+            #
+            #   - In-progress states (PROCESSING, TRAINING, SCORING):
+            #     There are two sub-cases, distinguished by the `claimedAt`
+            #     heartbeat maintained by the AckExtender on the job doc:
+            #
+            #     a) Heartbeat fresh: another worker is actively running.
+            #        Raise JobInProgressError so callback() nacks the
+            #        duplicate delivery (without marking it processed),
+            #        preserving the redelivery path if that worker later
+            #        crashes (Codex P1 r3055316xxx).
+            #
+            #     b) Heartbeat stale: the claiming worker crashed after
+            #        taking the claim but before reaching a terminal
+            #        state. Without this escape hatch the state machine
+            #        would forever reject in-progress -> processing, and
+            #        every redelivery would nack, looping indefinitely
+            #        (Codex P1 r(stale-takeover)). try_take_over_stale_claim
+            #        transactionally refreshes `claimedAt` to now; if it
+            #        wins the race we resume processing from the current
+            #        in-progress state (the state machine happily accepts
+            #        PROCESSING -> TRAINING -> SCORING -> COMPLETE from
+            #        wherever we are now).
+            #
+            #   - Anything else (unexpected): log and return without
+            #     raising. callback() will ack and the operator will
+            #     see the unusual state in the logs.
+            try:
+                snapshot = job_ref.get()
+                current_status = (
+                    snapshot.get('status') if snapshot.exists else None
+                )
+            except Exception as read_err:
+                logger.warning(
+                    f"Failed to read job {job_id} state after invalid "
+                    f"transition ({e}); treating as in-progress retry: "
+                    f"{read_err}"
+                )
+                raise JobInProgressError(
+                    f"Job {job_id} state unreadable after "
+                    f"invalid-transition; retrying via nack"
+                ) from e
+
+            terminal_states = {
+                JobStatus.COMPLETE.value,
+                JobStatus.ERROR.value,
+                JobStatus.CANCELED.value,
+            }
+            in_progress_states = {
+                JobStatus.PROCESSING.value,
+                JobStatus.TRAINING.value,
+                JobStatus.SCORING.value,
+            }
+            if current_status in terminal_states:
+                logger.info(
+                    f"Job {job_id} already in terminal state "
+                    f"{current_status}, skipping duplicate delivery"
+                )
+                return
+            if current_status in in_progress_states:
+                # Codex P2 r(vertex-dispatched-ack): if the doc carries
+                # `vertexJobName`, the previous run has already handed
+                # the job off to Vertex and Vertex owns it. A duplicate
+                # /start-job republish (or Pub/Sub redelivery) should
+                # NOT bounce around in an infinite
+                # JobInProgressError -> nack -> redeliver loop; there
+                # is no local work to do here, Vertex itself will
+                # update the job status. Treat this as a clean skip
+                # (return) so callback() acks and marks the duplicate
+                # message as processed.
+                if snapshot.get('vertexJobName'):
+                    logger.info(
+                        f"Job {job_id} already dispatched to Vertex "
+                        f"(vertexJobName set), skipping duplicate local "
+                        f"delivery"
+                    )
+                    return
+
+                # Stale-takeover path: if the previous worker's heartbeat
+                # has gone silent long enough that we consider the claim
+                # abandoned, reclaim it and fall through to continue
+                # processing instead of nacking. Pass mode="local" so
+                # the takeover transaction keeps/stamps the tag
+                # consistent with the caller.
+                if try_take_over_stale_claim(job_ref, mode='local'):
+                    logger.info(
+                        f"Resuming job {job_id} from state "
+                        f"{current_status} after stale-claim takeover"
+                    )
+                    # Intentionally do NOT raise here: fall through past
+                    # the except block so the rest of process_upload_local
+                    # runs against the existing in-progress state.
+                else:
+                    raise JobInProgressError(
+                        f"Job {job_id} is already {current_status} with a "
+                        f"fresh heartbeat; duplicate delivery nacked so a "
+                        f"later redelivery can retry if the active worker "
+                        f"fails"
+                    ) from e
+            elif current_status in LEGACY_INITIAL_STATUSES:
+                # Legacy-initial-status migration path (Codex P2
+                # r(legacy-status)): the doc was created by the
+                # pre-state-machine Express API (or the /api/upload
+                # fallback) with status="uploaded"/"uploading" instead of
+                # the canonical "queued". update_job_status() just rejected
+                # the transition because the state machine does not know
+                # these legacy values. Without this branch, callback() would
+                # ack the message and the job would be dropped forever.
+                #
+                # Migrate in place: force-write PROCESSING + claimedAt via
+                # a fresh transaction that bypasses is_valid_transition,
+                # then fall through to continue processing. Use a plain
+                # transaction.update() (not update_job_status) so we are
+                # not blocked by the state machine on the legacy->
+                # processing step.
+                logger.info(
+                    f"Job {job_id} in legacy initial status "
+                    f"{current_status!r}; migrating to PROCESSING and "
+                    f"resuming"
+                )
+                migration_txn = db.transaction()
+
+                @firestore.transactional
+                def _migrate_legacy(txn):
+                    snap = job_ref.get(transaction=txn)
+                    if not snap.exists:
+                        raise JobDocumentNotReadyError(
+                            f"Job {job_id} disappeared during legacy "
+                            f"migration"
+                        )
+                    latest = snap.get('status')
+                    # If another worker (or a catch-up /start-job call)
+                    # already migrated the status out from under us,
+                    # just no-op: the normal in-progress branch above
+                    # will handle the next redelivery.
+                    if latest not in LEGACY_INITIAL_STATUSES:
+                        return
+                    txn.update(
+                        job_ref,
+                        {
+                            'status': JobStatus.PROCESSING.value,
+                            'claimedAt': datetime.now(timezone.utc),
+                        },
+                    )
+
+                _migrate_legacy(migration_txn)
+                logger.info(
+                    f"Job {job_id} status: {current_status} -> "
+                    f"{JobStatus.PROCESSING.value} (legacy migration)"
+                )
+                # Fall through past the except block to continue
+                # processing against the migrated doc.
+            else:
+                logger.warning(
+                    f"Job {job_id} in unexpected state "
+                    f"{current_status!r} after failed PROCESSING transition "
+                    f"({e}); acking and skipping"
+                )
+                return
+
+        # Ownership is now confirmed (either via the normal queued ->
+        # processing transition, or via try_take_over_stale_claim). Wire
+        # the job_ref onto the heartbeat extender now so subsequent
+        # extend() ticks will refresh `claimedAt`. We intentionally did
+        # NOT do this earlier, because the extender's auto-refresh would
+        # have rewritten a crashed worker's stale claim to "fresh"
+        # before we got a chance to run stale-takeover, making crash
+        # recovery impossible (Codex P1 r3055xxxxx).
+        extender.job_ref = job_ref
 
         # 1. Download from GCS
         storage_client = storage.Client()
@@ -472,8 +1006,14 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             return
 
         # 2. Load Data
+        # Codex P2 (r3055316yyy): pass the encoding detected by validate_csv
+        # so parsing uses the same codec as validation. Otherwise a valid
+        # cp1252 CSV (smart quotes, em dashes, non-ASCII categoricals) would
+        # pass validation but be silently decoded as Latin-1 or UTF-8 at
+        # parse time, corrupting categorical values and therefore the
+        # resulting outlier scores.
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
-        df = loader.load_original_data(csv_bytes)
+        df = loader.load_original_data(csv_bytes, encoding=encoding)
         logger.info(f"Loaded CSV data. Shape: {df.shape}")
 
         # 3. Calculate stats for the frontend 'Overview' tab
@@ -581,6 +1121,13 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # nacked for Pub/Sub redelivery. Do NOT mark the job ERROR - the
         # document doesn't even exist yet.
         raise
+    except JobInProgressError:
+        # Never swallow this either: callback() must nack (not ack+mark)
+        # so Pub/Sub can redeliver if the original worker crashes.
+        # Writing status=ERROR here would ALSO be wrong - another worker
+        # is actively running this job and would see its next transition
+        # rejected as "ERROR -> TRAINING" / similar.
+        raise
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
 
@@ -609,12 +1156,162 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
     """
     from google.cloud import aiplatform
 
-    # WORK-05/06: Start ack deadline extension
-    extender = AckExtender(message, interval_seconds=60)
+    job_ref = db.collection('jobs').document(job_id)
+
+    # WORK-05/06: Start ack deadline extension. job_ref is intentionally
+    # left unset at this point so the heartbeat only refreshes the
+    # Pub/Sub ack deadline, not `claimedAt`. Codex P1 flagged that an
+    # eager claim heartbeat on a redelivered message rewrites a
+    # crashed worker's stale claim to "fresh" before we've even run
+    # stale-takeover, which then always rejects takeover and wedges
+    # crash recovery. We attach job_ref below, after the queued ->
+    # processing transition (or stale-claim takeover) confirms we
+    # actually own this job.
+    extender = AckExtender(
+        message,
+        interval_seconds=JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS,
+        job_ref=None,
+    )
     extender.start()
 
     try:
         logger.info(f"Starting Vertex AI job {job_id}")
+
+        # Codex P1 (r3055399xxx): claim the job BEFORE launching the
+        # Vertex AI training job. Without this guard a duplicate Pub/Sub
+        # delivery would call job.run(sync=False) again and submit a
+        # second (billable) Vertex training job against the same jobId.
+        # The local path already has this guard; mirror it here so both
+        # modes are protected by the same state-machine claim.
+        #
+        # Use the same classification the local path uses for an invalid
+        # transition (see process_upload_local): a document-not-found
+        # error raises JobDocumentNotReadyError (nack for redelivery); a
+        # non-terminal in-progress state with a FRESH `claimedAt`
+        # heartbeat raises JobInProgressError (nack so we never
+        # double-submit); a non-terminal state with a STALE heartbeat
+        # triggers try_take_over_stale_claim so a crashed dispatcher can
+        # be recovered (Codex P1 r(stale-takeover)); a terminal state
+        # returns cleanly; anything unexpected logs and returns.
+        try:
+            transaction = db.transaction()
+            update_job_status(
+                transaction,
+                job_ref,
+                JobStatus.PROCESSING,
+                # Codex P1 r(suppressor-write-failure): tag the job as
+                # `mode: "vertex"` in the same transaction that claims
+                # it. try_take_over_stale_claim uses this tag to pick a
+                # much wider stale threshold (4 hours instead of 3
+                # minutes), so even if the post-dispatch suppressor
+                # write (vertexJobName / far-future claimedAt) later
+                # fails, stale takeover still cannot fire during the
+                # expected Vertex run window and we cannot
+                # double-dispatch.
+                additional_fields={
+                    'claimedAt': datetime.now(timezone.utc),
+                    'mode': 'vertex',
+                },
+            )
+        except ValueError as e:
+            if "not found" in str(e):
+                raise JobDocumentNotReadyError(
+                    f"Job {job_id} document not yet written, retry via nack"
+                ) from e
+
+            try:
+                snapshot = job_ref.get()
+                current_status = (
+                    snapshot.get('status') if snapshot.exists else None
+                )
+            except Exception as read_err:
+                logger.warning(
+                    f"Failed to read job {job_id} state after invalid "
+                    f"transition ({e}); treating as in-progress retry: "
+                    f"{read_err}"
+                )
+                raise JobInProgressError(
+                    f"Job {job_id} state unreadable after "
+                    f"invalid-transition; retrying via nack"
+                ) from e
+
+            terminal_states = {
+                JobStatus.COMPLETE.value,
+                JobStatus.ERROR.value,
+                JobStatus.CANCELED.value,
+            }
+            in_progress_states = {
+                JobStatus.PROCESSING.value,
+                JobStatus.TRAINING.value,
+                JobStatus.SCORING.value,
+            }
+            if current_status in terminal_states:
+                logger.info(
+                    f"Job {job_id} already in terminal state "
+                    f"{current_status}, skipping duplicate Vertex dispatch"
+                )
+                return
+            if current_status in in_progress_states:
+                # Codex P2 r(vertex-dispatched-ack): if the doc already
+                # carries `vertexJobName`, a previous delivery already
+                # successfully submitted the job to Vertex. Nothing
+                # more for the dispatcher to do here - Vertex owns the
+                # training run now. Treat the duplicate as a clean
+                # skip (return) so callback() acks and marks it; the
+                # alternative (raise JobInProgressError -> nack -> Pub/Sub
+                # redelivers) would create an infinite redelivery loop
+                # that burns worker capacity until Vertex finishes and
+                # updates status on its own.
+                if snapshot.get('vertexJobName'):
+                    logger.info(
+                        f"Job {job_id} already dispatched to Vertex "
+                        f"(vertexJobName set), skipping duplicate Vertex "
+                        f"dispatch"
+                    )
+                    return
+
+                # Try stale-claim takeover before giving up. For Vertex
+                # mode the dispatcher's active time is normally seconds
+                # (just long enough to submit the job.run call), so a
+                # stale `claimedAt` here almost certainly means the
+                # previous dispatcher crashed before submitting anything.
+                #
+                # Pass mode="vertex" so the takeover transaction stamps
+                # that tag on the recovered doc atomically. Otherwise a
+                # legacy / untagged recovered doc would lose the mode
+                # tag for any subsequent duplicate deliveries.
+                if try_take_over_stale_claim(job_ref, mode='vertex'):
+                    logger.info(
+                        f"Resuming Vertex dispatch for job {job_id} "
+                        f"from state {current_status} after stale-claim "
+                        f"takeover"
+                    )
+                    # Fall through to submit the Vertex training job.
+                else:
+                    raise JobInProgressError(
+                        f"Job {job_id} is already {current_status} with a "
+                        f"fresh heartbeat; duplicate Vertex dispatch nacked "
+                        f"to avoid double-submitting a training job"
+                    ) from e
+            else:
+                logger.warning(
+                    f"Job {job_id} in unexpected state "
+                    f"{current_status!r} after failed PROCESSING transition "
+                    f"({e}); acking and skipping Vertex dispatch"
+                )
+                return
+
+        # Ownership is now confirmed (either via the normal queued ->
+        # processing transition, or via try_take_over_stale_claim).
+        # Wire the job_ref onto the heartbeat extender so subsequent
+        # extend() ticks refresh `claimedAt`, matching the
+        # process_upload_local ordering for the same reason (Codex P1
+        # r3055xxxxx). Note: the Vertex dispatcher only needs the claim
+        # heartbeat for the few seconds until job.run() returns - after
+        # that, the post-dispatch suppressor path (below) stops the
+        # extender and writes a far-future `claimedAt`.
+        extender.job_ref = job_ref
+
         container_uri = f"us-central1-docker.pkg.dev/{PROJECT_ID}/autoencoder-repo/trainer:v1"
         logger.info(f"Target Image: {container_uri}")
 
@@ -643,6 +1340,95 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
 
         logger.info("Job submitted to Vertex AI.")
 
+        # Codex P1 r(vertex-stale-redispatch): the dispatcher is about
+        # to return, but the Vertex training job it just submitted will
+        # keep running for many minutes. If we left the job doc as-is,
+        # the `claimedAt` heartbeat would stop and after 3 minutes a
+        # duplicate Pub/Sub delivery could trigger stale-claim takeover
+        # and re-submit the same Vertex training run -> duplicate billing
+        # and duplicate writes to the same job doc.
+        #
+        # Mitigations, in order:
+        #
+        # 1. Stop the AckExtender heartbeat BEFORE writing our suppressor
+        #    values, so the heartbeat timer cannot race with us and
+        #    overwrite our far-future claimedAt.
+        #
+        # 2. Record the Vertex job resource name on the job doc. That
+        #    field gates try_take_over_stale_claim: if `vertexJobName`
+        #    is set, the takeover function treats the job as externally
+        #    owned and refuses to re-dispatch.
+        #
+        # 3. As a defense-in-depth belt to the vertexJobName suspenders,
+        #    also set `claimedAt` to a timestamp far in the future
+        #    (100 years) so even if some future reader ignores
+        #    `vertexJobName`, _is_claim_stale still reports "fresh" and
+        #    the takeover path still rejects the duplicate delivery.
+        extender.stop()
+        vertex_job_name = getattr(job, 'resource_name', None) or \
+            getattr(job, 'name', None) or \
+            f"vertex-dispatched-{job_id}"
+        far_future_claim = datetime.now(timezone.utc) + timedelta(
+            days=365 * 100
+        )
+        suppressor_payload = {
+            'vertexJobName': vertex_job_name,
+            'claimedAt': far_future_claim,
+        }
+
+        # Retry the suppressor write a few times to close the small race
+        # window between "job.run() returned" and "takeover sees the
+        # suppressor fields". If this write never lands, the stale
+        # takeover path in try_take_over_stale_claim could eventually
+        # reclaim the doc after JOB_CLAIM_STALE_SECONDS and submit a
+        # second Vertex training run. Exponential backoff up to ~15
+        # seconds total (0.5, 1, 2, 4, 8). We keep this loop tight
+        # because callback() won't ack until we return, so the Pub/Sub
+        # ack deadline is burning the whole time. The AckExtender has
+        # already been stopped above, so we cannot push that deadline
+        # further out.
+        suppressor_persisted = False
+        last_err = None
+        delay = 0.5
+        for attempt in range(5):
+            try:
+                job_ref.update(suppressor_payload)
+                suppressor_persisted = True
+                break
+            except Exception as meta_err:
+                last_err = meta_err
+                logger.warning(
+                    f"Suppressor write attempt {attempt + 1}/5 failed "
+                    f"for Vertex job {job_id}: {meta_err}; retrying in "
+                    f"{delay}s"
+                )
+                time.sleep(delay)
+                delay *= 2
+
+        if not suppressor_persisted:
+            # If retries all failed, the best we can do is log loudly so
+            # an operator can manually annotate the job doc. The Vertex
+            # training job is already running and is the important
+            # invariant; duplicate dispatch is the residual risk and is
+            # only possible within the short local stale window, not
+            # the old 4-hour Vertex window.
+            logger.error(
+                f"FATAL: could not persist Vertex takeover suppressor "
+                f"for job {job_id} after 5 retries (last error: {last_err}). "
+                f"A duplicate Pub/Sub delivery within the next "
+                f"JOB_CLAIM_STALE_SECONDS may double-dispatch the Vertex "
+                f"training run; manual intervention recommended "
+                f"(set vertexJobName and a far-future claimedAt on "
+                f"jobs/{job_id})."
+            )
+
+    except JobDocumentNotReadyError:
+        # Never swallow: callback() must nack for Pub/Sub redelivery.
+        raise
+    except JobInProgressError:
+        # Never swallow: callback() must nack without marking so a
+        # crashed-worker scenario can still retry on redelivery.
+        raise
     except Exception as e:
         logger.error(f"Failed to launch Vertex AI job: {e}")
 
@@ -748,6 +1534,20 @@ def callback(message):
             logger.warning(
                 f"Job {job_id} not ready yet, nacking for Pub/Sub redelivery: "
                 f"{not_ready}"
+            )
+            message.nack()
+            return
+        except JobInProgressError as in_progress:
+            # Codex P1 (r3055316xxx): this is a duplicate Pub/Sub delivery
+            # while another worker is still actively processing the same
+            # job. nack so Pub/Sub redelivers later - and critically do NOT
+            # call mark_message_processed, because if the original worker
+            # subsequently crashes we need the next redelivery to be able
+            # to retry. Acking a duplicate that overlapped an in-flight
+            # run would permanently hide that recovery path.
+            logger.warning(
+                f"Job {job_id} is already in progress on another worker, "
+                f"nacking duplicate delivery for retry: {in_progress}"
             )
             message.nack()
             return

@@ -90,6 +90,24 @@ const TOPIC_ID = env.PUBSUB_TOPIC_ID;
  * frontend/server/middleware/rateLimits.ts.
  */
 
+/**
+ * Non-terminal job statuses that a same-owner start-job retry is allowed to
+ * resume. If the first publish succeeded but the client missed the response
+ * and retries after the worker has already advanced the job past "queued"
+ * (into processing/training/scoring), the retry should still succeed
+ * idempotently - the job is already running, and the worker-side dedup
+ * protects against duplicate work.
+ *
+ * Terminal statuses (complete, error, canceled) are intentionally excluded:
+ * a retry against a finished job is a replay, not a legitimate resume.
+ */
+const RESUMABLE_STATUSES = new Set([
+  "queued",
+  "processing",
+  "training",
+  "scoring",
+]);
+
 // 1. Get Signed URL for Upload
 router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req: Request, res: Response) => {
   try {
@@ -183,16 +201,38 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
     // with the same jobId (otherwise the 409 guard locks them out).
     // Squaring this: keep the doc on publish error, and make a
     // same-user retry with the same jobId idempotent - if the existing
-    // claim is still "queued" and owned by the caller, reuse it and
-    // re-publish. The worker-side dedup (check_idempotency and
-    // mark_message_processed in worker.py) makes a duplicate publish
-    // on retry harmless.
+    // claim is still in a resumable (non-terminal) state and owned by
+    // the caller, reuse it and re-publish. The worker-side dedup
+    // (check_idempotency and mark_message_processed in worker.py) makes
+    // a duplicate publish on retry harmless.
+    //
+    // Codex P2 (retry idempotency across non-terminal states): an
+    // earlier version of this path only accepted "queued" as a
+    // resumable status. But if the first publish succeeded and the
+    // worker advanced the job past "queued" before the client's
+    // delayed retry arrived (e.g. ack-deadline-sized network stall),
+    // the retry would hit 409 even though the job is already running
+    // correctly. Accept any non-terminal status for same-owner retries
+    // (queued/processing/training/scoring) so the retry is idempotent
+    // across the entire worker lifecycle. Terminal statuses
+    // (complete/error/canceled) remain 409 because a retry against a
+    // finished job is a replay, not a resume.
+    //
+    // Codex P2 (retry-file-binding): persist `gcsFileName` on the
+    // claimed job doc and require same-user retries to present the
+    // EXACT same file path. Without this check, a client that retried
+    // /start-job with the same jobId but a different gcsFileName
+    // (accident, bug, or malice) would overwrite the logical meaning
+    // of the claimed job and cause two different files to race under
+    // one jobId, producing nondeterministic results.
     let claimedExistingDoc = false;
+    let existingStatus: string | undefined;
     try {
       await firestore.collection("jobs").doc(jobId).create({
         status: "queued", // Initial state (matches worker JobStatus.QUEUED)
         createdAt: new Date(),
         userId,
+        gcsFileName, // Pin the retry to this exact object path.
       });
     } catch (createErr: any) {
       // Firestore raises code 6 (ALREADY_EXISTS) when create() hits an
@@ -202,22 +242,26 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
       }
 
       // Same-user retry recovery: if the existing doc is owned by this
-      // caller and still in the initial "queued" state (no worker has
-      // picked it up yet), treat the request as a publish retry and
-      // reuse the claim. Any other combination (different owner, or a
-      // status past "queued") is a real collision / replay attempt and
-      // gets the 409.
+      // caller AND is in a non-terminal (resumable) state AND targets
+      // the exact same uploaded object, treat the request as a publish
+      // retry and reuse the claim. Any other combination is a real
+      // collision / replay attempt and gets the 409.
       const existingDoc = await firestore.collection("jobs").doc(jobId).get();
       const existing = existingDoc.exists ? existingDoc.data() : undefined;
       if (
         existing &&
         existing.userId === userId &&
-        existing.status === "queued"
+        typeof existing.status === "string" &&
+        RESUMABLE_STATUSES.has(existing.status) &&
+        existing.gcsFileName === gcsFileName
       ) {
         claimedExistingDoc = true;
-        logger.info("start-job: reusing pre-existing queued doc for retry", {
+        existingStatus = existing.status;
+        logger.info("start-job: reusing pre-existing non-terminal doc for retry", {
           jobId,
           userId,
+          gcsFileName,
+          existingStatus,
         });
       } else {
         logger.warn("start-job rejected: jobId already claimed", {
@@ -225,19 +269,47 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
           userId,
           existingOwner: existing?.userId,
           existingStatus: existing?.status,
+          // Log the file mismatch so operators can see it in the audit
+          // trail. Do NOT log the existing.gcsFileName value if it
+          // belongs to a different user (we already blocked that
+          // above), but here we know the owner matched and only the
+          // file path differed, which is useful forensic data.
+          existingGcsFileName: existing?.gcsFileName,
+          requestedGcsFileName: gcsFileName,
         });
         return res.status(409).json({ error: "Job ID already exists" });
       }
     }
 
-    // Publish to Pub/Sub. On failure we do NOT delete the doc: the publish
-    // may have succeeded server-side even though the client saw an error,
-    // and we must not strand a valid job just because the ack was lost in
-    // flight. The client is expected to retry /start-job with the same
-    // jobId on any failure; the same-user reuse branch above will see the
-    // still-"queued" doc and re-publish. The worker's Pub/Sub-level dedup
-    // prevents duplicate processing if the first publish actually landed.
-    await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    // Publish to Pub/Sub only when we know republishing is safe and useful.
+    //
+    // If we just created the doc OR the existing doc was still "queued", we
+    // republish: the worker has not started yet (or may not have received
+    // the first publish), and the worker-side dedup on check_idempotency
+    // handles the duplicate message cleanly.
+    //
+    // If the existing doc is already past "queued" (processing/training/
+    // scoring), the worker is actively running the job, and re-publishing
+    // would be useless noise at best and - on workers without per-job
+    // dedup - a duplicate-work risk. Skip the publish and return success,
+    // which is what the client is looking for: "the job is running".
+    //
+    // On failure we do NOT delete the doc: the publish may have succeeded
+    // server-side even though the client saw an error, and we must not
+    // strand a valid job just because the ack was lost in flight. The
+    // client is expected to retry /start-job with the same jobId on any
+    // failure; the same-user reuse branch above will see the non-terminal
+    // doc and re-publish (or skip) appropriately.
+    const shouldPublish = !claimedExistingDoc || existingStatus === "queued";
+    if (shouldPublish) {
+      await pubsub.topic(TOPIC_ID).publishMessage({ data: dataBuffer });
+    } else {
+      logger.info("start-job: skipping republish for already-running job", {
+        jobId,
+        userId,
+        existingStatus,
+      });
+    }
 
     res.json({
       success: true,
