@@ -99,7 +99,9 @@ class CustomCategoricalCrossentropyAE(tf.keras.losses.Loss):
             x_attr = tf.keras.backend.cast(x_attr, "float32")
             y_attr = tf.keras.backend.cast(y_attr, "float32")
 
-            loss_per_sample = tf.keras.backend.categorical_crossentropy(x_attr, y_attr) / np.log(categories)
+            # Normalize by log(K). Guard against single-category attributes
+            # (Rule-of-9 already filters them, but stay defensive).
+            loss_per_sample = tf.keras.backend.categorical_crossentropy(x_attr, y_attr) / np.log(max(int(categories), 2))
             xent_losses.append(loss_per_sample)
 
             start_idx += categories

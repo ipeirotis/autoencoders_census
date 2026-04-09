@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 import io
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import chardet
@@ -45,6 +46,14 @@ load_dotenv()
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 SUBSCRIPTION_ID = os.getenv("PUBSUB_SUBSCRIPTION_ID")
+
+# Retention window for the idempotency marker in `processed_messages`.
+# Used as the `expiresAt` field on each marker so that a Firestore TTL
+# policy pointed at `expiresAt` sweeps records only after this many days,
+# not immediately. Seven days comfortably exceeds Pub/Sub's 7-day maximum
+# retained-message lifetime, so a late redelivery of an already-processed
+# message will still find the marker and get ack-dropped.
+IDEMPOTENCY_MARKER_TTL_DAYS = 7
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -79,41 +88,83 @@ def validate_message(data: dict) -> PubSubMessage:
         raise ValueError(f"Invalid message format: {errors}")
 
 
-def check_idempotency(message_id: str, job_id: str) -> bool:
+class JobDocumentNotReadyError(Exception):
     """
-    Check if message already processed using Firestore transaction.
-    Returns True if already processed, False if first time.
+    Raised when the worker tries to update a job document that has not
+    yet been written by /start-job (pub/sub publish beat the Firestore
+    create on a legacy/out-of-order code path). The outer callback()
+    nacks the message on this exception so Pub/Sub redelivers and the
+    retry can find the document.
+    """
 
-    This prevents duplicate processing when Pub/Sub redelivers messages
-    (at-least-once delivery guarantee). Uses Firestore transactions to
-    handle race conditions when multiple workers check same message.
+
+def check_idempotency(message_id: str) -> bool:
+    """
+    Read-only check: has this Pub/Sub message already been marked processed?
+
+    Returns True if the message was previously processed and should be
+    skipped, False if it has not yet been processed.
+
+    IMPORTANT: This function does NOT write anything. The marker is set by
+    :func:`mark_message_processed` *after* job execution completes. That
+    ordering prevents the "silently dropped message" failure mode: if a
+    worker crashed between marking and acknowledgment, Pub/Sub would
+    redeliver the message and a "mark-before-process" implementation would
+    see the marker and ack the redelivered copy without performing any
+    work, leaving the job stuck forever.
 
     Args:
         message_id: Unique Pub/Sub message ID
-        job_id: Job ID from message payload (for logging/cleanup)
 
     Returns:
         bool: True if message was already processed, False if first time
     """
     processed_ref = db.collection('processed_messages').document(message_id)
+    snapshot = processed_ref.get()
+    return snapshot.exists
+
+
+def mark_message_processed(message_id: str, job_id: str) -> None:
+    """
+    Record that a Pub/Sub message has been successfully processed.
+
+    Must be called only AFTER :func:`process_upload_local` /
+    :func:`process_upload_vertex` returns, so that a crash mid-processing
+    leaves the marker unset and Pub/Sub redelivery triggers a real retry
+    instead of a silent drop.
+
+    Uses a Firestore transaction with a "set-if-not-exists" check to stay
+    idempotent if two workers ever race to mark the same message.
+
+    Args:
+        message_id: Unique Pub/Sub message ID
+        job_id: Job ID from message payload (for bookkeeping/cleanup)
+    """
+    processed_ref = db.collection('processed_messages').document(message_id)
+
+    # Codex P2 (r3055203157): expiresAt must be a future timestamp (now + TTL),
+    # not SERVER_TIMESTAMP. If a Firestore TTL policy is configured on this
+    # field it would otherwise delete the marker the instant it is written,
+    # leaving no deduplication cover for late redeliveries of the same
+    # message ID.
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        days=IDEMPOTENCY_MARKER_TTL_DAYS
+    )
 
     @firestore.transactional
-    def mark_processed(transaction, ref):
-        """Transactional read-modify-write to prevent race conditions."""
+    def _set_if_not_exists(transaction, ref):
         snapshot = ref.get(transaction=transaction)
         if snapshot.exists:
-            return True  # Already processed
+            return  # Already marked by another worker - idempotent no-op
 
-        # Mark as processed with metadata for cleanup
         transaction.set(ref, {
             'jobId': job_id,
             'processedAt': firestore.SERVER_TIMESTAMP,
-            'expiresAt': firestore.SERVER_TIMESTAMP  # For manual cleanup (7-day TTL)
+            'expiresAt': expires_at,  # now + IDEMPOTENCY_MARKER_TTL_DAYS
         })
-        return False
 
     transaction = db.transaction()
-    return mark_processed(transaction, processed_ref)
+    _set_if_not_exists(transaction, processed_ref)
 
 
 class AckExtender:
@@ -372,14 +423,32 @@ def process_upload_local(job_id, bucket_name, file_path, message):
     try:
         logger.info(f"Starting local processing for job {job_id}")
 
-        # Update status to processing using transaction (WORK-07)
-        transaction = db.transaction()
+        # Update status to processing using transaction (WORK-07).
+        #
+        # Codex P1 (r3053739500): If the worker races ahead of /start-job's
+        # Firestore write and the job document does not yet exist, re-raise
+        # so the outer callback() catches it and nacks the message for
+        # Pub/Sub redelivery instead of silently dropping the job. With
+        # phase-01's "create-then-publish" ordering in jobs.ts this race
+        # should not happen in normal production traffic, but the defensive
+        # branch keeps any legacy fallback or out-of-order write from
+        # wedging a real user job.
         job_ref = db.collection('jobs').document(job_id)
         try:
+            transaction = db.transaction()
             update_job_status(transaction, job_ref, JobStatus.PROCESSING)
         except ValueError as e:
+            if "not found" in str(e):
+                # Bubble up so callback() nacks and we retry on redelivery
+                # - do NOT let the outer try/except in this function catch it,
+                # because that branch writes status=ERROR, which would stick
+                # if the document later shows up.
+                raise JobDocumentNotReadyError(
+                    f"Job {job_id} document not yet written, retry via nack"
+                ) from e
             logger.warning(f"Failed to update status: {e}")
-            # Job may have been canceled or already completed, skip processing
+            # Job is already in a later/terminal state (canceled, complete,
+            # processing, etc.) - skip processing to avoid duplicate work.
             return
 
         # 1. Download from GCS
@@ -464,12 +533,26 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
+        # Codex P1 (r3053724013): advance the state machine through TRAINING
+        # before fit(). Without this, the job skipped directly from PROCESSING
+        # to COMPLETE, which is not an allowed transition (SCORING -> COMPLETE
+        # is the only path to the terminal state), so every successful run
+        # would raise ValueError and mark the job ERROR after the model
+        # actually finished training.
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.TRAINING)
+
         logger.info("Training autoencoder...")
         keras_model.fit(
             X_train, X_train,
             epochs=15, batch_size=32, verbose=2,
             validation_data=(X_test, X_test)
         )
+
+        # Codex P1 (r3053724013): advance TRAINING -> SCORING before scoring
+        # so that the final COMPLETE transition matches ALLOWED_TRANSITIONS.
+        transaction = db.transaction()
+        update_job_status(transaction, job_ref, JobStatus.SCORING)
 
         # 8. Calculate reconstruction error
         reconstruction = keras_model.predict(vectorized_df)
@@ -485,7 +568,6 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         # 10. Save to Firestore with transactional status update (WORK-07)
         transaction = db.transaction()
-        job_ref = db.collection('jobs').document(job_id)
         update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
             'stats': stats,
             'outliers': outliers_data,
@@ -494,6 +576,11 @@ def process_upload_local(job_id, bucket_name, file_path, message):
 
         logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
 
+    except JobDocumentNotReadyError:
+        # Never swallow this: it must reach callback() so the message is
+        # nacked for Pub/Sub redelivery. Do NOT mark the job ERROR - the
+        # document doesn't even exist yet.
+        raise
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
 
@@ -582,14 +669,36 @@ def callback(message):
     """
     try:
         logger.info(f"Received message: {message.data}")
-        data = json.loads(message.data.decode("utf-8"))
+
+        # Codex P2 (r3053739504): deterministic schema / JSON failures are
+        # poison messages, not transient errors. nack()-ing them causes an
+        # infinite redelivery loop against the same bad payload, wasting
+        # worker capacity (we have no DLQ configured). Ack-and-drop with a
+        # log entry instead so an operator can find the payload in the logs
+        # but the queue drains.
+        try:
+            data = json.loads(message.data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.error(
+                f"Dropping non-JSON/invalid-encoding Pub/Sub message "
+                f"{getattr(message, 'message_id', '?')}: {e}"
+            )
+            message.ack()
+            return
 
         # WORK-01/02/03: Validate required fields
         try:
             validated = validate_message(data)
         except ValueError as e:
-            logger.error(f"Message validation failed: {e}")
-            message.nack()  # Reject invalid message
+            # Codex P2 (r3053739504): schema validation failures are
+            # permanent - the payload is malformed and will not become
+            # valid on redelivery. Ack to drop the poison message instead
+            # of nacking into an infinite redelivery loop.
+            logger.error(
+                f"Dropping Pub/Sub message "
+                f"{getattr(message, 'message_id', '?')} with invalid schema: {e}"
+            )
+            message.ack()
             return
 
         # Use validated fields
@@ -597,17 +706,65 @@ def callback(message):
         bucket = validated.bucket
         file_path = validated.file
 
-        # WORK-04: Check if already processed
-        if check_idempotency(message.message_id, job_id):
+        # WORK-04: Read-only idempotency check. We intentionally do NOT mark
+        # the message as processed here: the marker is written AFTER
+        # processing completes (mark_message_processed below). If we crashed
+        # between a premature mark and ack, Pub/Sub would redeliver and we'd
+        # drop the redelivered copy without ever finishing the work.
+        #
+        # Codex P1 (r3053917210) flags a concern that two concurrent
+        # deliveries of the same message could both pass this read-only
+        # check and both enter processing. That scenario is already
+        # blocked by a different mechanism: the job state machine. Both
+        # workers would then race to transition the job's Firestore doc
+        # from QUEUED -> PROCESSING via update_job_status(). That runs
+        # inside a Firestore transaction with optimistic concurrency, so
+        # exactly one worker wins the transition; the loser retries,
+        # sees "processing" as the current state, fails
+        # is_valid_transition("processing", "processing"), and the
+        # process_upload_local ValueError branch returns early without
+        # running training/scoring. We avoid adding a redundant
+        # "in-progress" marker here because (a) that would reintroduce
+        # the original "premature mark -> silent drop on crash" failure
+        # mode this function was refactored to fix, and (b) the existing
+        # Firestore-transaction serialization at the job level already
+        # provides the guarantee.
+        if check_idempotency(message.message_id):
             logger.info(f"Message {message.message_id} already processed, skipping")
             message.ack()  # Ack duplicate message
             return
 
         # WORK-05/06: Process with ack extension, ack AFTER processing completes
-        if _processing_mode == "vertex":
-            process_upload_vertex(job_id, bucket, file_path, message)
-        else:
-            process_upload_local(job_id, bucket, file_path, message)
+        try:
+            if _processing_mode == "vertex":
+                process_upload_vertex(job_id, bucket, file_path, message)
+            else:
+                process_upload_local(job_id, bucket, file_path, message)
+        except JobDocumentNotReadyError as not_ready:
+            # Codex P1 (r3053739500): the job document hasn't been written
+            # yet (race with /start-job). nack so Pub/Sub redelivers - do
+            # NOT mark the message as processed, otherwise the retry would
+            # be silently dropped as a duplicate.
+            logger.warning(
+                f"Job {job_id} not ready yet, nacking for Pub/Sub redelivery: "
+                f"{not_ready}"
+            )
+            message.nack()
+            return
+
+        # WORK-04: Only now that processing is done do we record the marker,
+        # so a crash mid-processing leaves the marker unset and Pub/Sub
+        # redelivery triggers a real retry instead of a silent drop.
+        try:
+            mark_message_processed(message.message_id, job_id)
+        except Exception as mark_err:
+            # Failing to persist the marker isn't fatal: the job itself already
+            # finished, and the worst case on redelivery is an early-return
+            # due to the job state machine (terminal states reject
+            # transitions). Log and continue to ack.
+            logger.warning(
+                f"Failed to mark message {message.message_id} as processed: {mark_err}"
+            )
 
         # WORK-06: Ack only after processing completes successfully
         message.ack()

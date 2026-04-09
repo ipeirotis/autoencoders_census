@@ -73,8 +73,12 @@ def test_valid_message():
     assert result.file == "test-file.csv"
 
 
-def test_callback_nacks_invalid_message():
-    """Test that callback nacks message when validation fails."""
+def test_callback_acks_invalid_message_to_avoid_poison_loop():
+    """
+    Codex P2 (r3053739504): schema validation failures are deterministic,
+    not transient. callback() must ack the message (drop it) instead of
+    nacking to prevent infinite redelivery against a bad payload.
+    """
     from worker import callback
 
     # Create mock message with missing jobId
@@ -89,6 +93,25 @@ def test_callback_nacks_invalid_message():
 
     callback(message)
 
-    # Should nack, not ack
-    message.nack.assert_called_once()
-    message.ack.assert_not_called()
+    # Should ack (drop poison message), NOT nack (would redeliver forever).
+    message.ack.assert_called_once()
+    message.nack.assert_not_called()
+
+
+def test_callback_acks_non_json_payload_instead_of_nacking():
+    """
+    Codex P2 (r3053739504): a message whose body is not valid JSON is a
+    permanent failure for the same reason - drop it by acking.
+    """
+    from worker import callback
+
+    message = Mock()
+    message.data = b"this is not json {"
+    message.message_id = "msg-non-json"
+    message.ack = Mock()
+    message.nack = Mock()
+
+    callback(message)
+
+    message.ack.assert_called_once()
+    message.nack.assert_not_called()

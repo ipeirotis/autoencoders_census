@@ -207,9 +207,14 @@ class DataLoader:
 
 
     def load_eval_dataset(self, dataset):
-        df = pd.read_csv(dataset)
-        base_df, types = self.load_2017()
-        return (df, base_df), types
+        """Load an arbitrary CSV for evaluation against the 2017 SADC baseline.
+
+        Returns the same ``(DataFrame, metadata)`` format as all other loaders.
+        The raw evaluation DataFrame is read from *dataset*; preprocessing
+        (binning, Rule-of-9 filtering) is applied via ``prepare_original_dataset``.
+        """
+        df = self.load_original_data(dataset)
+        return self.prepare_original_dataset(df, replacements={})
 
     def load_bot_bot_mturk(self):
         url = "data/Bot_Bot_Bot__MTURK.csv"
@@ -331,9 +336,19 @@ class DataLoader:
             original_df = original_df.drop(columns=self.DROP_COLUMNS, errors='ignore')
 
         if self.COLUMNS_OF_INTEREST:
-            # only select columns that actually exist in the dataframe
-            existing_cols = [c for c in self.COLUMNS_OF_INTEREST if c in original_df.columns]
-            original_df = original_df[existing_cols]
+            # COLUMNS_OF_INTEREST may contain integer positional indices
+            # or string column names — handle both.
+            int_indices = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, int)]
+            str_names = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, str)]
+
+            selected = []
+            if int_indices:
+                valid = [i for i in int_indices if i < len(original_df.columns)]
+                selected.extend(original_df.columns[valid].tolist())
+            if str_names:
+                selected.extend([c for c in str_names if c in original_df.columns])
+
+            original_df = original_df[selected]
 
         if self.RENAME_COLUMNS:
             original_df = original_df.rename(columns=self.RENAME_COLUMNS)
@@ -468,17 +483,35 @@ class DataLoader:
 
     def find_outlier_data(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Load dataset and extract gold-label columns for evaluation.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        attention-check / screening columns are available even though
+        they are intentionally excluded from the training config.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         return df[outlier_column]
 
     def find_outlier_data_sadc_2017(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Find outlier data in the SADC 2017 dataset.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        all columns (including those used to build the composite
+        outlier indicator) are available.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         # now I want the samples of the above characteristics CONCURRENTLY to have a new outlier column equal to 1 and the rest 0
         df[outlier_column] = 0

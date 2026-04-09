@@ -6,19 +6,21 @@ Commands:
     search_hyperparameters - Run Bayesian hyperparameter optimization
     evaluate               - Evaluate model reconstruction accuracy
     find_outliers          - Detect outliers using reconstruction error
+    chow_liu_outliers      - Detect outliers using Chow-Liu tree log-likelihood
     generate               - Generate synthetic samples from a trained VAE
 
 Example Usage:
     python main.py train --model_name AE --data sadc_2017
     python main.py find_outliers --model_path cache/simple_model/autoencoder
+    python main.py chow_liu_outliers --data sadc_2017
     python main.py search_hyperparameters --model_name VAE
 
 Pipeline Steps:
     1. Load data via DataLoader (handles multiple dataset formats)
     2. Clean data (fill NaN, apply "Rule of 9" filter for cardinality)
-    3. Vectorize categorical data via Table2Vector (one-hot encoding)
-    4. Train/load autoencoder model
-    5. Calculate reconstruction error for outlier detection
+    3. Vectorize categorical data via Table2Vector (one-hot encoding) [AE only]
+    4. Train/load autoencoder model OR fit Chow-Liu tree
+    5. Calculate reconstruction error / log-likelihood for outlier detection
 """
 
 import logging
@@ -36,6 +38,7 @@ from evaluate.generator import Generator
 from evaluate.outliers import get_outliers_list
 from features.transform import Table2Vector
 from model.factory import get_model
+from chow_liu_rank import rank_rows_by_chow_liu
 from train.trainer import Trainer
 from utils import (
     set_seed,
@@ -54,26 +57,82 @@ logger = logging.Logger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
-def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="guassian"):
+
+def prepare_for_categorical(project_data):
+    """Clean data for categorical-only models (Chow-Liu tree, etc.).
+
+    Steps:
+        1. Fill NaN with "missing" and cast to string
+        2. Apply Rule-of-9 filter (keep columns with 2-9 unique values)
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+
+    Returns:
+        cleaned_df: DataFrame with only low-cardinality categorical columns.
+    """
+    project_data = project_data.fillna("missing")
+    project_data = project_data.astype(str)
+
+    cols_to_keep = [
+        col for col in project_data.columns
+        if 1 < project_data[col].nunique() <= 9
+    ]
+    return project_data[cols_to_keep]
+
+
+def prepare_for_model(project_data, variable_types=None):
+    """Shared data-cleaning and vectorization pipeline.
+
+    Steps:
+        1. Fill NaN with "missing" and cast to string
+        2. Apply Rule-of-9 filter (keep columns with 2-9 unique values)
+        3. Sync variable_types to surviving columns
+        4. Vectorize via Table2Vector (one-hot encoding)
+        5. Convert to float32
+        6. Compute per-column cardinalities
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+        variable_types: Optional dict mapping column names to types.
+            If None or empty, all columns are treated as categorical.
+
+    Returns:
+        (cleaned_df, vectorized_df, vectorizer, cardinalities)
+    """
+    if variable_types is None:
+        variable_types = {}
+
+    # 1-2. Clean data (fillna, Rule-of-9)
+    project_data = prepare_for_categorical(project_data)
+
+    # 3. Sync variable_types to surviving columns
+    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
+    if not variable_types:
+        variable_types = {col: "categorical" for col in project_data.columns}
+
+    # 4. Vectorize
+    vectorizer = Table2Vector(variable_types)
+    vectorized_df = vectorizer.vectorize_table(project_data)
+
+    # 5. Float32 conversion
+    vectorized_df = vectorized_df.astype("float32")
+
+    # 6. Cardinalities
+    cardinalities = [project_data[c].nunique() for c in project_data.columns]
+
+    return project_data, vectorized_df, vectorizer, cardinalities
+
+
+def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="gaussian"):
     """
     Reusable training logic that accepts a DataFrame directly.
     Used by both the CLI and the Cloud Worker
     """
-    
-    # 1. Transform Data
-    # We assume df is already processed by the loader
-    
-    # infer variable types if not passed (simplified for pipeline)
-    variable_types = {c: "categorical" for c in df.columns}
-    
-    logger.info(f"transforming the data...")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(df)
-    
-    cardinalities = list(df.describe().T["unique"].values)
-    
-    model = get_model(model_name, cardinalities) 
-    
+    _, vectorized_df, _, cardinalities = prepare_for_model(df)
+
+    model = get_model(model_name, cardinalities)
+
     logger.info(f"loading config from {config_path}...")
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
@@ -86,7 +145,6 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
     logger.info("Saving model....")
     save_model(model, output_path)
     save_history(history, output_path)
-    # model_analysis(history, output_path, model_name) # Optional for worker
 
     return model, history
 
@@ -162,93 +220,17 @@ def train(
         additional_columns_of_interest=additional_interest_columns,
     )
     
-    # 4. Load the raw result from the updated loader
-    # this handles any return format
-    load_result = data_loader.load_data(data)
-    
-    project_data = None
-    variable_types = {}
-    
-    # Attempt to unpack if it's a tuple 
-    if isinstance(load_result, tuple):
-        logger.debug(f"Unpacking tuple of length {len(load_result)}")
-        project_data = load_result[0]
-        possible_metadata = load_result[1] # this contains 'ignore_columns' and 'variable_types'
+    # 4. Load data -- all loaders return (DataFrame, metadata_dict)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
-        # if the first item is ALSO a tuple (nested), unpack again
-        if isinstance(project_data, tuple):
-            logger.debug(f"Unpacking nested tuple of length {len(project_data)}")
-            project_data = project_data[0]
-            
-        # Extract variable types from metadata dict
-        if isinstance(possible_metadata, dict) and "variable_types" in possible_metadata:
-            variable_types = possible_metadata["variable_types"]
-        else:
-            variable_types = possible_metadata
-    else:
-        # It's just a dataframe
-        project_data = load_result
-        metadata = {}
-
-    # 5. Data Cleaning
-    logger.debug(f"Data shape before cleaning: {project_data.shape}")
-    project_data = project_data.fillna("missing")
-    project_data = project_data.astype(str)
-    
-    # No more than 9 unique values
-    cols_to_keep = []
-    for col in project_data.columns:
-        if project_data[col].nunique() > 1 and project_data[col].nunique() <= 9:
-            cols_to_keep.append(col)
-        else:
-            # Optional: Print what we're dropping to be safe
-            pass
-        
-    project_data = project_data[cols_to_keep]
-    logger.debug(f"Final data shape: {project_data.shape}")
-    
-    # Sync variable types
-    # reset variable types to match ONLY the surviving columns
-    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
-
-    # 6. Vectorization
+    # 5. Clean, vectorize, and compute cardinalities
     logger.info("Transforming the data....")
+    project_data, vectorized_df, vectorizer, cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
-    # Safety Net for Missing Types
-    # if variable_types is None or empty, the vectorizer will do nothing.
-    # Must force it to treat everything as categorical so it encodes the strings
-    if not variable_types:
-        logger.warning("variable_types is empty, auto-generating types as 'categorical'")
-        variable_types = {col: 'categorical' for col in project_data.columns}
-    else:
-        # Ensure all columns in data exist in variable_types
-        missing_cols = [c for c in project_data.columns if c not in variable_types]
-        if missing_cols:
-            logger.debug(f"Found {len(missing_cols)} columns missing from type map, adding as 'categorical': {missing_cols}")
-            for c in missing_cols:
-                variable_types[c] = 'categorical'
-
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
-
-    # 7. Float Conversion ("TensorFlow" Fix)
-    logger.debug("Converting data to float32")
-    try:
-        vectorized_df = vectorized_df.astype('float32')
-    except Exception as e:
-        logger.error("Data contains non-numeric values after vectorization")
-        for col in vectorized_df.columns:
-            try:
-                vectorized_df[col].astype('float32')
-            except Exception:
-                logger.error(f"Bad column: '{col}' contains: {vectorized_df[col].unique()[:5]}")
-        raise e
-
-    # 8. Calculate Cardinalities
-    # calculate unique values directly (ignoreing data types)
-    cardinalities = [project_data[c].nunique() for c in project_data.columns]
-
-    # 9. Build and Train model
+    # 6. Build and Train model
     logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
@@ -331,15 +313,15 @@ def search_hyperparameters(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
     )
-    project_data, variable_types = data_loader.load_data(data)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Transforming the data....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    logger.info("Transforming the data....")
+    project_data, vectorized_df, vectorizer, cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
-    cardinalities = list(project_data.describe().T["unique"].values)
-
-    logger.info(f"Looading model....")
+    logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
     logger.info(f"Loading config from config file....")
@@ -409,11 +391,14 @@ def evaluate(
     model = load_model(model_path)
 
     logger.info(f"Loading data....")
-    project_data, variable_types = data_loader.load_data(data)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Transforming the data....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    project_data, vectorized_df, vectorizer, _ = prepare_for_model(
+        project_data, variable_types
+    )
+    variable_types = {c: "categorical" for c in project_data.columns}
 
     evaluator = Evaluator(model)
 
@@ -497,84 +482,25 @@ def find_outliers(
         additional_columns_of_interest=additional_interest_columns,
     )
 
-    # 3. Load and Unpakc Data
-    load_result = data_loader.load_data(data)
-    
-    project_data = None
-    variable_types = {}
-    
-    # Hand Tuple/Metadata unpacking 
-    if isinstance(load_result, tuple):
-        project_data = load_result[0]
-        metadata = load_result[1]
-        
-        # If nested tuple, take the first one
-        if isinstance(project_data, tuple):
-            project_data = project_data[0]
+    # 3. Load data -- all loaders return (DataFrame, metadata_dict)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
-        # Extract types from metadata
-        if isinstance(metadata, dict) and "variable_types" in metadata:
-            variable_types = metadata["variable_types"]
-        else:
-            variable_types = metadata
-    else:
-        project_data = load_result
-        variable_types = {}
-        
-    # 4. Data Cleaning
-    logger.debug(f"Data shape before cleaning: {project_data.shape}")
-    project_data = project_data.fillna("missing")
-    project_data = project_data.astype(str)
+    # 4. Clean, vectorize, and compute cardinalities
+    logger.info("Transforming the data....")
+    project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
-    # No more than 9 unique values
-    cols_to_keep = []
-    for col in project_data.columns:
-        if project_data[col].nunique() > 1 and project_data[col].nunique() <= 9:
-            cols_to_keep.append(col)
-
-    project_data = project_data[cols_to_keep]
-    
-    # Sync variable types
-    # reset variable types to match ONLY the surviving columns
-    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
-    
-    # 5. Vectorization
-    logger.info(f"Transforming the data....")
-    
-    if not variable_types:
-        logger.warning("variable_types is empty, auto-generating types as 'categorical'")
-        variable_types = {col: "categorical" for col in project_data.columns}
-    else:
-        # Fill in any gaps
-        missing_cols = [c for c in project_data.columns if c not in variable_types]
-        for col in missing_cols:
-            variable_types[col] = "categorical" 
-            
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
-    
-    # 6. Float Conversion (TensorFlow Fix)
-    logger.debug("Converting data to float32")
-    try:
-        vectorized_df = vectorized_df.astype('float32')
-    except Exception as e:
-        logger.error("Vectorization failed to produce numeric values")
-        raise e
-    
-    # 7. Load model
+    # 5. Load model
     logger.info(f"Loading model from {model_path}")
     try:
-        # Try loading strictly as Keras first 
         from tensorflow.keras.models import load_model as keras_load_model
         model = keras_load_model(model_path)
-    except:
-        # Fallback to internal loader
+    except Exception:
         model = load_model(model_path)
 
-    # 8. Calculate Cardinalities
-    attr_cardinalities = [project_data[c].nunique() for c in project_data.columns]
-
-    # 9. Get Outliers
+    # 6. Get Outliers
     logger.info("Calculating outliers...")
     error_df = get_outliers_list(
         vectorized_df, model, k, attr_cardinalities, vectorizer, prior
@@ -586,6 +512,102 @@ def find_outliers(
         os.makedirs(output) 
     save_to_csv(error_df, output, "errors")
     logger.info("Outliers identified successfully.")
+
+
+@cli.command("chow_liu_outliers")
+@click.option("--seed", help="seed for reproducibility", type=int, default=2)
+@click.option("--data", help="data to train on", type=str, default="sadc_2017")
+@click.option(
+    "--drop_columns", help="columns to drop from the data", type=str, default=None
+)
+@click.option(
+    "--rename_columns", help="columns to rename from the data", type=str, default=None
+)
+@click.option(
+    "--interest_columns", help="columns to merge from the data", type=str, default=None
+)
+@click.option("--alpha", help="Laplace smoothing parameter for CLTree", type=float, default=1.0)
+@click.option("--mi_subsample", help="Subsample size for mutual information computation (speeds up large datasets)", type=int, default=None)
+@click.option(
+    "--output",
+    help="output path for saving the outlier scores",
+    type=str,
+    default="cache/predictions/",
+)
+def chow_liu_outliers(
+    seed,
+    data,
+    drop_columns,
+    rename_columns,
+    interest_columns,
+    alpha,
+    mi_subsample,
+    output,
+):
+    """Detect outliers using Chow-Liu tree log-likelihood scoring.
+
+    Fits a maximum spanning tree of pairwise mutual information on
+    categorical data and scores each row by its log-likelihood under
+    the learned tree distribution. Rows with low log-likelihood
+    (high error) are outliers.
+    """
+    set_seed(seed)
+
+    # 1. Parse Column Arguments
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+
+    # 2. Initialize Loader
+    logger.info("Loading data...")
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+
+    # 3. Load data
+    project_data, metadata = data_loader.load_data(data)
+
+    # 4. Clean data (fillna + Rule-of-9, no vectorization needed)
+    logger.info("Cleaning the data...")
+    cleaned_df = prepare_for_categorical(project_data)
+    logger.info(f"Cleaned data: {cleaned_df.shape[0]} rows, {cleaned_df.shape[1]} columns")
+
+    if cleaned_df.shape[1] == 0:
+        logger.error(
+            "No columns survived cleaning (Rule-of-9). Cannot fit Chow-Liu tree."
+        )
+        return
+
+    # 5. Fit Chow-Liu tree and score rows
+    logger.info("Fitting Chow-Liu tree...")
+    ranked_df, cl_model = rank_rows_by_chow_liu(
+        cleaned_df, alpha=alpha, mi_subsample=mi_subsample, random_state=seed
+    )
+
+    # 6. Map to error column (1 - pct: higher = more anomalous)
+    ranked_df["error"] = 1.0 - ranked_df["pct"]
+
+    # 7. Log tree edges
+    edges = cl_model.edges()
+    logger.info(f"Chow-Liu tree has {len(edges)} edges")
+    for u, v, mi in sorted(edges, key=lambda e: -e[2])[:5]:
+        logger.info(f"  {u} -> {v}  (MI={mi:.4f})")
+
+    # 8. Save
+    if not os.path.exists(output):
+        os.makedirs(output)
+    save_to_csv(ranked_df, output, "errors")
+    logger.info(f"Outlier scores saved to {os.path.join(output, 'errors.csv')}")
 
 
 @cli.command("generate")
@@ -608,12 +630,32 @@ def find_outliers(
 )
 @click.option("--data", help="data to take columns from", type=str, default="sadc_2017")
 @click.option(
+    "--drop_columns", help="columns to drop from the data", type=str, default=None
+)
+@click.option(
+    "--rename_columns", help="columns to rename from the data", type=str, default=None
+)
+@click.option(
+    "--interest_columns", help="columns to merge from the data", type=str, default=None
+)
+@click.option(
     "--target_features",
     help="features to condition samples on (comma separated)",
     type=str,
     default=None,
 )
-def generate(seed, prior, model_path, number_samples, output, data, target_features):
+def generate(
+    seed,
+    prior,
+    model_path,
+    number_samples,
+    output,
+    data,
+    drop_columns,
+    rename_columns,
+    interest_columns,
+    target_features,
+):
 
     set_seed(seed)
 
@@ -621,15 +663,34 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
     model = load_model(model_path)
     decoder = model.decoder
 
-    logger.info(f"Loading data....")
-    data_loader = DataLoader()
-    project_data, variable_types = data_loader.load_data(data)
+    # Reuse the same dataset configuration as `train` so the feature schema
+    # (drops, renames, columns-of-interest) matches what the model was
+    # trained on. Otherwise the encoder receives a mismatched input shape.
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    attr_cardinalities = list(project_data.describe().T["unique"].values)
+    logger.info(f"Loading data....")
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Creating the vectorizer....")
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
+    project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+        project_data, variable_types
+    )
 
     if target_features is not None:
         possible_features = list(project_data.columns)
@@ -645,6 +706,18 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
         ]
 
     logger.info(f"Generating samples....")
+
+    # Compute latent-space statistics from the encoder on training data
+    # (the VAE's get_config() does not store prior_means / prior_log_vars)
+    import tensorflow as tf
+    if prior == "gaussian":
+        z_mean, z_log_var = model.encoder(vectorized_df.values.astype("float32"))
+        prior_means = tf.reduce_mean(z_mean, axis=0)
+        prior_log_vars = tf.reduce_mean(z_log_var, axis=0)
+    else:
+        prior_means = None
+        prior_log_vars = None
+
     generator = Generator(
         decoder,
         number_samples,
@@ -652,8 +725,8 @@ def generate(seed, prior, model_path, number_samples, output, data, target_featu
         len(attr_cardinalities),
         model.get_config()["temperature"],
         vectorized_df.columns,
-        model.get_config()["prior_means"][2],
-        model.get_config()["prior_log_vars"][2],
+        prior_means,
+        prior_log_vars,
     )
     samples = generator.generate(
         vectorizer, target_features, len(list(vectorized_df.columns))
@@ -697,350 +770,14 @@ def evaluate_on_condition(
     outlier_value,
 ):
 
-    additional_drop_columns = None
-    additional_rename_columns = None
-    additional_interest_columns = None
-    drop_columns = []
-
-    if data == "sadc_2017" or data == "sadc_2015":
-        drop_columns = [
-            "sitecode",
-            "sitename",
-            "sitetype",
-            "sitetypenum",
-            "year",
-            "survyear",
-            "record",
-            "stratum",
-            "PSU",
-            "q14",
-            "q20",
-            "q31",
-            "q36",
-            "q37",
-            "q39",
-            "q44",
-            "q56",
-            "q84",
-        ]
-        rename_columns = {
-            "age": "age",
-            "sex": "sex",
-            "grade": "grade",
-            "race4": "Hispanic_or_Latino",
-            "race7": "race",
-            "qnobese": "obese",
-            "qnowt": "overweight",
-            "q67": "sexual_identity",
-            "q66": "sex/sexual_contacts",
-            "sexid": "sexid",
-            "sexid2": "sexid2",
-            "sexpart": "sexpart",
-            "sexpart2": "sexpart2",
-            "q8": "seat_belt_use",
-            "q9": "riding_with_a_drinking_driver",
-            "q10": "drinking_and_driving",
-            "q11": "texting_and_driving",
-            "q12": "weapon_carrying",
-            "q13": "weapon_carrying_at_school",
-            "q15": "safety_concerns_at_school",
-            "q16": "threatened_at_school",
-            "q17": "physical_fighting",
-            "q18": "physical_fighting_at_school",
-            "q19": "forced_sexual_intercourse",
-            "q21": "sexual_dating_violence",
-            "q22": "physical_dating_violence",
-            "q23": "bullying_at_school",
-            "q24": "electronic_bullying",
-            "q25": "sad_or_hopeless",
-            "q26": "considered_suicide",
-            "q27": "made_a_suicide_plan",
-            "q28": "attempted_suicide",
-            "q29": "injurious_suicide_attempt",
-            "q30": "ever_cigarette_use",
-            "q32": "current_cigarette_use",
-            "q33": "smoking_amounts_per_day",
-            "q34": "electronic_vapor_product_use",
-            "q35": "current_electronic_vapor_product_use",
-            "q38": "current_cigar_use",
-            "q40": "ever_alcohol_use",
-            "q41": "initiation_of_alcohol_use",
-            "q42": "current_alcohol_use",
-            "q43": "source_of_alcohol",
-            "q45": "largest_number_of_drinks",
-            "q46": "ever_marijuana_use",
-            "q47": "initiation_of_marijuana_use",
-            "q48": "current_marijuana_use",
-            "q49": "ever_cocaine_use",
-            "q50": "ever_inhalant_use",
-            "q51": "ever_heroin_use",
-            "q52": "ever_methamphetamine_use",
-            "q53": "ever_ecstasy_use",
-            "q54": "ever_synthetic_marijuana_use",
-            "q55": "ever_steroid_use",
-            "q57": "illegal_injected_drug_use",
-            "q58": "illegal_drugs_at_school",
-            "q59": "ever_sexual_intercourse",
-            "q60": "first_sex_intercourse",
-            "q61": "multiple_sex_partners",
-            "q62": "current_sexual_activity",
-            "q63": "alcohol/drugs_at_sex",
-            "q64": "condom_use",
-            "q65": "birth_control_pill_use",
-            "q68": "perception_of_weight",
-            "q69": "weight_loss",
-            "q70": "fruit_juice_drinking",
-            "q71": "fruit_eating",
-            "q72": "green _salad_eating",
-            "q73": "potato_eating",
-            "q74": "carrot_eating",
-            "q75": "other_vegetable_eating",
-            "q76": "soda_drinking",
-            "q77": "milk_drinking",
-            "q78": "breakfast_eating",
-            "q79": "physical_activity",
-            "q80": "television_watching",
-            "q81": "computer_not_school_work_use",
-            "q82": "PE_attendance",
-            "q83": "sports_team_participation",
-            "q85": "HIV_testing",
-            "q86": "oral_health_care",
-            "q87": "asthma",
-            "q88": "sleep_on_school_night",
-            "q89": "grades_in_school",
-            "qhallucdrug": "ever_used_LSD",
-            "qsportsdrink": "sports_drinks",
-            "qwater": "plain_water",
-            "qfoodallergy": "food_allergies",
-            "qmusclestrength": "muscle_stregthening",
-            "qindoortanning": "indoor_tanning",
-            "qsunburn": "sunburn",
-            "qconcentrating": "difficulty_concentrating",
-            "qspeakenglish": "how_well_speak_English",
-        }
-        interest_columns = [x for x in range(89)] + [
-            221,
-            231,
-            234,
-            236,
-            238,
-            240,
-            241,
-            242,
-            245,
-        ]
-
-    elif data == "pennycook_1" or data == "pennycook":
-        rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-        interest_columns = []
-
-    elif data == "pennycook_2":
-        rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-        interest_columns = [
-            1,
-            2,
-            4,
-            5,
-            6,
-            51,
-            52,
-            310,
-            312,
-            313,
-            314,
-            315,
-            18,
-            19,
-            21,
-            22,
-            23,
-            24,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            289,
-            290,
-            291,
-            292,
-            293,
-            294,
-            295,
-            296,
-            301,
-        ]
-
-    elif data == "bot_bot_mturk":
-        rename_columns = {}
-        interest_columns = (
-            [11, 12, 13, 14, 16, 17, 18, 19]
-            + [x for x in range(20, 35)]
-            + [35, 36, 37, 38, 39]
-        )
-
-    elif data == "inattentive":
-        rename_columns = {}
-        interest_columns = (
-            [x for x in range(10, 16)]
-            + [x for x in range(18, 24)]
-            + [25, 27, 29, 30, 31, 32, 33, 35, 3]
-            + [x for x in range(36, 55)]
-        )
-
-    elif data == "attention_check":
-        rename_columns = {}
-        interest_columns = [x for x in range(4, 64)] + [2]
-
-    elif data == "moral_data":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [x for x in range(2, 10)] + [
-            x for x in range(12, 78)
-        ]
-
-    elif data == "mturk_ethics":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [13, 14] + [
-            x for x in range(17, 52)
-        ] + [53, 55, 58, 61, 63, 65, 68, 69, 70, 72, 73, 74, 76, 77, 107, 108]
-
-    elif data == "public_opinion":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [19, 4] + [
-            x for x in range(21, 176)
-        ]
-
-    elif data == "racial_data":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [5, 6] + [
-            x for x in range(7, 73)
-        ] + [74,75,76]
-
-    else:
-        rename_columns = {
-            x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
-        }
-        interest_columns = []
-
-    if data == "pennycook":
-        additional_drop_columns = []
-        additional_rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-
-        additional_interest_columns = [
-            1,
-            2,
-            4,
-            5,
-            6,
-            51,
-            52,
-            310,
-            312,
-            313,
-            314,
-            315,
-            18,
-            19,
-            21,
-            22,
-            23,
-            24,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            289,
-            290,
-            291,
-            292,
-            293,
-            294,
-            295,
-            296,
-            301,
-        ]
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, None, rename_columns, None)
 
     set_seed(seed)
 
@@ -1052,6 +789,10 @@ def evaluate_on_condition(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
     )
+
+    if column_to_condition is None or outlier_value is None:
+        logger.error("--column_to_condition and --outlier_value are required for evaluate_on_condition")
+        return
 
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")
@@ -1099,486 +840,20 @@ def pca_baseline(
     drop_columns,
     rename_columns,
     interest_columns,
-column_to_condition,
-    outlier_value
+    column_to_condition,
+    outlier_value,
 ):
 
     set_seed(seed)
 
-    additional_drop_columns = None
-    additional_rename_columns = None
-    additional_interest_columns = None
-    drop_columns = []
-
-    if data == "sadc_2017" or data == "sadc_2015":
-        drop_columns = [
-            "sitecode",
-            "sitename",
-            "sitetype",
-            "sitetypenum",
-            "year",
-            "survyear",
-            "record",
-            "stratum",
-            "PSU",
-            "q14",
-            "q20",
-            "q31",
-            "q36",
-            "q37",
-            "q39",
-            "q44",
-            "q56",
-            "q84",
-        ]
-
-        rename_columns = {
-            "age": "age",
-            "sex": "sex",
-            "grade": "grade",
-            "race4": "Hispanic_or_Latino",
-            "race7": "race",
-            "qnobese": "obese",
-            "qnowt": "overweight",
-            "q67": "sexual_identity",
-            "q66": "sex/sexual_contacts",
-            "sexid": "sexid",
-            "sexid2": "sexid2",
-            "sexpart": "sexpart",
-            "sexpart2": "sexpart2",
-            "q8": "seat_belt_use",
-            "q9": "riding_with_a_drinking_driver",
-            "q10": "drinking_and_driving",
-            "q11": "texting_and_driving",
-            "q12": "weapon_carrying",
-            "q13": "weapon_carrying_at_school",
-            "q15": "safety_concerns_at_school",
-            "q16": "threatened_at_school",
-            "q17": "physical_fighting",
-            "q18": "physical_fighting_at_school",
-            "q19": "forced_sexual_intercourse",
-            "q21": "sexual_dating_violence",
-            "q22": "physical_dating_violence",
-            "q23": "bullying_at_school",
-            "q24": "electronic_bullying",
-            "q25": "sad_or_hopeless",
-            "q26": "considered_suicide",
-            "q27": "made_a_suicide_plan",
-            "q28": "attempted_suicide",
-            "q29": "injurious_suicide_attempt",
-            "q30": "ever_cigarette_use",
-            "q32": "current_cigarette_use",
-            "q33": "smoking_amounts_per_day",
-            "q34": "electronic_vapor_product_use",
-            "q35": "current_electronic_vapor_product_use",
-            "q38": "current_cigar_use",
-            "q40": "ever_alcohol_use",
-            "q41": "initiation_of_alcohol_use",
-            "q42": "current_alcohol_use",
-            "q43": "source_of_alcohol",
-            "q45": "largest_number_of_drinks",
-            "q46": "ever_marijuana_use",
-            "q47": "initiation_of_marijuana_use",
-            "q48": "current_marijuana_use",
-            "q49": "ever_cocaine_use",
-            "q50": "ever_inhalant_use",
-            "q51": "ever_heroin_use",
-            "q52": "ever_methamphetamine_use",
-            "q53": "ever_ecstasy_use",
-            "q54": "ever_synthetic_marijuana_use",
-            "q55": "ever_steroid_use",
-            "q57": "illegal_injected_drug_use",
-            "q58": "illegal_drugs_at_school",
-            "q59": "ever_sexual_intercourse",
-            "q60": "first_sex_intercourse",
-            "q61": "multiple_sex_partners",
-            "q62": "current_sexual_activity",
-            "q63": "alcohol/drugs_at_sex",
-            "q64": "condom_use",
-            "q65": "birth_control_pill_use",
-            "q68": "perception_of_weight",
-            "q69": "weight_loss",
-            "q70": "fruit_juice_drinking",
-            "q71": "fruit_eating",
-            "q72": "green _salad_eating",
-            "q73": "potato_eating",
-            "q74": "carrot_eating",
-            "q75": "other_vegetable_eating",
-            "q76": "soda_drinking",
-            "q77": "milk_drinking",
-            "q78": "breakfast_eating",
-            "q79": "physical_activity",
-            "q80": "television_watching",
-            "q81": "computer_not_school_work_use",
-            "q82": "PE_attendance",
-            "q83": "sports_team_participation",
-            "q85": "HIV_testing",
-            "q86": "oral_health_care",
-            "q87": "asthma",
-            "q88": "sleep_on_school_night",
-            "q89": "grades_in_school",
-            "qhallucdrug": "ever_used_LSD",
-            "qsportsdrink": "sports_drinks",
-            "qwater": "plain_water",
-            "qfoodallergy": "food_allergies",
-            "qmusclestrength": "muscle_stregthening",
-            "qindoortanning": "indoor_tanning",
-            "qsunburn": "sunburn",
-            "qconcentrating": "difficulty_concentrating",
-            "qspeakenglish": "how_well_speak_English",
-        }
-
-        # The dataframe contains separate questionnaire questions, here we merge these columns to our project dataframe
-        interest_columns = [x for x in range(89)] + [
-            221,
-            231,
-            234,
-            236,
-            238,
-            240,
-            241,
-            242,
-            245,
-        ]
-
-
-    elif data == "pennycook_1" or data == "pennycook":
-        rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-
-        # interest_columns = [7,8,9,11,12,13,14,27,28,30,31,32,33,47,48,49,50.51,52,54,55,56,57,58,59,
-
-        #                     73,74,75,76,77,78,79] + [x for x in range(79,193)] + [314,315,316,317,318,319] + [
-
-        #     x for x in range(328, 345)
-
-        # ] + [x for x in range(346, 356)] + [363,364,365,366,367,368,369,370,375]
-
-        interest_columns = ([
-
-                                7,
-
-                                8,
-
-                                9,
-
-                                11,
-
-                                12,
-
-                                13,
-
-                                14,
-
-                                15,
-
-                                27,
-
-                                28,
-
-                                30,
-
-                                31,
-
-                                32,
-
-                                33,
-
-                                47,
-
-                                48,
-
-                                49,
-
-                                50,
-
-                                51,
-
-                                52,
-
-                                54,
-
-                                55,
-
-                                56,
-
-                                57,
-
-                                58,
-
-                                59,
-
-                                363,
-
-                                364,
-
-                                365,
-
-                                366,
-
-                                367,
-
-                                368,
-
-                                369,
-
-                                370,
-
-                                375,
-
-                            ] +
-
-                            # [
-                            #
-                            #     x for x in range(73, 103)  # cond1
-                            #
-                            # ] +
-
-                            # [
-                            #
-                            #     x for x in range(103, 133)  # cond2
-                            #
-                            # ] +
-
-                            # [
-                            #
-                            #     x for x in range(133, 163)  # cond3
-                            #
-                            # ]
-                            #
-                            # +
-
-                            [x for x in range(163, 193)] +  # cond4
-
-                            [
-
-                                x for x in range(314, 321)  # crt
-
-                            ] + [
-
-                                x for x in range(328, 345)  # sci
-
-                            ] + [
-
-                                x for x in range(346, 356)  # mms
-
-                            ]
-                            + [385] #Random
-                            + [x for x in range(63, 72)] #screen1
-                            + [x for x in range(321, 327)] #screen2
-                            + [357] #screen3
-                            )
-
-        # interest_columns = []
-
-    elif data == "pennycook_2":
-        rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-        interest_columns = [
-            1,
-            2,
-            4,
-            5,
-            6,
-            51,
-            52,
-            310,
-            312,
-            313,
-            314,
-            315,
-            18,
-            19,
-            21,
-            22,
-            23,
-            24,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            289,
-            290,
-            291,
-            292,
-            293,
-            294,
-            295,
-            296,
-            301,
-        ]
-
-    elif data == "bot_bot_mturk":
-        rename_columns = {}
-        interest_columns = (
-                [11, 12, 13, 14, 16, 17, 18, 19]
-                + [x for x in range(20, 35)]
-                + [35, 36, 37, 38, 39]
-        )
-
-    elif data == "inattentive":
-        rename_columns = {}
-        interest_columns = (
-                [x for x in range(10, 16)]
-                + [x for x in range(18, 24)]
-                + [25, 27, 29, 30, 31, 32, 33, 35, 3]
-                + [x for x in range(36, 55)]
-        )
-
-    elif data == "attention_check":
-        rename_columns = {}
-        interest_columns = [x for x in range(4, 64)] + [2]
-
-    elif data == "moral_data":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [x for x in range(2, 10)] + [
-            x for x in range(12, 78)
-        ]
-
-    elif data == "mturk_ethics":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [13, 14] + [
-            x for x in range(17, 52)
-        ] + [53, 55, 58, 61, 63, 65, 68, 69, 70, 72, 73, 74, 76, 77, 107, 108]
-
-    elif data == "public_opinion":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [19, 4] + [
-            x for x in range(21, 176)
-        ]
-
-    elif data == "racial_data":
-        drop_columns = []
-        rename_columns = {}
-        interest_columns = [5, 6] + [
-            x for x in range(7, 73)
-        ] + [74, 75, 76]
-
-    else:
-        rename_columns = {
-            x.split(":")[0]: x.split(":")[1] for x in rename_columns.split(",")
-        }
-        interest_columns = []
-
-    if data == "pennycook":
-        additional_drop_columns = []
-        additional_rename_columns = {
-            "COVID_concern_1": "COVID_concern",
-            "Media1.0": "news_side",
-            "Media1": "news_criticism",
-            "Media3_1": "trust_national_news_org",
-            "Media3_2": "trust_local_news_org",
-            "Media3_3": "trust_friends_family",
-            "Media3_11": "trust_social",
-            "Media3_12": "trust_fact_checkers",
-            "SharingType_1": "sharing_political",
-            "SharingType_2": "sharing_sports",
-            "SharingType_3": "sharing_celebrity",
-            "SharingType_4": "sharing_science",
-            "SharingType_6": "sharing_business",
-            "SharingType_7": "sharing_other",
-            "SocialMedia_1": "facebook",
-            "SocialMedia_2": "twitter",
-            "SocialMedia_3": "snapchat",
-            "SocialMedia_4": "instagram",
-            "SocialMedia_5": "whatsapp",
-            "SocialMedia_6": "other",
-        }
-
-        additional_interest_columns = [
-            1,
-            2,
-            4,
-            5,
-            6,
-            51,
-            52,
-            310,
-            312,
-            313,
-            314,
-            315,
-            18,
-            19,
-            21,
-            22,
-            23,
-            24,
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            44,
-            45,
-            46,
-            47,
-            48,
-            49,
-            289,
-            290,
-            291,
-            292,
-            293,
-            294,
-            295,
-            296,
-            301,
-        ]
-
-    set_seed(seed)
+    (
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns,
+        additional_rename_columns,
+        additional_interest_columns,
+    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
     data_loader = DataLoader(
         drop_columns,
@@ -1589,6 +864,10 @@ column_to_condition,
         additional_columns_of_interest=additional_interest_columns,
     )
 
+    if column_to_condition is None or outlier_value is None:
+        logger.error("--column_to_condition and --outlier_value are required for pca_baseline")
+        return
+
     column_to_condition = column_to_condition.split(",")
     outlier_values = outlier_value.split(",")
 
@@ -1598,25 +877,22 @@ column_to_condition,
     else:
         outlier_dataset = data_loader.find_outlier_data(data, column_to_condition)
 
-    project_data, variable_types = data_loader.load_data(data)
+    project_data, metadata = data_loader.load_data(data)
+    variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Transforming the data....")
+    # drop conditioning column before cleaning/vectorization
+    project_data = project_data.drop(columns=column_to_condition, errors="ignore")
+    variable_types = {
+        k: v for k, v in variable_types.items() if k not in column_to_condition
+    }
 
-    # drop column of column_to_condition from project_data
-    if column_to_condition is not None:
-        # column_to_condition = column_to_condition[0]
-        project_data = project_data.drop(columns=column_to_condition) #column_to_condition
-        variable_types = {
-            k: v for k, v in variable_types.items() if k not in column_to_condition
-        }
-
-    vectorizer = Table2Vector(variable_types)
-    vectorized_df = vectorizer.vectorize_table(project_data)
-
-    cardinalities = list(project_data.describe().T["unique"].values)
+    logger.info("Transforming the data....")
+    project_data, vectorized_df, vectorizer, _ = prepare_for_model(
+        project_data, variable_types
+    )
+    variable_types = {c: "categorical" for c in project_data.columns}
 
     from sklearn.decomposition import PCA
-    from sklearn.metrics import mean_squared_error
     import numpy as np
 
     # Step 1: Fit PCA

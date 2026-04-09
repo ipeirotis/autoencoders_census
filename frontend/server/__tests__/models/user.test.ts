@@ -14,11 +14,17 @@ const mockLimit = jest.fn();
 const mockDoc = jest.fn();
 const mockCollection = jest.fn();
 
+// Transaction-scoped mocks used by createUser's runTransaction block
+const mockTxGet = jest.fn();
+const mockTxSet = jest.fn();
+const mockRunTransaction = jest.fn();
+
 // Mock Firestore constructor
 jest.mock('@google-cloud/firestore', () => {
   return {
     Firestore: jest.fn().mockImplementation(() => ({
       collection: mockCollection,
+      runTransaction: mockRunTransaction,
     })),
   };
 });
@@ -58,6 +64,19 @@ describe('User model', () => {
       get: mockGet,
     });
 
+    // runTransaction() invokes the callback with a transaction object that
+    // exposes tx.get / tx.set. We forward only the data argument to the
+    // top-level mockSet so existing assertions on `mockSet.mock.calls[i][0]`
+    // (which treat the first argument as the saved data) keep working for
+    // the new createUser path. Tests program mockTxGet to control the
+    // "email already exists" branch.
+    mockRunTransaction.mockImplementation(async (callback: any) => {
+      return callback({
+        get: mockTxGet,
+        set: (_ref: any, data: any) => mockSet(data),
+      });
+    });
+
     // Import user model after mocks are set up
     const userModule = await import('../../models/user');
     createUser = userModule.createUser;
@@ -74,11 +93,8 @@ describe('User model', () => {
       const email = 'test@example.com';
       const password = 'TestPassword123';
 
-      // Mock getUserByEmail to return null (email doesn't exist)
-      mockGet.mockResolvedValueOnce({
-        empty: true,
-        docs: [],
-      });
+      // Mock the in-transaction read of the email_index doc: email doesn't exist
+      mockTxGet.mockResolvedValueOnce({ exists: false });
 
       const user = await createUser(email, password);
 
@@ -90,11 +106,8 @@ describe('User model', () => {
     });
 
     it('should return user object without passwordHash', async () => {
-      // Mock getUserByEmail to return null (email doesn't exist)
-      mockGet.mockResolvedValueOnce({
-        empty: true,
-        docs: [],
-      });
+      // Mock the in-transaction read of the email_index doc: email doesn't exist
+      mockTxGet.mockResolvedValueOnce({ exists: false });
 
       const user = await createUser('test@example.com', 'password123');
 
@@ -107,15 +120,26 @@ describe('User model', () => {
     });
 
     it('should throw if email already exists', async () => {
-      // Mock email already exists
-      mockGet.mockResolvedValueOnce({
-        empty: false,
-        docs: [{ id: 'existing-id', data: () => ({ email: 'test@example.com' }) }],
-      });
+      // Mock the in-transaction read of the email_index doc: email exists
+      mockTxGet.mockResolvedValueOnce({ exists: true });
 
       await expect(createUser('test@example.com', 'password123'))
         .rejects
         .toThrow('Email already registered');
+    });
+
+    it('should write both user doc and email_index doc atomically', async () => {
+      mockTxGet.mockResolvedValueOnce({ exists: false });
+
+      await createUser('test@example.com', 'password123');
+
+      // Expect two tx.set() calls: one for the user doc, one for the email index
+      expect(mockSet).toHaveBeenCalledTimes(2);
+      const userDocData = mockSet.mock.calls[0][0] as any;
+      const emailIndexData = mockSet.mock.calls[1][0] as any;
+      expect(userDocData.email).toBe('test@example.com');
+      expect(userDocData.passwordHash).toBeDefined();
+      expect(emailIndexData.userId).toBe(userDocData.id);
     });
   });
 

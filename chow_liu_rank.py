@@ -4,11 +4,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-from alembic.ddl.base import drop_column
-from gitdb.util import exists
-
-from dataset.loader import DataLoader
-from utils import define_necessary_elements
 
 
 # -------------------------
@@ -157,14 +152,17 @@ class CLTree:
             self.cpt[(c, p)] = cont / cont.sum(axis=1, keepdims=True)
 
     # ---------- public API ----------
-    def fit(self, df: pd.DataFrame, root: Optional[str] = None, mi_subsample: Optional[int] = None):
+    def fit(self, df: pd.DataFrame, root: Optional[str] = None,
+            mi_subsample: Optional[int] = None, random_state: int = 42):
         """
         Fit tree on df. If mi_subsample is set (e.g., 10000), use a random subset
-        of rows for MI to speed up on very large datasets.
+        of rows for MI to speed up on very large datasets. ``random_state`` controls
+        the subsampling RNG so callers can override the default for reproducibility
+        across runs that share a global seed.
         """
         self._build_schema(df)
         if mi_subsample is not None and len(df) > mi_subsample:
-            samp = df.sample(mi_subsample, random_state=42)
+            samp = df.sample(mi_subsample, random_state=random_state)
         else:
             samp = df
         X_sub = self._df_to_ints(samp)
@@ -237,54 +235,48 @@ class CLTree:
 
 def rank_rows_by_chow_liu(df: pd.DataFrame,
                           alpha: float = 1.0,
-                          mi_subsample: Optional[int] = None):
+                          mi_subsample: Optional[int] = None,
+                          random_state: int = 42):
     """
     Fit a Chow–Liu tree on 'df' and return:
       - ranked_df: df with scoring columns, sorted by logp DESC
       - model: the fitted CLTree (exposes edges() and parameters)
     """
-    cl = CLTree(alpha=alpha).fit(df, mi_subsample=mi_subsample)
+    cl = CLTree(alpha=alpha).fit(df, mi_subsample=mi_subsample, random_state=random_state)
     ranked = cl.score_dataframe(df)
     return ranked, cl
 
 
-import pandas as pd
-from chow_liu_rank import rank_rows_by_chow_liu
+if __name__ == "__main__":
+    import os
+    from dataset.loader import DataLoader
+    from utils import define_necessary_elements
 
-path = "."
-data = "pennycook_1"
-drop_columns = None
-rename_columns = None
-interest_columns = None
+    path = "."
+    data = "pennycook_1"
 
-(
+    (
         drop_columns,
         rename_columns,
         interest_columns,
         additional_drop_columns,
         additional_rename_columns,
         additional_interest_columns,
-    ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+    ) = define_necessary_elements(data, None, None, None)
 
-data_loader = DataLoader(
-    drop_columns,
-    rename_columns,
-    interest_columns,
-    additional_drop_columns=additional_drop_columns,
-    additional_rename_columns=additional_rename_columns,
-    additional_columns_of_interest=additional_interest_columns,
-)
-df, variable_types = data_loader.load_data(data)
+    data_loader = DataLoader(
+        drop_columns,
+        rename_columns,
+        interest_columns,
+        additional_drop_columns=additional_drop_columns,
+        additional_rename_columns=additional_rename_columns,
+        additional_columns_of_interest=additional_interest_columns,
+    )
+    df, metadata = data_loader.load_data(data)
 
-# df: your DataFrame, all columns categorical (strings). Keep 'nan' as literal if needed.
-ranked_df, cl_model = rank_rows_by_chow_liu(df, alpha=1.0, mi_subsample=10000)
+    ranked_df, cl_model = rank_rows_by_chow_liu(df, alpha=1.0, mi_subsample=10000)
 
-ranked_df.rename(columns={
-    "pct": "error",
-}, inplace=True)
+    ranked_df["error"] = 1.0 - ranked_df["pct"]
 
-import os
-# create the directory if it doesn't exist
-os.makedirs(f"{path}/{data}_cl", exist_ok=True)
-
-ranked_df.to_csv(f"{path}/{data}_cl/errors.csv", index=False)
+    os.makedirs(f"{path}/{data}_cl", exist_ok=True)
+    ranked_df.to_csv(f"{path}/{data}_cl/errors.csv", index=False)
