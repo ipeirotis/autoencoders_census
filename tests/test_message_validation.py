@@ -115,3 +115,60 @@ def test_callback_acks_non_json_payload_instead_of_nacking():
 
     message.ack.assert_called_once()
     message.nack.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "payload_bytes,label",
+    [
+        (b"[]", "empty-array"),
+        (b"null", "null"),
+        (b'"just-a-string"', "bare-string"),
+        (b"42", "bare-number"),
+    ],
+)
+def test_callback_acks_non_object_json_payloads(payload_bytes, label):
+    """
+    Codex P2 r(non-object-json): valid JSON that is not an object
+    ([], null, strings, numbers) was previously raising a bare TypeError
+    out of PubSubMessage(**data), bypassing callback()'s
+    ack-on-ValueError poison-message branch and reaching the outer
+    `except Exception: nack()` handler. That created an infinite
+    redelivery loop against a deterministically bad payload. Ensure
+    all non-object JSON inputs are now treated as poison and acked.
+    """
+    from worker import callback
+
+    message = Mock()
+    message.data = payload_bytes
+    message.message_id = f"msg-non-object-{label}"
+    message.ack = Mock()
+    message.nack = Mock()
+
+    callback(message)
+
+    message.ack.assert_called_once()
+    message.nack.assert_not_called()
+
+
+def test_validate_message_rejects_list_input():
+    """
+    Direct unit test on validate_message: passing a list (valid JSON
+    but not a mapping) must raise ValueError, not TypeError. The
+    callback layer relies on that ValueError to ack-drop the message.
+    """
+    from worker import validate_message
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_message([])
+
+    assert "expected JSON object" in str(exc_info.value)
+
+
+def test_validate_message_rejects_none_input():
+    """Same contract as the list test, but for JSON `null`."""
+    from worker import validate_message
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_message(None)
+
+    assert "expected JSON object" in str(exc_info.value)

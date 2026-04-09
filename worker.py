@@ -28,6 +28,7 @@ import sys
 import json
 import logging
 import threading
+import time
 import io
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -73,19 +74,21 @@ IDEMPOTENCY_MARKER_TTL_DAYS = 7
 JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS = 60
 JOB_CLAIM_STALE_SECONDS = JOB_CLAIM_HEARTBEAT_INTERVAL_SECONDS * 3
 
-# Vertex mode stale threshold. The Vertex dispatcher is a short-lived
-# fire-and-forget call (job.run(sync=False) returns in seconds) and
-# then the worker stops heartbeating because there's nothing locally
-# to keep alive. The actual Vertex training job runs on the Vertex
-# side for potentially 30+ minutes. Using the local 3-minute threshold
-# would let a duplicate Pub/Sub delivery reclaim the doc after a few
-# minutes and submit a SECOND billable Vertex training job for the
-# same logical jobId. Use a much wider window (4 hours) so stale
-# takeover only fires if the Vertex job has been running for an
-# unreasonable amount of time; the post-dispatch "far future
-# claimedAt" write is still an additional defense-in-depth belt on
-# top of this.
-JOB_CLAIM_STALE_SECONDS_VERTEX = 4 * 60 * 60
+# Vertex mode note: an earlier version of this file had a separate
+# JOB_CLAIM_STALE_SECONDS_VERTEX = 4 hours constant used when a claim
+# was tagged `mode: "vertex"`, on the theory that a long-running
+# Vertex training job would otherwise be falsely considered stale.
+# Codex P1 r(pre-dispatch-vertex) pointed out that this also blocked
+# crash recovery for the full 4 hours when a Vertex dispatcher
+# crashed BEFORE job.run() ever submitted - which is the more common
+# failure mode. The vertex-dispatched guard in
+# try_take_over_stale_claim now relies instead on the presence of
+# `vertexJobName` on the doc: a populated vertexJobName refuses the
+# takeover outright (Vertex owns the job), and an absent vertexJobName
+# means pre-dispatch / unconfirmed and uses the short local window
+# for fast recovery. The small residual race (crash between
+# job.run() returning and the suppressor write) is mitigated by the
+# retry loop around the suppressor write in process_upload_vertex.
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -100,12 +103,15 @@ class PubSubMessage(BaseModel):
     file: str = Field(..., min_length=1, description="GCS file path")
 
 
-def validate_message(data: dict) -> PubSubMessage:
+def validate_message(data) -> PubSubMessage:
     """
     Validate message fields, raise ValueError with clear error.
 
     Args:
-        data: Dictionary containing message payload
+        data: Parsed JSON payload. Normally a mapping, but we tolerate
+            any type and translate non-mapping inputs (list, None, str,
+            int, etc.) into a ValueError so callback() can drop them as
+            poison messages via its existing ack-on-ValueError path.
 
     Returns:
         PubSubMessage: Validated message object
@@ -113,11 +119,29 @@ def validate_message(data: dict) -> PubSubMessage:
     Raises:
         ValueError: If validation fails with description of missing/invalid fields
     """
+    # Codex P2 r(non-object-json): PubSubMessage(**data) raises TypeError
+    # when data is valid JSON but not a mapping (for example [], null,
+    # a JSON string, or a number). callback() ack-drops ValueError but
+    # nacks on bare TypeError, which would create an avoidable
+    # redelivery loop against a deterministically bad payload. Map
+    # non-mapping inputs to ValueError up front so they get the same
+    # poison-message treatment as schema failures.
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid message format: expected JSON object, got "
+            f"{type(data).__name__}"
+        )
     try:
         return PubSubMessage(**data)
     except ValidationError as e:
         errors = '; '.join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
         raise ValueError(f"Invalid message format: {errors}")
+    except TypeError as e:
+        # Pydantic can also raise TypeError for unexpected kwargs
+        # (e.g. {"jobId": 1, "bucket": "b", "file": "f", "extra": 2})
+        # depending on config. Normalize to ValueError so the poison
+        # path handles it.
+        raise ValueError(f"Invalid message format: {e}")
 
 
 class JobDocumentNotReadyError(Exception):
@@ -416,11 +440,8 @@ def _is_claim_stale(claimed_at, now=None, threshold_seconds=None):
         claimed_at: The stored claimedAt timestamp (or None).
         now: Current time (defaults to datetime.now(utc)). Injectable
             for testing.
-        threshold_seconds: The staleness threshold. Defaults to the
-            local-mode JOB_CLAIM_STALE_SECONDS. Callers processing a
-            Vertex job should pass JOB_CLAIM_STALE_SECONDS_VERTEX
-            instead because the dispatcher stops heartbeating long
-            before the actual Vertex training run finishes.
+        threshold_seconds: The staleness threshold. Defaults to
+            JOB_CLAIM_STALE_SECONDS.
     """
     if claimed_at is None:
         return True
@@ -468,23 +489,23 @@ def try_take_over_stale_claim(job_ref, mode=None):
     Vertex itself (not this worker) owns the work. Re-taking it over
     would re-submit the same Vertex training run and double-bill.
 
-    Codex P1 (followup, r(suppressor-write-failure)): the load-bearing
-    guard against duplicate Vertex dispatch is no longer *only* the
-    post-dispatch `vertexJobName` write. Jobs tagged with
-    `mode: "vertex"` in their initial claim (see process_upload_vertex
-    below) use a much wider stale threshold
-    (JOB_CLAIM_STALE_SECONDS_VERTEX, 4 hours) so that even if the
-    post-dispatch metadata write fails, the stale-claim takeover path
-    will not reclaim the job for hours, well after any normal Vertex
-    run would have finished.
+    Codex P1 (followup, r(pre-dispatch-vertex)): the guard against
+    duplicate Vertex dispatch is the `vertexJobName` field only. The
+    earlier `mode: "vertex"` + 4-hour window scheme was too coarse:
+    it delayed recovery of a dispatcher that crashed BEFORE
+    job.run() submitted anything, for the full 4 hours. Now the only
+    condition that refuses a stale takeover on a vertex-mode doc is
+    `vertexJobName` being set; absent that, the short local window
+    applies and a pre-dispatch crash recovers in minutes. The small
+    residual race between "job.run() returned" and "suppressor write
+    committed" is mitigated by the retry loop around the suppressor
+    write in process_upload_vertex.
 
     Codex P2 (followup, r(takeover-mode-tag)): when the caller knows
     which mode it is going to run the job in (local vs vertex), it
-    should pass `mode=` so the takeover transaction ALSO stamps that
-    tag on the recovered claim. Otherwise a recovered legacy claim
-    would stay untagged, future duplicate deliveries would use the
-    short local stale threshold, and the post-dispatch suppressor
-    write window could still race a duplicate delivery.
+    can pass `mode=` so the takeover transaction ALSO stamps that
+    tag on the recovered claim. The tag is mainly operator-facing
+    (audit / debugging) now that the stale threshold is uniform.
 
     Args:
         job_ref: Firestore DocumentReference for the job.
@@ -517,23 +538,34 @@ def try_take_over_stale_claim(job_ref, mode=None):
         current_status = snapshot.get('status')
         if current_status not in in_progress_states:
             return False
-        # Vertex guard: if the dispatcher already handed the job off to
-        # Vertex, it is Vertex's responsibility to run and update status.
-        # Re-taking over would re-submit the same training run.
+        # Vertex-dispatched guard (Codex P1 r(vertex-stale-redispatch)):
+        # once the dispatcher has actually handed the job off to
+        # Vertex (proved by vertexJobName being persisted), Vertex
+        # itself owns the work. Re-taking over would re-submit the
+        # same (billable) training run, so refuse the takeover
+        # outright regardless of how old the claimedAt heartbeat is.
         if snapshot.get('vertexJobName'):
             return False
-        # Mode-aware stale threshold. Pick the threshold based on the
-        # EFFECTIVE mode: the caller-provided `mode` argument takes
-        # precedence (so a vertex caller looking at a legacy untagged
-        # doc still uses the 4-hour window), otherwise fall back to
-        # whatever the doc itself is tagged as.
-        effective_mode = mode or snapshot.get('mode')
-        if effective_mode == 'vertex':
-            threshold = JOB_CLAIM_STALE_SECONDS_VERTEX
-        else:
-            threshold = JOB_CLAIM_STALE_SECONDS
+        # No vertexJobName means either:
+        #   (a) this is a local-mode job, or
+        #   (b) a Vertex-mode dispatcher claimed the doc but either
+        #       crashed before job.run() submitted anything, or crashed
+        #       in the brief window after job.run() returned but before
+        #       the suppressor write committed.
+        #
+        # Codex P1 r(pre-dispatch-vertex): the previous "always use the
+        # 4-hour Vertex window when mode is vertex" heuristic was too
+        # coarse - it made case (b)-without-suppressor-write safer but
+        # at the cost of pinning case (a) / case (b)-crashed-before-
+        # dispatch for four hours on every crash. The dispatcher is a
+        # fire-and-forget call that normally takes seconds, so a crash
+        # there should recover promptly. Use the short local window in
+        # all non-dispatched cases; the rare "suppressor write failed
+        # moments after job.run() succeeded" case is mitigated by the
+        # retry loop on the suppressor write itself (see
+        # process_upload_vertex below).
         claimed_at = snapshot.get('claimedAt')
-        if not _is_claim_stale(claimed_at, threshold_seconds=threshold):
+        if not _is_claim_stale(claimed_at):
             return False
         update_payload = {
             # Reset status back to PROCESSING so the calling pipeline
@@ -1238,26 +1270,61 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         #    `vertexJobName`, _is_claim_stale still reports "fresh" and
         #    the takeover path still rejects the duplicate delivery.
         extender.stop()
-        try:
-            vertex_job_name = getattr(job, 'resource_name', None) or \
-                getattr(job, 'name', None) or \
-                f"vertex-dispatched-{job_id}"
-            far_future_claim = datetime.now(timezone.utc) + timedelta(
-                days=365 * 100
-            )
-            job_ref.update({
-                'vertexJobName': vertex_job_name,
-                'claimedAt': far_future_claim,
-            })
-        except Exception as meta_err:
-            # If we can't persist the suppressor fields, the worst case
-            # is that a duplicate delivery will trigger a second Vertex
-            # dispatch after JOB_CLAIM_STALE_SECONDS. Log so the operator
-            # can see the gap and continue - the job is already running
-            # on Vertex, which is the important invariant.
-            logger.warning(
-                f"Failed to persist Vertex takeover suppressor for "
-                f"job {job_id}: {meta_err}"
+        vertex_job_name = getattr(job, 'resource_name', None) or \
+            getattr(job, 'name', None) or \
+            f"vertex-dispatched-{job_id}"
+        far_future_claim = datetime.now(timezone.utc) + timedelta(
+            days=365 * 100
+        )
+        suppressor_payload = {
+            'vertexJobName': vertex_job_name,
+            'claimedAt': far_future_claim,
+        }
+
+        # Retry the suppressor write a few times to close the small race
+        # window between "job.run() returned" and "takeover sees the
+        # suppressor fields". If this write never lands, the stale
+        # takeover path in try_take_over_stale_claim could eventually
+        # reclaim the doc after JOB_CLAIM_STALE_SECONDS and submit a
+        # second Vertex training run. Exponential backoff up to ~15
+        # seconds total (0.5, 1, 2, 4, 8). We keep this loop tight
+        # because callback() won't ack until we return, so the Pub/Sub
+        # ack deadline is burning the whole time. The AckExtender has
+        # already been stopped above, so we cannot push that deadline
+        # further out.
+        suppressor_persisted = False
+        last_err = None
+        delay = 0.5
+        for attempt in range(5):
+            try:
+                job_ref.update(suppressor_payload)
+                suppressor_persisted = True
+                break
+            except Exception as meta_err:
+                last_err = meta_err
+                logger.warning(
+                    f"Suppressor write attempt {attempt + 1}/5 failed "
+                    f"for Vertex job {job_id}: {meta_err}; retrying in "
+                    f"{delay}s"
+                )
+                time.sleep(delay)
+                delay *= 2
+
+        if not suppressor_persisted:
+            # If retries all failed, the best we can do is log loudly so
+            # an operator can manually annotate the job doc. The Vertex
+            # training job is already running and is the important
+            # invariant; duplicate dispatch is the residual risk and is
+            # only possible within the short local stale window, not
+            # the old 4-hour Vertex window.
+            logger.error(
+                f"FATAL: could not persist Vertex takeover suppressor "
+                f"for job {job_id} after 5 retries (last error: {last_err}). "
+                f"A duplicate Pub/Sub delivery within the next "
+                f"JOB_CLAIM_STALE_SECONDS may double-dispatch the Vertex "
+                f"training run; manual intervention recommended "
+                f"(set vertexJobName and a far-future claimedAt on "
+                f"jobs/{job_id})."
             )
 
     except JobDocumentNotReadyError:
