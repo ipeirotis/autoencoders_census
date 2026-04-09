@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 import io
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import chardet
@@ -45,6 +46,14 @@ load_dotenv()
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 SUBSCRIPTION_ID = os.getenv("PUBSUB_SUBSCRIPTION_ID")
+
+# Retention window for the idempotency marker in `processed_messages`.
+# Used as the `expiresAt` field on each marker so that a Firestore TTL
+# policy pointed at `expiresAt` sweeps records only after this many days,
+# not immediately. Seven days comfortably exceeds Pub/Sub's 7-day maximum
+# retained-message lifetime, so a late redelivery of an already-processed
+# message will still find the marker and get ack-dropped.
+IDEMPOTENCY_MARKER_TTL_DAYS = 7
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -133,6 +142,15 @@ def mark_message_processed(message_id: str, job_id: str) -> None:
     """
     processed_ref = db.collection('processed_messages').document(message_id)
 
+    # Codex P2 (r3055203157): expiresAt must be a future timestamp (now + TTL),
+    # not SERVER_TIMESTAMP. If a Firestore TTL policy is configured on this
+    # field it would otherwise delete the marker the instant it is written,
+    # leaving no deduplication cover for late redeliveries of the same
+    # message ID.
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        days=IDEMPOTENCY_MARKER_TTL_DAYS
+    )
+
     @firestore.transactional
     def _set_if_not_exists(transaction, ref):
         snapshot = ref.get(transaction=transaction)
@@ -142,7 +160,7 @@ def mark_message_processed(message_id: str, job_id: str) -> None:
         transaction.set(ref, {
             'jobId': job_id,
             'processedAt': firestore.SERVER_TIMESTAMP,
-            'expiresAt': firestore.SERVER_TIMESTAMP  # For manual cleanup (7-day TTL)
+            'expiresAt': expires_at,  # now + IDEMPOTENCY_MARKER_TTL_DAYS
         })
 
     transaction = db.transaction()
@@ -693,6 +711,24 @@ def callback(message):
         # processing completes (mark_message_processed below). If we crashed
         # between a premature mark and ack, Pub/Sub would redeliver and we'd
         # drop the redelivered copy without ever finishing the work.
+        #
+        # Codex P1 (r3053917210) flags a concern that two concurrent
+        # deliveries of the same message could both pass this read-only
+        # check and both enter processing. That scenario is already
+        # blocked by a different mechanism: the job state machine. Both
+        # workers would then race to transition the job's Firestore doc
+        # from QUEUED -> PROCESSING via update_job_status(). That runs
+        # inside a Firestore transaction with optimistic concurrency, so
+        # exactly one worker wins the transition; the loser retries,
+        # sees "processing" as the current state, fails
+        # is_valid_transition("processing", "processing"), and the
+        # process_upload_local ValueError branch returns early without
+        # running training/scoring. We avoid adding a redundant
+        # "in-progress" marker here because (a) that would reintroduce
+        # the original "premature mark -> silent drop on crash" failure
+        # mode this function was refactored to fix, and (b) the existing
+        # Firestore-transaction serialization at the job level already
+        # provides the guarantee.
         if check_idempotency(message.message_id):
             logger.info(f"Message {message.message_id} already processed, skipping")
             message.ack()  # Ack duplicate message
