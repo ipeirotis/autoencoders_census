@@ -180,24 +180,37 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
     // Set CSV download headers
     res.attachment(`outliers-${id}.csv`);
 
-    // Stream CSV with sanitization.
+    // Derive the column order from the first outlier. The worker writes
+    // outliers as dicts that preserve the original CSV column order, so
+    // Object.keys() gives us a stable 1:1 mapping between source columns
+    // and cells.
+    const columnKeys: string[] =
+      outliers.length > 0 ? Object.keys(outliers[0]) : [];
+
+    // IMPORTANT: Sanitize header names by producing a PARALLEL sanitized
+    // array rather than rewriting object keys in place. Two distinct
+    // source columns can otherwise collapse to the same sanitized key
+    // (for example "=Q1" and "'=Q1" both become "'=Q1"), which would
+    // silently overwrite row values during Object.fromEntries.
     //
-    // IMPORTANT: Sanitize *both* the keys and the values. The keys originate
-    // from user-uploaded column names, and with `headers: true` fast-csv
-    // picks them up as CSV header cells verbatim. A header like "=SUM(..)"
-    // would otherwise evaluate as a formula when the file is opened in a
-    // spreadsheet client.
-    const csvStream = format({ headers: true });
+    // Instead, we emit the sanitized names directly as the header row
+    // and write each row as a positional array of sanitized values in
+    // columnKeys order. fast-csv with `headers: <array>` writes the
+    // array as the header row and treats subsequent array rows as
+    // positional, so the 1:1 mapping between source columns and cells
+    // is preserved regardless of any collisions in the sanitized space.
+    const sanitizedHeaders = columnKeys.map(
+      (key) => String(sanitizeFormulaInjection(key))
+    );
+
+    const csvStream = format({ headers: sanitizedHeaders });
     csvStream.pipe(res);
 
     outliers.forEach((row: any) => {
-      const sanitizedRow = Object.fromEntries(
-        Object.entries(row).map(([key, value]) => [
-          sanitizeFormulaInjection(key),
-          sanitizeFormulaInjection(value)
-        ])
+      const values = columnKeys.map((key) =>
+        sanitizeFormulaInjection(row[key])
       );
-      csvStream.write(sanitizedRow);
+      csvStream.write(values);
     });
 
     csvStream.end();
@@ -214,75 +227,95 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
 // 5. Cancel Job with Full Resource Cleanup
 // Mounted at /api/jobs, so this becomes DELETE /api/jobs/:id
 router.delete("/:id", requireAuth, validateJobId, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const userId = (req as any).user.id;
+
+  // Atomically verify the job exists, belongs to this user, and is in a
+  // non-terminal state, then flip it to "canceled". Doing this in a
+  // transaction closes the TOCTOU race where the worker could finish and
+  // write "complete" between our initial read and the cancel write - the
+  // old code re-read the job up top and then did an unconditional update()
+  // at the bottom, so a job that completed mid-cancel would have its
+  // terminal success overwritten (and its artifacts deleted) after the
+  // fact.
+  //
+  // We also capture gcsFileName/vertexJobName inside the transaction so
+  // cleanup uses the values that were valid at the exact moment of the
+  // state transition.
+  const TERMINAL_STATUSES = new Set(['complete', 'error', 'canceled']);
+  let gcsFileName: string | undefined;
+  let vertexJobName: string | undefined;
+
   try {
-    const { id } = req.params;
+    await firestore.runTransaction(async (tx) => {
+      const docRef = firestore.collection("jobs").doc(id);
+      const snap = await tx.get(docRef);
 
-    // Fetch job to get GCS file path
-    const doc = await firestore.collection("jobs").doc(id).get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-
-    const job = doc.data();
-
-    // Enforce job ownership - prevent users from canceling other users' jobs
-    if (job.userId && job.userId !== (req as any).user.id) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-
-    // Refuse to "cancel" a job that has already reached a terminal state.
-    // Without this guard a stale client tab (or direct API call) could flip
-    // an already-`complete` job to `canceled`, delete its storage artifacts,
-    // and silently invalidate finished results.
-    const TERMINAL_STATUSES = new Set(['complete', 'error', 'canceled']);
-    if (TERMINAL_STATUSES.has(job.status)) {
-      return res.status(409).json({
-        error: `Cannot cancel job in terminal state: ${job.status}`,
-      });
-    }
-
-    const gcsFileName = job.gcsFileName || job.file; // Check both possible fields
-
-    // 1. Delete GCS uploaded file (best-effort)
-    try {
-      if (gcsFileName) {
-        await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
-        logger.info('Deleted GCS file for canceled job', { jobId: id, file: gcsFileName });
+      if (!snap.exists) {
+        throw new Error('NOT_FOUND');
       }
-    } catch (error) {
-      logger.warn('Failed to delete GCS file (continuing cleanup)', {
-        jobId: id,
-        file: gcsFileName,
-        error: error instanceof Error ? error.message : String(error)
+      const job = snap.data() || {};
+
+      // Ownership check inside the transaction - don't leak existence.
+      if (job.userId && job.userId !== userId) {
+        throw new Error('NOT_FOUND');
+      }
+      if (TERMINAL_STATUSES.has(job.status)) {
+        throw new Error(`TERMINAL:${job.status}`);
+      }
+
+      gcsFileName = job.gcsFileName || job.file;
+      vertexJobName = job.vertexJobName;
+
+      tx.update(docRef, {
+        status: 'canceled',
+        canceledAt: new Date(),
       });
-      // Continue with other cleanup steps
-    }
-
-    // 2. Cancel Vertex AI job (best-effort, async)
-    // Note: May not stop job if already running, cancellation is best-effort.
-    // Use the actual server-generated Vertex resource name stored when the job
-    // was dispatched. If absent (e.g. local mode or job never reached Vertex),
-    // cancelVertexAIJob will skip the call.
-    await cancelVertexAIJob(job.vertexJobName, id);
-
-    // 3. Update Firestore status to "canceled"
-    await firestore.collection("jobs").doc(id).update({
-      status: 'canceled',
-      canceledAt: new Date()
     });
-
-    logger.info('Job canceled successfully', { jobId: id, userId: (req as any).user?.id });
-
-    res.json({ success: true, message: 'Job canceled and resources cleaned up' });
   } catch (error) {
-    logger.error("Error canceling job", {
-      error: error instanceof Error ? error.message : String(error),
-      jobId: req.params.id,
-      userId: (req as any).user?.id
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    if (msg.startsWith('TERMINAL:')) {
+      return res.status(409).json({
+        error: `Cannot cancel job in terminal state: ${msg.slice('TERMINAL:'.length)}`,
+      });
+    }
+    logger.error("Error canceling job (transaction)", {
+      error: msg,
+      jobId: id,
+      userId,
     });
-    res.status(500).json({ error: "Failed to cancel job" });
+    return res.status(500).json({ error: "Failed to cancel job" });
   }
+
+  // Best-effort cleanup AFTER the canceled state is committed. At this
+  // point the worker's next transactional update_job_status() will fail the
+  // "invalid transition" check (canceled is terminal), so it cannot race us
+  // and write results over the canceled state.
+  try {
+    if (gcsFileName) {
+      await storage.bucket(BUCKET_NAME).file(gcsFileName).delete();
+      logger.info('Deleted GCS file for canceled job', { jobId: id, file: gcsFileName });
+    }
+  } catch (error) {
+    logger.warn('Failed to delete GCS file (continuing cleanup)', {
+      jobId: id,
+      file: gcsFileName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Continue with other cleanup steps
+  }
+
+  // Cancel Vertex AI training pipeline (best-effort, async).
+  // Use the actual server-generated Vertex resource name stored when the
+  // job was dispatched. If absent (e.g. local mode or job never reached
+  // Vertex), cancelVertexAIJob will skip the call.
+  await cancelVertexAIJob(vertexJobName, id);
+
+  logger.info('Job canceled successfully', { jobId: id, userId });
+  res.json({ success: true, message: 'Job canceled and resources cleaned up' });
 });
 
 // 6. Manual File Deletion (Completed Jobs)
