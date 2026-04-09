@@ -34,6 +34,68 @@ def test_ack_extender_extends_deadline_periodically():
     assert message.modify_ack_deadline.called
 
 
+def test_ack_extender_without_job_ref_does_not_refresh_claimed_at():
+    """
+    Codex P1 r3055xxxxx: the extender must NOT touch `claimedAt` when it
+    is started without a job_ref. Otherwise a redelivered message for a
+    crashed job would have its stale claim rewritten to "fresh" by the
+    heartbeat before the caller gets a chance to run
+    try_take_over_stale_claim, permanently wedging crash recovery.
+    """
+    from worker import AckExtender
+
+    message = Mock()
+    message.message_id = "test-msg-noref"
+    message.modify_ack_deadline = Mock()
+
+    extender = AckExtender(message, interval_seconds=0.05, job_ref=None)
+    extender.start()
+    time.sleep(0.15)
+    extender.stop()
+
+    # Pub/Sub ack deadline refresh still runs...
+    assert message.modify_ack_deadline.called
+    # ...but there is no job_ref for the heartbeat to touch, so there is
+    # nothing to over-refresh. This test locks in that starting the
+    # extender without job_ref is a safe no-op on the claim side.
+
+
+def test_ack_extender_refreshes_claimed_at_once_job_ref_is_attached():
+    """
+    After the caller confirms the claim (either via the normal
+    queued->processing transition or via try_take_over_stale_claim),
+    attaching job_ref on the already-running extender must begin
+    refreshing `claimedAt` on subsequent extend() ticks.
+    """
+    from worker import AckExtender
+
+    message = Mock()
+    message.message_id = "test-msg-attach"
+    message.modify_ack_deadline = Mock()
+
+    job_ref = Mock()
+    job_ref.id = "job-xyz"
+    job_ref.update = Mock()
+
+    extender = AckExtender(message, interval_seconds=0.05, job_ref=None)
+    extender.start()
+    # Before attachment: no claim refresh should have happened.
+    time.sleep(0.1)
+    assert job_ref.update.call_count == 0
+
+    # Attach job_ref as the worker would after confirming the claim.
+    extender.job_ref = job_ref
+
+    # Subsequent ticks should start refreshing claimedAt.
+    time.sleep(0.15)
+    extender.stop()
+
+    assert job_ref.update.call_count >= 1
+    # Sanity: the payload should touch claimedAt.
+    call_payload = job_ref.update.call_args[0][0]
+    assert 'claimedAt' in call_payload
+
+
 def test_ack_extender_stop_cancels_timer():
     """Test that AckExtender.stop() cancels timer and prevents further extensions."""
     from worker import AckExtender

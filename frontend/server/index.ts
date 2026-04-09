@@ -15,9 +15,13 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
+import { Storage } from "@google-cloud/storage";
+import { Firestore } from "@google-cloud/firestore";
+import { PubSub } from "@google-cloud/pubsub";
 import { jobsRouter } from "./routes/jobs";
 import { authRouter } from "./routes/auth";
-import { corsConfig, helmetConfig } from "./middleware/security";
+import { corsConfig, helmetConfig, csrfOriginCheck } from "./middleware/security";
 import { errorHandler } from "./middleware/errorHandler";
 import { requireAuth } from "./middleware/auth";
 import { uploadLimiter } from "./middleware/rateLimits";
@@ -48,8 +52,18 @@ const upload = multer({
 export function createServer() {
   const app = express();
 
+  // Trust the first proxy hop in production so Express sees the client
+  // protocol/IP forwarded by a TLS-terminating proxy (Cloud Run, Nginx, etc.).
+  // Without this, `cookie.secure: true` on the session causes express-session
+  // to refuse to issue session cookies (it sees req.secure === false), and
+  // every subsequent authenticated request returns 401.
+  if (env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
+
   // Security middleware - apply BEFORE routes
   app.use(corsConfig);
+  app.use(csrfOriginCheck); // Reject cross-origin mutating requests from unlisted origins (CSRF defense for sameSite=none)
   app.use(helmetConfig);
 
   app.use(express.json());
@@ -87,7 +101,11 @@ export function createServer() {
       }
 
       const originalName = req.file.originalname;
-      const uniqueId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Use a UUID v4 for the job id so it matches the `validateJobId` UUID
+      // check on /api/jobs/job-status/:id. The previous
+      // `job_<timestamp>_<random>` format got rejected at polling time,
+      // leaving the fallback upload flow internally inconsistent.
+      const uniqueId = uuidv4();
 
       // Generate safe filename (discard user-provided name)
       const safeFilename = generateSafeFilename((req as any).user.id);
@@ -109,12 +127,21 @@ export function createServer() {
       logger.info(`File saved to GCS: ${safeFilename}`);
 
       // 2. Create Firestore Document (Job Metadata)
+      //
+      // Codex P1 (r3053812511): initial status MUST be "queued"
+      // (JobStatus.QUEUED in worker.py). Any other first status
+      // ("uploaded", "uploading", ...) would fail the worker's
+      // is_valid_transition(None, ...) check, and the job would stay
+      // stuck because update_job_status(..., PROCESSING) would raise
+      // ValueError and the callback would ack the message without
+      // running. See the identical fix in
+      // frontend/server/routes/jobs.ts /start-job for context.
       const jobMetadata = {
         jobId: uniqueId,
         fileName: originalName,
         gcsPath: safeFilename,
         bucket: GCS_BUCKET_NAME,
-        status: "uploaded", // Initial status
+        status: "queued", // Initial status (matches worker JobStatus.QUEUED)
         createdAt: new Date().toISOString(),
         userId: (req as any).user.id,
       };

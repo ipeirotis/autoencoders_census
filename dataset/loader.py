@@ -207,9 +207,14 @@ class DataLoader:
 
 
     def load_eval_dataset(self, dataset):
-        df = pd.read_csv(dataset)
-        base_df, types = self.load_2017()
-        return (df, base_df), types
+        """Load an arbitrary CSV for evaluation against the 2017 SADC baseline.
+
+        Returns the same ``(DataFrame, metadata)`` format as all other loaders.
+        The raw evaluation DataFrame is read from *dataset*; preprocessing
+        (binning, Rule-of-9 filtering) is applied via ``prepare_original_dataset``.
+        """
+        df = self.load_original_data(dataset)
+        return self.prepare_original_dataset(df, replacements={})
 
     def load_bot_bot_mturk(self):
         url = "data/Bot_Bot_Bot__MTURK.csv"
@@ -305,35 +310,87 @@ class DataLoader:
         # run preprocessing
         return self.prepare_original_dataset(df, replacements=replacements)
 
-    def load_original_data(self, dataset_source):
+    def load_original_data(self, dataset_source, encoding=None):
         """
         Loads data from a file path (str) or raw bytes (uploaded file).
+
+        Args:
+            dataset_source: str (file path), bytes (raw upload), or file-like.
+            encoding: Optional explicit encoding to try first. Callers that
+                already detected an encoding (e.g. worker.py validate_csv()
+                via chardet) pass it here so parsing uses the same codec as
+                validation and a cp1252-encoded CSV is not silently decoded
+                as Latin-1 or UTF-8, which would corrupt non-ASCII
+                categoricals like smart quotes and em dashes and shift the
+                downstream outlier scores.
         """
-        # 1. Handle Raw Bytes (frontend upload) 
+        # 1. Handle Raw Bytes (frontend upload)
         if isinstance(dataset_source, bytes):
-            try:
-                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="utf-8")
-            except UnicodeDecodeError:
-                original_df = pd.read_csv(io.BytesIO(dataset_source), encoding="latin1")
-                
+            # Build the list of encodings to try: caller-provided first,
+            # then the historical UTF-8 -> Latin-1 fallback chain.
+            candidates = []
+            if encoding:
+                candidates.append(encoding)
+            for fallback in ("utf-8", "latin1"):
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+            last_err = None
+            original_df = None
+            for candidate in candidates:
+                try:
+                    original_df = pd.read_csv(
+                        io.BytesIO(dataset_source), encoding=candidate
+                    )
+                    break
+                except UnicodeDecodeError as err:
+                    last_err = err
+                    continue
+            if original_df is None:
+                raise last_err  # exhausted fallbacks
+
         # 2. Handle File-like objects
         elif isinstance(dataset_source, io.IOBase):
-            original_df = pd.read_csv(dataset_source) 
-            
+            original_df = pd.read_csv(dataset_source)
+
         else:
-            try:
-                original_df = pd.read_csv(dataset_source, encoding="utf-8")
-            except UnicodeDecodeError:
-                original_df = pd.read_csv(dataset_source, encoding="latin1")
+            candidates = []
+            if encoding:
+                candidates.append(encoding)
+            for fallback in ("utf-8", "latin1"):
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+            last_err = None
+            original_df = None
+            for candidate in candidates:
+                try:
+                    original_df = pd.read_csv(dataset_source, encoding=candidate)
+                    break
+                except UnicodeDecodeError as err:
+                    last_err = err
+                    continue
+            if original_df is None:
+                raise last_err
                 
         # colummn processing logic
         if self.DROP_COLUMNS:
             original_df = original_df.drop(columns=self.DROP_COLUMNS, errors='ignore')
 
         if self.COLUMNS_OF_INTEREST:
-            # only select columns that actually exist in the dataframe
-            existing_cols = [c for c in self.COLUMNS_OF_INTEREST if c in original_df.columns]
-            original_df = original_df[existing_cols]
+            # COLUMNS_OF_INTEREST may contain integer positional indices
+            # or string column names — handle both.
+            int_indices = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, int)]
+            str_names = [c for c in self.COLUMNS_OF_INTEREST if isinstance(c, str)]
+
+            selected = []
+            if int_indices:
+                valid = [i for i in int_indices if i < len(original_df.columns)]
+                selected.extend(original_df.columns[valid].tolist())
+            if str_names:
+                selected.extend([c for c in str_names if c in original_df.columns])
+
+            original_df = original_df[selected]
 
         if self.RENAME_COLUMNS:
             original_df = original_df.rename(columns=self.RENAME_COLUMNS)
@@ -468,17 +525,35 @@ class DataLoader:
 
     def find_outlier_data(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Load dataset and extract gold-label columns for evaluation.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        attention-check / screening columns are available even though
+        they are intentionally excluded from the training config.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         return df[outlier_column]
 
     def find_outlier_data_sadc_2017(self, data, outlier_column):
         """
-        Find outlier data in the dataset.
+        Find outlier data in the SADC 2017 dataset.
+
+        Temporarily disables COLUMNS_OF_INTEREST filtering so that
+        all columns (including those used to build the composite
+        outlier indicator) are available.
         """
-        df, _ = self.load_data(data)
+        saved = self.COLUMNS_OF_INTEREST
+        self.COLUMNS_OF_INTEREST = []
+        try:
+            df, _ = self.load_data(data)
+        finally:
+            self.COLUMNS_OF_INTEREST = saved
 
         # now I want the samples of the above characteristics CONCURRENTLY to have a new outlier column equal to 1 and the rest 0
         df[outlier_column] = 0
