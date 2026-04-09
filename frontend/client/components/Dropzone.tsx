@@ -20,13 +20,17 @@ interface DropzoneProps {
  * Checks both extension and magic bytes to prevent binary files disguised as CSV
  */
 async function validateFile(file: File): Promise<{ valid: boolean; error?: string }> {
-  // Check extension
-  if (!file.name.endsWith('.csv')) {
+  // Check extension (case-insensitive — Windows exports often use .CSV)
+  if (!file.name.toLowerCase().endsWith('.csv')) {
     return { valid: false, error: 'Only CSV files are allowed' };
   }
 
-  // Check magic bytes (prevents .exe renamed to .csv)
-  const buffer = await file.arrayBuffer();
+  // Check magic bytes (prevents .exe renamed to .csv).
+  // Only read the first 4KB — reading the full arrayBuffer stalls the UI
+  // and wastes memory on large files; magic-byte detection only needs the
+  // leading bytes.
+  const slice = file.slice(0, 4096);
+  const buffer = await slice.arrayBuffer();
   const type = await fileTypeFromBuffer(new Uint8Array(buffer));
 
   // CSV files are text/plain or text/csv, may not have magic bytes
