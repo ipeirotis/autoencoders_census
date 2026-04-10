@@ -57,8 +57,14 @@ def compute_metrics(error_scores, ground_truth, method_name):
     else:
         scores = errors["error"]
 
-    auc = roc_auc_score(labels, scores)
-    ap = average_precision_score(labels, scores)
+    # ROC AUC and AP require both classes present
+    n_classes = labels.nunique()
+    if n_classes < 2:
+        auc = None
+        ap = None
+    else:
+        auc = roc_auc_score(labels, scores)
+        ap = average_precision_score(labels, scores)
 
     # Sort by error descending (most anomalous first)
     sorted_idx = scores.sort_values(ascending=False).index
@@ -69,8 +75,8 @@ def compute_metrics(error_scores, ground_truth, method_name):
         "n_total": n_total,
         "n_outliers": n_outliers,
         "prevalence": round(prevalence, 4),
-        "roc_auc": round(auc, 4),
-        "avg_precision": round(ap, 4),
+        "roc_auc": round(auc, 4) if auc is not None else "N/A",
+        "avg_precision": round(ap, 4) if ap is not None else "N/A",
     }
 
     for k in [10, 25, 50, 100, 200, n_outliers]:
