@@ -17,7 +17,10 @@ if [ -z "$KEY" ]; then exit 0; fi
 
 # --- Install gcloud if missing (only after confirming auth is possible) ---
 if ! command -v gcloud &> /dev/null; then
-  curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user
+  if ! curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user; then
+    echo "WARNING: gcloud SDK install failed — skipping GCP auth."
+    exit 0
+  fi
   export PATH="/home/user/google-cloud-sdk/bin:$PATH"
 fi
 
@@ -31,7 +34,10 @@ if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/de
   echo "WARNING: GCP auth failed — credentials may be revoked. Run credential rotation to fix."
   exit 0
 fi
-gcloud config set project "$(jq -r .project_id "$CONFIG")" 2>/dev/null || true
+PROJECT_ID="$(jq -r .project_id "$CONFIG")"
+if ! gcloud config set project "$PROJECT_ID" 2>/dev/null; then
+  echo "WARNING: Failed to set GCP project to $PROJECT_ID — verify project_id in .cloud-config.json."
+fi
 rm -f /tmp/credentials.json
 
 echo "GCP credentials activated for $USER_EMAIL"
