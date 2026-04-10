@@ -17,7 +17,8 @@ if [ -z "$KEY" ]; then exit 0; fi
 
 # --- Install gcloud if missing (only after confirming auth is possible) ---
 if ! command -v gcloud &> /dev/null; then
-  if ! curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user; then
+  INSTALLER=$(curl -sSL https://sdk.cloud.google.com 2>/dev/null) || true
+  if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | bash -s -- --disable-prompts --install-dir=/home/user; then
     echo "WARNING: gcloud SDK install failed — skipping GCP auth."
     exit 0
   fi
