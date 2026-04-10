@@ -30,12 +30,7 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
-# --- Install az CLI if missing ---
-if ! command -v az &> /dev/null; then
-  curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash
-fi
-
-# --- Auto-authenticate if credentials exist ---
+# --- Check credential prerequisites before doing anything expensive ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
@@ -49,15 +44,32 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${AZURE_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
-echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || exit 0
+# --- Install az CLI if missing (only after confirming auth is possible) ---
+if ! command -v az &> /dev/null; then
+  if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
+    echo "WARNING: Azure CLI install failed — skipping Azure auth."
+    exit 0
+  fi
+fi
 
-az login --service-principal \
+# --- Decrypt and activate credentials ---
+(umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || exit 0
+
+trap 'rm -f /tmp/credentials.json' EXIT
+
+if ! az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \
-  --tenant "$(jq -r .tenant /tmp/credentials.json)" 2>/dev/null
+  --tenant "$(jq -r .tenant /tmp/credentials.json)" 2>/dev/null; then
+  echo "WARNING: Azure auth failed — credentials may be revoked. Run credential rotation to fix."
+  exit 0
+fi
 
-az account set --subscription "$(jq -r .project_id "$CONFIG")" 2>/dev/null
+SUBSCRIPTION="$(jq -r .project_id "$CONFIG")"
+if ! az account set --subscription "$SUBSCRIPTION" 2>/dev/null; then
+  echo "WARNING: Failed to set Azure subscription to $SUBSCRIPTION — verify project_id in .cloud-config.json."
+fi
 rm -f /tmp/credentials.json
 
 echo "Azure credentials activated for $USER_EMAIL"
