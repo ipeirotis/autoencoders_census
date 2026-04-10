@@ -27,8 +27,11 @@ fi
 
 trap 'rm -f /tmp/credentials.json' EXIT
 
-gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null
-gcloud config set project "$(jq -r .project_id "$CONFIG")" 2>/dev/null
+if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
+  echo "WARNING: GCP auth failed — credentials may be revoked. Run credential rotation to fix."
+  exit 0
+fi
+gcloud config set project "$(jq -r .project_id "$CONFIG")" 2>/dev/null || true
 rm -f /tmp/credentials.json
 
 echo "GCP credentials activated for $USER_EMAIL"
