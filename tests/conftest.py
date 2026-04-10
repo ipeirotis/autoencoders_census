@@ -79,6 +79,8 @@ def _install_gcp_client_stubs() -> None:
         # (e.g. update_job_status) keep their real implementation.
         _firestore.transactional = lambda fn: fn
 
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except BaseException:
         # Import failed (e.g. broken cryptography, missing packages).
         # Inject mock modules directly into sys.modules instead.
