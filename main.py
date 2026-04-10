@@ -783,9 +783,16 @@ def generate(
     variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Creating the vectorizer....")
-    project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
-        project_data, variable_types
-    )
+    saved_vectorizer = load_vectorizer(model_path)
+    if saved_vectorizer is not None:
+        project_data = prepare_for_categorical(project_data)
+        vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
+        vectorizer = saved_vectorizer
+        attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
+    else:
+        project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+            project_data, variable_types
+        )
 
     if target_features is not None:
         possible_features = list(project_data.columns)
