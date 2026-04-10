@@ -19,10 +19,14 @@ def set_seed(seed):
 
 
 def save_model(model, output_path, vectorizer=None):
+    # Ensure output_path ends with separator so artifacts land in the same dir
+    if not output_path.endswith(os.sep):
+        output_path = output_path + os.sep
+
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    filename = output_path + "autoencoder"
+    filename = os.path.join(output_path, "autoencoder")
     model.save(filename, save_format="tf")
 
     if vectorizer is not None:
@@ -36,21 +40,16 @@ def load_model(model_path):
 def load_vectorizer(model_path):
     """Load a fitted vectorizer saved alongside a model.
 
-    The vectorizer file sits next to the model directory.  If *model_path*
-    points to ``<dir>/autoencoder``, the vectorizer is at
-    ``<dir>/vectorizer.joblib``.
+    The vectorizer file sits in the same directory as the model.
+    *model_path* is typically ``<output>/autoencoder``; the vectorizer
+    is at ``<output>/vectorizer.joblib``.
 
     Returns:
         The fitted ``Table2Vector`` instance, or ``None`` if no saved
         vectorizer exists (backward-compat with older model checkpoints).
     """
-    # model_path may be "<output>/autoencoder"; vectorizer is in "<output>/"
-    parent = os.path.dirname(model_path.rstrip("/"))
+    parent = os.path.dirname(model_path.rstrip(os.sep))
     vec_path = os.path.join(parent, "vectorizer.joblib")
-    if not os.path.exists(vec_path):
-        # Try same directory (if model_path already is the parent)
-        vec_path = os.path.join(model_path.rstrip("/"), "..", "vectorizer.joblib")
-        vec_path = os.path.normpath(vec_path)
     if os.path.exists(vec_path):
         return joblib.load(vec_path)
     return None
