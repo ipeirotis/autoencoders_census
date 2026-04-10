@@ -10,8 +10,6 @@ from tensorflow import keras
 from model.base import VAE
 from model.layers import build_encoder, build_decoder
 
-tf.config.run_functions_eagerly(True)
-
 
 class VariationalAutoencoderModel:
     def __init__(self, attribute_cardinalities):
@@ -238,7 +236,8 @@ class VariationalAutoencoderModel:
         )
 
         autoencoder.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+            run_eagerly=True,
         )
 
         return autoencoder
@@ -269,7 +268,8 @@ class VariationalAutoencoderModel:
         )
 
         autoencoder.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+            run_eagerly=True,
         )
 
         return autoencoder
