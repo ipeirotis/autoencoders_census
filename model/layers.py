@@ -36,7 +36,7 @@ def build_decoder(attribute_cardinalities, config, prior, num_classes):
         )(x)
         decoded_attrs.append(decoder_softmax)
 
-    outputs = Concatenate(name="decoder_concat")(decoded_attrs)
+    outputs = Concatenate(name="decoder_concat")(decoded_attrs) if len(decoded_attrs) > 1 else decoded_attrs[0]
 
     return Model(decoder_inputs, outputs)
 
