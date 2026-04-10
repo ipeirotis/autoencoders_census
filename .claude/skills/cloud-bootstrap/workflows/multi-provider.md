@@ -96,7 +96,8 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   case "$PROVIDER" in
     gcp)
       if ! command -v gcloud &>/dev/null; then
-        if ! curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user; then
+        INSTALLER=$(curl -sSL https://sdk.cloud.google.com 2>/dev/null) || true
+        if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | bash -s -- --disable-prompts --install-dir=/home/user; then
           echo "WARNING: gcloud SDK install failed — skipping GCP auth."
           rm -f /tmp/credentials.json; continue
         fi
