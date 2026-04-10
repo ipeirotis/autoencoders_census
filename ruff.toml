@@ -1,0 +1,19 @@
+# Ruff linter configuration
+# https://docs.astral.sh/ruff/
+
+target-version = "py310"
+
+exclude = [
+    "notebooks/",
+    "scripts/notebooks/",
+    ".venv/",
+    "venv/",
+]
+
+[lint]
+# F: Pyflakes — catches unused imports, undefined names, redefinitions
+# E9: Runtime errors — syntax errors
+select = ["F", "E9"]
+
+# F811: redefined-while-unused — common in notebooks and conditional imports
+ignore = ["F811"]

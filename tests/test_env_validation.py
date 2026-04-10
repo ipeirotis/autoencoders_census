@@ -10,7 +10,6 @@ fresh each time, so monkeypatch works correctly.
 
 import pytest
 import sys
-import os
 from unittest.mock import MagicMock, patch
 
 # Mock heavyweight imports before importing worker so the module loads quickly

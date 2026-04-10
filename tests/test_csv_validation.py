@@ -5,9 +5,7 @@ Tests encoding detection, structure validation, size limits, and edge cases
 to ensure robust validation before worker processes files.
 """
 
-import io
 import pytest
-import pandas as pd
 from worker import validate_csv
 
 

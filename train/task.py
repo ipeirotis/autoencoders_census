@@ -15,11 +15,8 @@ Usage (called by Vertex AI):
 
 import argparse
 import logging 
-import json
-import os
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 from google.cloud import storage, firestore
 from dataset.loader import DataLoader
 from features.transform import Table2Vector

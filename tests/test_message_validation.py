@@ -6,7 +6,7 @@ and rejects malformed messages.
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 import json
 
 
