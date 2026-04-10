@@ -46,47 +46,104 @@ class Table2Vector:
         self.one_hot_encoders = {}
         self.min_max_scalers = {}
 
-    def vectorize_table(self, original_df, base_df=None):
-        """
-        Transform the dataframe according to the variable types.
+    def fit(self, training_df):
+        """Fit encoders and scalers on training data only.
 
-        Categorical variables are one-hot encoded, numeric variables are min-max scaled,
-        and missing values are replaced with dummy variables.
+        Call this on the training split before calling ``transform()`` on
+        train, test, or scoring data.  This prevents test-set statistics
+        from leaking into the fitted transformers.
+
+        Args:
+            training_df: DataFrame used to learn encoder categories and
+                scaler min/max values.
 
         Returns:
-        - The transformed dataframe.
-        - Dictionaries with fitted OneHotEncoders and MinMaxScalers for each column.
+            self (for chaining).
+        """
+        for column in training_df.columns:
+            if column in self.var_types["numeric"]:
+                scaler = MinMaxScaler()
+                non_na = training_df[column].notna()
+                scaler.fit(training_df.loc[non_na, [column]])
+                self.min_max_scalers[column] = scaler
+            elif column in self.var_types["categorical"]:
+                encoder = OneHotEncoder(
+                    sparse_output=False, handle_unknown="ignore"
+                )
+                encoder.fit(training_df[[column]])
+                self.one_hot_encoders[column] = encoder
+        self._is_fitted = True
+        return self
+
+    def transform(self, df):
+        """Apply previously-fitted encoders/scalers to *df*.
+
+        Must call ``fit()`` first (or use ``vectorize_table()`` for the
+        legacy fit-and-transform-in-one-step behaviour).
+
+        Args:
+            df: DataFrame to transform (train, test, or scoring data).
+
+        Returns:
+            Transformed DataFrame.
+        """
+        if not getattr(self, "_is_fitted", False):
+            raise RuntimeError(
+                "Table2Vector.transform() called before fit(). "
+                "Call fit(training_df) first, or use vectorize_table() "
+                "for the legacy fit_transform behaviour."
+            )
+        return self._apply_transforms(df)
+
+    def vectorize_table(self, original_df, base_df=None):
+        """Fit *and* transform in a single call (legacy API).
+
+        When *base_df* is provided the encoders are fitted on *base_df*
+        and applied to *original_df*.  Otherwise both fit and transform
+        use *original_df*.
+
+        .. note::
+
+           Prefer the explicit ``fit()`` / ``transform()`` pair in
+           training pipelines to avoid data leakage.
+
+        Returns:
+            Transformed DataFrame.
+        """
+        fit_df = base_df if base_df is not None else original_df
+        self.fit(fit_df)
+        return self._apply_transforms(original_df)
+
+    # ------------------------------------------------------------------
+    # Internal helper shared by transform() and vectorize_table()
+    # ------------------------------------------------------------------
+    def _apply_transforms(self, original_df):
+        """Apply fitted encoders/scalers to *original_df*.
+
+        Index alignment: one-hot encoded columns are assigned the same
+        index as the source DataFrame so that ``pd.concat`` never
+        introduces NaN values from mismatched indices.
         """
         vectorized_df = original_df.copy()
 
         for column in vectorized_df.columns:
-            # We use a MixMaxScaler for numeric variables
             if column in self.var_types["numeric"]:
-                min_max_scaler = MinMaxScaler()
+                scaler = self.min_max_scalers[column]
                 non_na_rows = vectorized_df[column].notna()
-                vectorized_df.loc[non_na_rows, column] = min_max_scaler.fit_transform(
+                vectorized_df.loc[non_na_rows, column] = scaler.transform(
                     vectorized_df.loc[non_na_rows, [column]]
                 ).ravel()
-                self.min_max_scalers[column] = min_max_scaler
             elif column in self.var_types["categorical"]:
-                one_hot_encoder = OneHotEncoder(
-                    sparse_output=False, handle_unknown="ignore"
+                encoder = self.one_hot_encoders[column]
+                df_encoded = pd.DataFrame(
+                    encoder.transform(vectorized_df[[column]]),
+                    index=vectorized_df.index,  # preserve index to avoid NaN on concat
                 )
-                if base_df is None:
-                    df_encoded = pd.DataFrame(
-                        one_hot_encoder.fit_transform(vectorized_df[[column]])
-                    )
-                else:
-                    one_hot_encoder.fit(base_df[[column]])
-                    df_encoded = pd.DataFrame(
-                        one_hot_encoder.transform(vectorized_df[[column]])
-                    )
                 df_encoded.columns = [
-                    f"{column}{self.SEP}{cat}" for cat in one_hot_encoder.categories_[0]
+                    f"{column}{self.SEP}{cat}" for cat in encoder.categories_[0]
                 ]
                 vectorized_df = pd.concat([vectorized_df, df_encoded], axis=1)
                 vectorized_df = vectorized_df.drop(column, axis=1)
-                self.one_hot_encoders[column] = one_hot_encoder
 
         return vectorized_df
 
@@ -148,7 +205,9 @@ class Table2Vector:
             # Convert probabilities to one-hot encoding and perform inverse transformation
             onehot = self.proba_to_onehot(onehot_encoded)
             df_original = pd.DataFrame(
-                one_hot_encoder.inverse_transform(onehot), columns=[column]
+                one_hot_encoder.inverse_transform(onehot),
+                columns=[column],
+                index=df.index,  # preserve index to avoid NaN on concat
             )
 
             # Set original value to NaN for rows that become "missing"

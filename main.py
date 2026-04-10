@@ -30,6 +30,7 @@ import sys
 import click
 import pandas as pd
 import yaml
+from sklearn.model_selection import train_test_split
 
 from google.cloud import storage
 from dataset.loader import DataLoader
@@ -81,8 +82,38 @@ def prepare_for_categorical(project_data):
     return project_data[cols_to_keep]
 
 
+def _clean_and_build_vectorizer(project_data, variable_types=None):
+    """Clean data and create a (not-yet-fitted) Table2Vector.
+
+    Shared first step for both ``prepare_for_model`` and
+    ``prepare_for_training``.
+
+    Returns:
+        (cleaned_df, variable_types_dict, vectorizer)
+    """
+    if variable_types is None:
+        variable_types = {}
+
+    # 1-2. Clean data (fillna, Rule-of-9)
+    project_data = prepare_for_categorical(project_data)
+
+    # 3. Sync variable_types to surviving columns
+    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
+    if not variable_types:
+        variable_types = {col: "categorical" for col in project_data.columns}
+
+    vectorizer = Table2Vector(variable_types)
+    return project_data, variable_types, vectorizer
+
+
 def prepare_for_model(project_data, variable_types=None):
     """Shared data-cleaning and vectorization pipeline.
+
+    Use this for **scoring / evaluation** where the entire dataset is
+    transformed at once (no train/test split needed).
+
+    For **training** use :func:`prepare_for_training` instead — it splits
+    the data before fitting the vectorizer to prevent data leakage.
 
     Steps:
         1. Fill NaN with "missing" and cast to string
@@ -100,19 +131,12 @@ def prepare_for_model(project_data, variable_types=None):
     Returns:
         (cleaned_df, vectorized_df, vectorizer, cardinalities)
     """
-    if variable_types is None:
-        variable_types = {}
+    project_data, _, vectorizer = _clean_and_build_vectorizer(
+        project_data, variable_types
+    )
 
-    # 1-2. Clean data (fillna, Rule-of-9)
-    project_data = prepare_for_categorical(project_data)
-
-    # 3. Sync variable_types to surviving columns
-    variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
-    if not variable_types:
-        variable_types = {col: "categorical" for col in project_data.columns}
-
-    # 4. Vectorize
-    vectorizer = Table2Vector(variable_types)
+    # 4. Vectorize (fit + transform on the full data — acceptable for
+    #    scoring because there is no train/test distinction)
     vectorized_df = vectorizer.vectorize_table(project_data)
 
     # 5. Float32 conversion
@@ -124,23 +148,70 @@ def prepare_for_model(project_data, variable_types=None):
     return project_data, vectorized_df, vectorizer, cardinalities
 
 
+def prepare_for_training(project_data, variable_types=None, test_size=0.2):
+    """Clean, split, then vectorize — preventing data leakage.
+
+    Unlike :func:`prepare_for_model`, the vectorizer is fitted on the
+    **training split only**, so test-set statistics never leak into the
+    encoder categories or scaler ranges.
+
+    Steps:
+        1-3. Same cleaning as prepare_for_model
+        4.   Train/test split on *cleaned* (pre-vectorized) data
+        5.   Fit vectorizer on training split
+        6.   Transform both splits
+        7.   Float32 conversion
+        8.   Compute per-column cardinalities
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+        variable_types: Optional dict mapping column names to types.
+        test_size: Fraction of data for the test set (default 0.2).
+
+    Returns:
+        (cleaned_df, X_train, X_test, vectorizer, cardinalities)
+    """
+    project_data, _, vectorizer = _clean_and_build_vectorizer(
+        project_data, variable_types
+    )
+
+    # 4. Split *before* vectorization
+    train_df, test_df = train_test_split(
+        project_data, test_size=test_size, random_state=None
+    )
+
+    # 5-6. Fit on training data, transform both
+    vectorizer.fit(train_df)
+    X_train = vectorizer.transform(train_df).astype("float32")
+    X_test = vectorizer.transform(test_df).astype("float32")
+
+    # 7. Cardinalities (from the full cleaned data so all categories are counted)
+    cardinalities = [project_data[c].nunique() for c in project_data.columns]
+
+    return project_data, X_train, X_test, vectorizer, cardinalities
+
+
 def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="gaussian"):
     """
     Reusable training logic that accepts a DataFrame directly.
     Used by both the CLI and the Cloud Worker
     """
-    _, vectorized_df, _, cardinalities = prepare_for_model(df)
-
-    model = get_model(model_name, cardinalities)
-
     logger.info(f"loading config from {config_path}...")
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
 
+    _, X_train, X_test, _, cardinalities = prepare_for_training(
+        df, test_size=config.get("test_size", 0.2)
+    )
+
+    model = get_model(model_name, cardinalities)
     trainer = Trainer(model, config)
 
     logger.info(f"Training model....")
-    model, history = trainer.train(vectorized_df, prior)
+    model, history = trainer.train(
+        dataset=X_train, prior=prior,
+        X_train=X_train, X_test=X_test,
+    )
 
     logger.info("Saving model....")
     save_model(model, output_path)
@@ -224,24 +295,27 @@ def train(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    # 5. Clean, vectorize, and compute cardinalities
+    # 5. Clean, split, vectorize (leak-free)
     logger.info("Transforming the data....")
-    project_data, vectorized_df, vectorizer, cardinalities = prepare_for_model(
-        project_data, variable_types
+    with open(config, "r") as file:
+        config_dict = yaml.safe_load(file)
+
+    project_data, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
+        project_data, variable_types,
+        test_size=config_dict.get("test_size", 0.2),
     )
 
     # 6. Build and Train model
     logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
-    logger.info(f"Loading config from config file....")
-    with open(config, "r") as file:
-        config_dict = yaml.safe_load(file)
-
     trainer = Trainer(model, config_dict)
 
     logger.info(f"Training model....")
-    model, history = trainer.train(vectorized_df, prior)
+    model, history = trainer.train(
+        dataset=X_train, prior=prior,
+        X_train=X_train, X_test=X_test,
+    )
 
     # 10. Save Results
     logger.info("Saving model....")
@@ -250,7 +324,7 @@ def train(
     save_history(history, output)
     logger.info("Saving plots....")
     model_analysis(history, output, model_name)
-    
+
     logger.info("Training pipeline finished successfully.")
 
 
@@ -316,22 +390,26 @@ def search_hyperparameters(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
+    logger.info(f"Loading config from config file....")
+    with open(config, "r") as file:
+        config = yaml.safe_load(file)
+
     logger.info("Transforming the data....")
-    project_data, vectorized_df, vectorizer, cardinalities = prepare_for_model(
-        project_data, variable_types
+    project_data, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
+        project_data, variable_types,
+        test_size=config.get("test_size", 0.2),
     )
 
     logger.info(f"Loading model....")
     model = get_model(model_name, cardinalities)
 
-    logger.info(f"Loading config from config file....")
-    with open(config, "r") as file:
-        config = yaml.safe_load(file)
-
     trainer = Trainer(model, config)
 
     logger.info(f"Searching hyperparameters....")
-    best_hps = trainer.search_hyperparameters(vectorized_df, prior)
+    best_hps = trainer.search_hyperparameters(
+        dataset=X_train, prior=prior,
+        X_train=X_train, X_test=X_test,
+    )
 
     logger.info(f"Best hyperparameters found: {best_hps}")
 

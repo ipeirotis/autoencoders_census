@@ -14,8 +14,26 @@ class Trainer:
         self.model = model
         self.config = config
 
-    def train(self, dataset: pd.DataFrame, prior):
-        X_train, X_test = self.model.split_train_test(dataset, self.config["test_size"])
+    def train(self, dataset: pd.DataFrame, prior,
+              X_train=None, X_test=None):
+        """Train the model.
+
+        Args:
+            dataset: Full vectorized DataFrame (used for the internal
+                split when *X_train*/*X_test* are not supplied).
+            prior: VAE prior type (ignored for AE).
+            X_train: Pre-split training data.  When provided together
+                with *X_test*, the internal ``split_train_test`` is
+                skipped — use this to avoid data leakage by splitting
+                before vectorization.
+            X_test: Pre-split test data.
+        """
+        if X_train is None or X_test is None:
+            X_train, X_test = self.model.split_train_test(
+                dataset, self.config["test_size"]
+            )
+        else:
+            self.model.INPUT_SHAPE = X_train.shape[1:]
 
         if isinstance(self.model, VariationalAutoencoderModel):
             model = self.model.build_autoencoder(self.config, prior)
@@ -41,8 +59,14 @@ class Trainer:
 
         return model, history
 
-    def search_hyperparameters(self, dataset: pd.DataFrame, prior):
-        X_train, X_test = self.model.split_train_test(dataset, self.config["test_size"])
+    def search_hyperparameters(self, dataset: pd.DataFrame, prior,
+                               X_train=None, X_test=None):
+        if X_train is None or X_test is None:
+            X_train, X_test = self.model.split_train_test(
+                dataset, self.config["test_size"]
+            )
+        else:
+            self.model.INPUT_SHAPE = X_train.shape[1:]
 
         if isinstance(self.model, VariationalAutoencoderModel):
             tuner = self.model.define_tuner(self.config, prior)

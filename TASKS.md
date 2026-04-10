@@ -115,10 +115,12 @@ Run systematic comparisons of AE vs. Chow-Liu tree on all built-in datasets. Rec
 - After deserialization via `from_config`, the warmup schedule restarts from 0 regardless of where training left off.
 - VAE is not actively used; fix only if VAE work resumes.
 
-### 3.8 Fix data leakage in feature transformation
-- **MinMaxScaler fit on train+test** (features/transform.py:65-70): The scaler is `fit_transform`'d on the entire DataFrame before train/test split. Test set min/max values leak into training normalization.
-- **OneHotEncoder fit on full data** (features/transform.py:77): Same issue — categories present only in the test set are known to the encoder during training.
-- **Index misalignment during one-hot concat** (features/transform.py:76-88): `df_encoded` gets a default RangeIndex, but `vectorized_df` may have a non-standard index (e.g., after `train_test_split`). The `pd.concat(..., axis=1)` aligns on index, and mismatched indices silently introduce `NaN` values. This is a data corruption bug.
+### ~~3.8 Fix data leakage in feature transformation~~ DONE
+Added a proper `fit()` / `transform()` API to `Table2Vector` so that encoders and scalers are fitted on training data only. The legacy `vectorize_table()` still works for scoring/evaluation where no train/test split is needed. All training pipelines (`Trainer.train`, `run_training_pipeline`, `worker.py`, `train/task.py`) now split *before* vectorizing: clean → split → fit on train → transform both. Three bugs fixed:
+- **MinMaxScaler leakage**: `fit()` learns scaler ranges on training data only; `transform()` applies them without refitting.
+- **OneHotEncoder leakage**: Same — encoder categories come from training split only. Unseen test-set categories get all-zeros via `handle_unknown='ignore'`.
+- **Index misalignment**: One-hot encoded DataFrames now explicitly receive the source DataFrame's index (`index=vectorized_df.index`), preventing silent NaN introduction from `pd.concat` with mismatched indices. Same fix applied in `tabularize_vector()` and `evaluate/outliers.py`.
+Added 15 new tests in `tests/features/test_data_leakage.py` covering index preservation, fit/transform API, no-leakage guarantees, and the `prepare_for_training()` integration.
 
 ## 4. Frontend Polish
 

@@ -16,8 +16,8 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
     if isinstance(predictions, tuple):
         predictions, z1, z2 = predictions
 
-    predictions = pd.DataFrame(predictions, columns=data.columns)
-    errors = pd.DataFrame()
+    predictions = pd.DataFrame(predictions, columns=data.columns, index=data.index)
+    errors = pd.DataFrame(index=data.index)
 
     reconstruction_loss = VAE.reconstruction_loss(
         attr_cardinalities,
