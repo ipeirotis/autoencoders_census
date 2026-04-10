@@ -36,13 +36,13 @@ if ! command -v gcloud &> /dev/null; then
 fi
 
 # --- Decrypt and activate credentials ---
+trap 'rm -f /tmp/credentials.json' EXIT
+
 if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check GCP_CREDENTIALS_KEY or .enc file integrity."
   exit 0
 fi
-
-trap 'rm -f /tmp/credentials.json' EXIT
 
 if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
   echo "WARNING: GCP auth failed — credentials may be revoked. Run credential rotation to fix."

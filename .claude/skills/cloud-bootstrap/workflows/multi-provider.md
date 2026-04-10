@@ -87,8 +87,10 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   esac
   if [ -z "$KEY" ]; then continue; fi
 
-  (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-    -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || continue
+  if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+    -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
+    rm -f /tmp/credentials.json; continue
+  fi
 
   # Activate using provider-specific commands (install CLI + authenticate)
   # Each provider block is guarded so one failure doesn't block the others
