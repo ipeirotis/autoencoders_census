@@ -87,27 +87,31 @@ def _clean_for_saved_vectorizer(project_data, vectorizer):
     """Clean data for inference with a saved vectorizer.
 
     Applies the same fillna/astype cleaning as training, but does NOT
-    re-apply the Rule-of-9 filter.  Instead, selects exactly the columns
-    the vectorizer was trained on.  This prevents dropping columns that
-    happen to be constant in the scoring batch but existed during training.
+    re-apply the Rule-of-9 filter.  Instead, ensures exactly the columns
+    the vectorizer was trained on are present.  Columns missing from the
+    scoring data are added with the value ``"missing"`` so that the
+    transformed matrix always matches the model's expected input width.
 
     Args:
         project_data: Raw DataFrame from DataLoader.
         vectorizer: A fitted Table2Vector instance.
 
     Returns:
-        cleaned_df with only the columns the vectorizer expects.
+        cleaned_df with exactly the columns the vectorizer expects,
+        in the same order as training.
     """
     project_data = project_data.fillna("missing")
     project_data = project_data.astype(str)
 
-    # Keep exactly the columns the vectorizer knows about
+    # Ensure exactly the columns the vectorizer was trained on are present
     trained_cols = (
         list(vectorizer.one_hot_encoders.keys())
         + list(vectorizer.min_max_scalers.keys())
     )
-    available = [c for c in trained_cols if c in project_data.columns]
-    return project_data[available]
+    for col in trained_cols:
+        if col not in project_data.columns:
+            project_data[col] = "missing"
+    return project_data[trained_cols]
 
 
 def _clean_and_build_vectorizer(project_data, variable_types=None):
