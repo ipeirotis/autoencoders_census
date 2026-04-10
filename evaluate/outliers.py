@@ -97,7 +97,7 @@ def compute_per_column_contributions(
 
         # Categorical crossentropy per attribute (same as VAE.reconstruction_loss)
         attr_loss = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-        attr_loss_normalized = attr_loss / np.log(categories)  # Normalize by cardinality
+        attr_loss_normalized = attr_loss / max(np.log(categories), 1e-10)  # Normalize by cardinality
 
         # Mean loss for this attribute across batch (or single row)
         per_attr_losses.append(tf.reduce_mean(attr_loss_normalized).numpy())

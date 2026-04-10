@@ -50,7 +50,7 @@ class AutoencoderModel:
         self.attribute_cardinalities = attribute_cardinalities
 
         log_cardinalities = [
-            np.log(max(cardinality, 2)) for cardinality in self.attribute_cardinalities
+            max(np.log(cardinality), 1e-10) for cardinality in self.attribute_cardinalities
         ]
         log_cardinalities_tensor = tf.constant(log_cardinalities, dtype=tf.float32)
         self.log_cardinalities_expanded = tf.expand_dims(

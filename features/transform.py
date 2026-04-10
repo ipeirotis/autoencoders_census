@@ -151,10 +151,8 @@ class Table2Vector:
         """Return per-column cardinalities consistent with the fitted encoders.
 
         For categorical columns the cardinality equals the number of
-        categories the fitted ``OneHotEncoder`` knows about, with a
-        minimum of 2 to avoid ``log(1) = 0`` division-by-zero in the
-        loss normalization.  For numeric columns the cardinality is 1
-        (a single scaled value).
+        categories the fitted ``OneHotEncoder`` knows about.  For numeric
+        columns the cardinality is 1 (a single scaled value).
 
         This must be called **after** ``fit()`` or ``vectorize_table()``
         so that the encoders are available.
@@ -169,10 +167,7 @@ class Table2Vector:
         cardinalities = []
         for col in columns:
             if col in self.one_hot_encoders:
-                n_cats = len(self.one_hot_encoders[col].categories_[0])
-                # Enforce minimum of 2 to prevent log(1)=0 division in
-                # loss normalization (TASKS.md 3.5).
-                cardinalities.append(max(n_cats, 2))
+                cardinalities.append(len(self.one_hot_encoders[col].categories_[0]))
             elif col in self.min_max_scalers:
                 cardinalities.append(1)
             else:

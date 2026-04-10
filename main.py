@@ -83,6 +83,33 @@ def prepare_for_categorical(project_data):
     return project_data[cols_to_keep]
 
 
+def _clean_for_saved_vectorizer(project_data, vectorizer):
+    """Clean data for inference with a saved vectorizer.
+
+    Applies the same fillna/astype cleaning as training, but does NOT
+    re-apply the Rule-of-9 filter.  Instead, selects exactly the columns
+    the vectorizer was trained on.  This prevents dropping columns that
+    happen to be constant in the scoring batch but existed during training.
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+        vectorizer: A fitted Table2Vector instance.
+
+    Returns:
+        cleaned_df with only the columns the vectorizer expects.
+    """
+    project_data = project_data.fillna("missing")
+    project_data = project_data.astype(str)
+
+    # Keep exactly the columns the vectorizer knows about
+    trained_cols = (
+        list(vectorizer.one_hot_encoders.keys())
+        + list(vectorizer.min_max_scalers.keys())
+    )
+    available = [c for c in trained_cols if c in project_data.columns]
+    return project_data[available]
+
+
 def _clean_and_build_vectorizer(project_data, variable_types=None):
     """Clean data and create a (not-yet-fitted) Table2Vector.
 
@@ -479,7 +506,7 @@ def evaluate(
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         # Use the training-fitted vectorizer so one-hot width matches the model
-        project_data = prepare_for_categorical(project_data)
+        project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
         vectorizer = saved_vectorizer
     else:
@@ -578,7 +605,7 @@ def find_outliers(
     logger.info("Transforming the data....")
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
-        project_data = prepare_for_categorical(project_data)
+        project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
         vectorizer = saved_vectorizer
         attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
@@ -785,7 +812,7 @@ def generate(
     logger.info(f"Creating the vectorizer....")
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
-        project_data = prepare_for_categorical(project_data)
+        project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
         vectorizer = saved_vectorizer
         attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
