@@ -6,7 +6,10 @@ import pandas as pd
 import seaborn as sns
 import tensorflow as tf
 import yaml
-from ranx import Qrels, Run, evaluate
+try:
+    from ranx import Qrels, Run, evaluate
+except ImportError:
+    Qrels = Run = evaluate = None
 
 
 def set_seed(seed):
@@ -112,6 +115,11 @@ def save_to_csv(df: pd.DataFrame, output_path: str, suffix: str = "metrics"):
 
 
 def evaluate_errors(error_data, column, values):
+    if Qrels is None or Run is None or evaluate is None:
+        raise ImportError(
+            "ranx is required for evaluate_errors(). "
+            "Install it with: pip install ranx"
+        )
 
     error_data = error_data.replace("<NA>", "0")
     error_data = error_data.fillna("0")

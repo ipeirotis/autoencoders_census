@@ -4,7 +4,6 @@ anyio==4.12.0
 astunparse==1.6.3
 beautifulsoup4==4.14.3
 cachetools==6.2.4
-cbor==1.0.0
 cbor2==5.7.1
 certifi==2025.11.12
 chardet==5.2.0
@@ -44,10 +43,7 @@ h5py==3.15.1
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
-ijson==3.4.0.post0
 importlib_metadata==8.7.1
-inscriptis==2.7.0
-ir_datasets==0.5.11
 joblib==1.5.3
 keras==2.15.0
 keras-tuner==1.4.8
@@ -87,7 +83,6 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
 pytz==2025.2
 PyYAML==6.0.3
-ranx==0.3.21
 requests==2.32.5
 requests-oauthlib==2.0.0
 rich==14.2.0
@@ -109,17 +104,12 @@ tensorflow-io-gcs-filesystem==0.37.1
 termcolor==3.2.0
 threadpoolctl==3.6.0
 tqdm==4.67.1
-trec-car-tools==2.6
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.3
-unlzw3==0.2.3
 urllib3==2.6.2
-warc3-wet==0.2.5
-warc3-wet-clueweb09==0.2.5
 websockets==15.0.1
 Werkzeug==3.1.4
 wrapt==1.14.2
 zipp==3.23.0
-zlib-state==0.1.10
 pytest
