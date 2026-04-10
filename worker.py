@@ -20,6 +20,10 @@ Required Environment Variables:
     - GOOGLE_CLOUD_PROJECT: GCP project ID
     - GCS_BUCKET_NAME: Storage bucket for uploads
     - PUBSUB_SUBSCRIPTION_ID: Pub/Sub subscription to listen on
+
+Optional Environment Variables (Vertex AI mode only):
+    - VERTEX_STAGING_BUCKET: GCS bucket for Vertex AI staging (default: gs://autoencoders-census-staging)
+    - VERTEX_SERVICE_ACCOUNT: Service account for Vertex AI jobs (default: Compute Engine default)
 """
 
 import argparse
@@ -1398,7 +1402,7 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         aiplatform.init(
             project=PROJECT_ID,
             location="us-central1",
-            staging_bucket="gs://autoencoders-census-staging"
+            staging_bucket=os.getenv("VERTEX_STAGING_BUCKET", "gs://autoencoders-census-staging")
         )
 
         job = aiplatform.CustomContainerTrainingJob(
@@ -1413,7 +1417,7 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
                 f"--file-path={file_path}"
             ],
             replica_count=1,
-            service_account="203111407489-compute@developer.gserviceaccount.com",
+            service_account=os.getenv("VERTEX_SERVICE_ACCOUNT", "203111407489-compute@developer.gserviceaccount.com"),
             machine_type="n1-standard-4",
             sync=False
         )
