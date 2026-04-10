@@ -1079,15 +1079,23 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         if process_df.shape[1] == 0:
             raise ValueError("All columns were dropped by Rule of 9 filter. No columns have 2-9 unique values.")
 
-        # 6. Vectorization
+        # 6. Vectorization (split before fitting to prevent data leakage)
+        from sklearn.model_selection import train_test_split as _tts
         model_variable_types = {col: 'categorical' for col in process_df.columns}
         vectorizer = Table2Vector(model_variable_types)
-        vectorized_df = vectorizer.vectorize_table(process_df).astype('float32')
+
+        train_df, test_df = _tts(process_df, test_size=0.2)
+        vectorizer.fit(train_df)
+        X_train = vectorizer.transform(train_df).astype('float32')
+        X_test = vectorizer.transform(test_df).astype('float32')
+
+        # We also need the full vectorized data for scoring later
+        vectorized_df = vectorizer.transform(process_df).astype('float32')
 
         # 7. Build and train autoencoder
-        cardinalities = [process_df[col].nunique() for col in process_df.columns]
+        cardinalities = vectorizer.get_cardinalities(process_df.columns)
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
-        X_train, X_test = ae_wrapper.split_train_test(vectorized_df, test_size=0.2)
+        ae_wrapper.INPUT_SHAPE = X_train.shape[1:]
 
         input_dim = X_train.shape[1]
         model_config = {

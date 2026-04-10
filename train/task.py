@@ -63,15 +63,21 @@ def train_and_predict(job_id, bucket_name, file_path):
         if process_df.shape[1] == 0:
             raise ValueError("All columns were dropped! No columns fit the Rule of 9.")
 
-        # 3. Vectorization & model Setup
-        cardinalities = [process_df[col].nunique() for col in process_df.columns]
+        # 3. Vectorization & model setup (split before fitting to prevent data leakage)
+        from sklearn.model_selection import train_test_split as _tts
         model_variable_types = {col: "categorical" for col in process_df.columns}
         vectorizer = Table2Vector(model_variable_types)
-        vectorized_df = vectorizer.vectorize_table(process_df).astype('float32')
-        
+
+        train_df, test_df = _tts(process_df, test_size=0.2)
+        vectorizer.fit(train_df)
+        X_train = vectorizer.transform(train_df).astype('float32')
+        X_test = vectorizer.transform(test_df).astype('float32')
+        vectorized_df = vectorizer.transform(process_df).astype('float32')
+
+        cardinalities = vectorizer.get_cardinalities(process_df.columns)
         logger.info("Initializing AutoEncoderModel...")
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
-        X_train, X_test = ae_wrapper.split_train_test(vectorized_df, test_size=0.2)
+        ae_wrapper.INPUT_SHAPE = X_train.shape[1:]
         
         # 4. Configure & Train
         input_dim = X_train.shape[1]

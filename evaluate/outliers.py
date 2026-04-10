@@ -16,8 +16,8 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
     if isinstance(predictions, tuple):
         predictions, z1, z2 = predictions
 
-    predictions = pd.DataFrame(predictions, columns=data.columns)
-    errors = pd.DataFrame()
+    predictions = pd.DataFrame(predictions, columns=data.columns, index=data.index)
+    errors = pd.DataFrame(index=data.index)
 
     reconstruction_loss = VAE.reconstruction_loss(
         attr_cardinalities,
@@ -97,7 +97,7 @@ def compute_per_column_contributions(
 
         # Categorical crossentropy per attribute (same as VAE.reconstruction_loss)
         attr_loss = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-        attr_loss_normalized = attr_loss / np.log(categories)  # Normalize by cardinality
+        attr_loss_normalized = attr_loss / max(np.log(categories), 1e-10)  # Normalize by cardinality
 
         # Mean loss for this attribute across batch (or single row)
         per_attr_losses.append(tf.reduce_mean(attr_loss_normalized).numpy())

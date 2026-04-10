@@ -1,5 +1,6 @@
 import os
 
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -17,16 +18,41 @@ def set_seed(seed):
     tf.keras.utils.set_random_seed(seed)
 
 
-def save_model(model, output_path):
+def save_model(model, output_path, vectorizer=None):
+    # Ensure output_path ends with separator so artifacts land in the same dir
+    if not output_path.endswith(os.sep):
+        output_path = output_path + os.sep
+
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    filename = output_path + "autoencoder"
+    filename = os.path.join(output_path, "autoencoder")
     model.save(filename, save_format="tf")
+
+    if vectorizer is not None:
+        joblib.dump(vectorizer, os.path.join(output_path, "vectorizer.joblib"))
 
 
 def load_model(model_path):
     return tf.keras.models.load_model(model_path)
+
+
+def load_vectorizer(model_path):
+    """Load a fitted vectorizer saved alongside a model.
+
+    The vectorizer file sits in the same directory as the model.
+    *model_path* is typically ``<output>/autoencoder``; the vectorizer
+    is at ``<output>/vectorizer.joblib``.
+
+    Returns:
+        The fitted ``Table2Vector`` instance, or ``None`` if no saved
+        vectorizer exists (backward-compat with older model checkpoints).
+    """
+    parent = os.path.dirname(model_path.rstrip(os.sep))
+    vec_path = os.path.join(parent, "vectorizer.joblib")
+    if os.path.exists(vec_path):
+        return joblib.load(vec_path)
+    return None
 
 
 def save_history(history, output_path):
