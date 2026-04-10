@@ -80,7 +80,7 @@ def compute_metrics(error_scores, ground_truth, method_name):
     }
 
     for k in [10, 25, 50, 100, 200, n_outliers]:
-        if k <= n_total:
+        if k > 0 and k <= n_total:
             precision_k = sorted_labels[:k].sum() / k
             lift_k = precision_k / prevalence if prevalence > 0 else 0
             label = k if k != n_outliers else f"{k}(=n_outliers)"
