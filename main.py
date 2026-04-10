@@ -89,8 +89,9 @@ def _clean_for_saved_vectorizer(project_data, vectorizer):
     Applies the same fillna/astype cleaning as training, but does NOT
     re-apply the Rule-of-9 filter.  Instead, ensures exactly the columns
     the vectorizer was trained on are present.  Columns missing from the
-    scoring data are added with the value ``"missing"`` so that the
-    transformed matrix always matches the model's expected input width.
+    scoring data are filled with type-appropriate defaults (``"missing"``
+    for categorical, ``NaN`` for numeric) so the transformed matrix
+    always matches the model's expected input width.
 
     Args:
         project_data: Raw DataFrame from DataLoader.
@@ -100,17 +101,39 @@ def _clean_for_saved_vectorizer(project_data, vectorizer):
         cleaned_df with exactly the columns the vectorizer expects,
         in the same order as training.
     """
-    project_data = project_data.fillna("missing")
-    project_data = project_data.astype(str)
+    import numpy as np
 
-    # Ensure exactly the columns the vectorizer was trained on are present
-    trained_cols = (
-        list(vectorizer.one_hot_encoders.keys())
-        + list(vectorizer.min_max_scalers.keys())
-    )
+    # Derive the full ordered column list from the vectorizer's var_types
+    # (covers categorical, numeric, and any passthrough columns)
+    trained_cols = [
+        col for col in vectorizer.var_types.get("categorical", [])
+    ] + [
+        col for col in vectorizer.var_types.get("numeric", [])
+    ]
+    # Also include any columns tracked by encoders/scalers but not in
+    # var_types (defensive, shouldn't happen in practice)
+    for col in list(vectorizer.one_hot_encoders.keys()) + list(vectorizer.min_max_scalers.keys()):
+        if col not in trained_cols:
+            trained_cols.append(col)
+
+    # Clean categorical columns as strings; leave numeric columns numeric
+    numeric_cols = set(vectorizer.var_types.get("numeric", []))
     for col in trained_cols:
-        if col not in project_data.columns:
-            project_data[col] = "missing"
+        if col in project_data.columns:
+            if col not in numeric_cols:
+                project_data[col] = project_data[col].fillna("missing").astype(str)
+        else:
+            # Column missing from scoring data — fill with type-appropriate default
+            if col in numeric_cols:
+                project_data[col] = np.nan
+            else:
+                project_data[col] = "missing"
+
+    # Ensure non-numeric columns that were present are also string-typed
+    for col in trained_cols:
+        if col not in numeric_cols and col in project_data.columns:
+            project_data[col] = project_data[col].astype(str)
+
     return project_data[trained_cols]
 
 
