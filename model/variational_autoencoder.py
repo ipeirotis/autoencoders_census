@@ -236,7 +236,8 @@ class VariationalAutoencoderModel:
         )
 
         autoencoder.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+            run_eagerly=True,
         )
 
         return autoencoder
@@ -267,7 +268,8 @@ class VariationalAutoencoderModel:
         )
 
         autoencoder.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate)
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+            run_eagerly=True,
         )
 
         return autoencoder
