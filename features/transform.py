@@ -64,8 +64,10 @@ class Table2Vector:
             if column in self.var_types["numeric"]:
                 scaler = MinMaxScaler()
                 non_na = training_df[column].notna()
-                scaler.fit(training_df.loc[non_na, [column]])
-                self.min_max_scalers[column] = scaler
+                if non_na.sum() > 0:
+                    scaler.fit(training_df.loc[non_na, [column]])
+                    self.min_max_scalers[column] = scaler
+                # If all values are NaN in training, skip — column passes through unscaled
             elif column in self.var_types["categorical"]:
                 encoder = OneHotEncoder(
                     sparse_output=False, handle_unknown="ignore"
@@ -127,12 +129,13 @@ class Table2Vector:
         vectorized_df = original_df.copy()
 
         for column in vectorized_df.columns:
-            if column in self.var_types["numeric"]:
+            if column in self.var_types["numeric"] and column in self.min_max_scalers:
                 scaler = self.min_max_scalers[column]
                 non_na_rows = vectorized_df[column].notna()
-                vectorized_df.loc[non_na_rows, column] = scaler.transform(
-                    vectorized_df.loc[non_na_rows, [column]]
-                ).ravel()
+                if non_na_rows.sum() > 0:
+                    vectorized_df.loc[non_na_rows, column] = scaler.transform(
+                        vectorized_df.loc[non_na_rows, [column]]
+                    ).ravel()
             elif column in self.var_types["categorical"]:
                 encoder = self.one_hot_encoders[column]
                 df_encoded = pd.DataFrame(
