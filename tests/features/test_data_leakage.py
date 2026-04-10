@@ -172,6 +172,50 @@ class TestNoDataLeakage(unittest.TestCase):
         pd.testing.assert_frame_equal(result1, result2)
 
 
+class TestGetCardinalities(unittest.TestCase):
+    """Cardinalities must match the fitted encoder's actual categories."""
+
+    def test_categorical_cardinalities_match_encoder(self):
+        train_df = pd.DataFrame({
+            "fruit": ["apple", "banana", "apple", "banana"],
+            "color": ["red", "blue", "green", "red"],
+        })
+        vt = Table2Vector({"fruit": "categorical", "color": "categorical"})
+        vt.fit(train_df)
+
+        cardinalities = vt.get_cardinalities(["fruit", "color"])
+        self.assertEqual(cardinalities, [2, 3])
+
+    def test_cardinalities_exclude_test_only_categories(self):
+        """If test has an extra category, cardinalities must NOT count it."""
+        train_df = pd.DataFrame({"q": ["a", "b", "a", "b"]})
+        vt = Table2Vector({"q": "categorical"})
+        vt.fit(train_df)
+
+        # Full dataset would have 3 unique, but encoder only knows 2
+        cardinalities = vt.get_cardinalities(["q"])
+        self.assertEqual(cardinalities, [2])
+
+    def test_numeric_cardinality_is_one(self):
+        train_df = pd.DataFrame({"score": [1.0, 2.0, 3.0]})
+        vt = Table2Vector({"score": "numeric"})
+        vt.fit(train_df)
+
+        cardinalities = vt.get_cardinalities(["score"])
+        self.assertEqual(cardinalities, [1])
+
+    def test_mixed_cardinalities(self):
+        train_df = pd.DataFrame({
+            "name": ["alice", "bob", "alice"],
+            "age": [25.0, 30.0, 35.0],
+        })
+        vt = Table2Vector({"name": "categorical", "age": "numeric"})
+        vt.fit(train_df)
+
+        cardinalities = vt.get_cardinalities(["name", "age"])
+        self.assertEqual(cardinalities, [2, 1])
+
+
 class TestNumericScalerLeakage(unittest.TestCase):
     """MinMaxScaler-specific leakage tests."""
 

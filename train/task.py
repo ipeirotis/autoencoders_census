@@ -65,7 +65,6 @@ def train_and_predict(job_id, bucket_name, file_path):
 
         # 3. Vectorization & model setup (split before fitting to prevent data leakage)
         from sklearn.model_selection import train_test_split as _tts
-        cardinalities = [process_df[col].nunique() for col in process_df.columns]
         model_variable_types = {col: "categorical" for col in process_df.columns}
         vectorizer = Table2Vector(model_variable_types)
 
@@ -75,6 +74,7 @@ def train_and_predict(job_id, bucket_name, file_path):
         X_test = vectorizer.transform(test_df).astype('float32')
         vectorized_df = vectorizer.transform(process_df).astype('float32')
 
+        cardinalities = vectorizer.get_cardinalities(process_df.columns)
         logger.info("Initializing AutoEncoderModel...")
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
         ae_wrapper.INPUT_SHAPE = X_train.shape[1:]

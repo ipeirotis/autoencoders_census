@@ -142,8 +142,8 @@ def prepare_for_model(project_data, variable_types=None):
     # 5. Float32 conversion
     vectorized_df = vectorized_df.astype("float32")
 
-    # 6. Cardinalities
-    cardinalities = [project_data[c].nunique() for c in project_data.columns]
+    # 6. Cardinalities from the fitted encoder (consistent with one-hot width)
+    cardinalities = vectorizer.get_cardinalities(project_data.columns)
 
     return project_data, vectorized_df, vectorizer, cardinalities
 
@@ -185,8 +185,10 @@ def prepare_for_training(project_data, variable_types=None, test_size=0.2):
     X_train = vectorizer.transform(train_df).astype("float32")
     X_test = vectorizer.transform(test_df).astype("float32")
 
-    # 7. Cardinalities (from the full cleaned data so all categories are counted)
-    cardinalities = [project_data[c].nunique() for c in project_data.columns]
+    # 7. Cardinalities from the *fitted encoder* so model dimensions
+    #    match the actual one-hot width (not the full dataset which may
+    #    contain categories absent from the training split).
+    cardinalities = vectorizer.get_cardinalities(project_data.columns)
 
     return project_data, X_train, X_test, vectorizer, cardinalities
 

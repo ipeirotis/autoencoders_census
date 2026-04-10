@@ -1093,7 +1093,7 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         vectorized_df = vectorizer.transform(process_df).astype('float32')
 
         # 7. Build and train autoencoder
-        cardinalities = [process_df[col].nunique() for col in process_df.columns]
+        cardinalities = vectorizer.get_cardinalities(process_df.columns)
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
         ae_wrapper.INPUT_SHAPE = X_train.shape[1:]
 

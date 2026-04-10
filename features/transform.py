@@ -147,6 +147,34 @@ class Table2Vector:
 
         return vectorized_df
 
+    def get_cardinalities(self, columns):
+        """Return per-column cardinalities consistent with the fitted encoders.
+
+        For categorical columns the cardinality equals the number of
+        categories the fitted ``OneHotEncoder`` knows about.  For numeric
+        columns the cardinality is 1 (a single scaled value).
+
+        This must be called **after** ``fit()`` or ``vectorize_table()``
+        so that the encoders are available.
+
+        Args:
+            columns: Ordered column names from the *cleaned* (pre-vectorized)
+                DataFrame — the same order used when calling ``fit()``.
+
+        Returns:
+            List[int] of per-column cardinalities.
+        """
+        cardinalities = []
+        for col in columns:
+            if col in self.one_hot_encoders:
+                cardinalities.append(len(self.one_hot_encoders[col].categories_[0]))
+            elif col in self.min_max_scalers:
+                cardinalities.append(1)
+            else:
+                # Column was not transformed — treat as single numeric value
+                cardinalities.append(1)
+        return cardinalities
+
     def add_missing_indicators(self, df):
         """
         Adds binary columns to the dataframe indicating the presence of missing values.
