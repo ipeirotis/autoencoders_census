@@ -71,11 +71,11 @@ if [ ! -f "$CONFIG" ]; then exit 0; fi
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 if [ -z "$USER_EMAIL" ]; then exit 0; fi
 
-PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null)
-if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then exit 0; fi
+PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || exit 0
+if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ] || [ "$PROVIDER_COUNT" = "0" ]; then exit 0; fi
 
 for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
-  PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG")
+  PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG" 2>/dev/null) || continue
   ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
   if [ ! -f "$ENC_FILE" ]; then continue; fi
 
@@ -123,9 +123,14 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         export PATH="/home/user/bin:$PATH"
         rm -rf /tmp/awscliv2.zip /tmp/aws
       fi
-      export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
-      export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
-      export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
+      AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json 2>/dev/null) || true
+      AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json 2>/dev/null) || true
+      AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json 2>/dev/null) || true
+      if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        echo "WARNING: Failed to parse AWS credentials — skipping AWS auth."
+        rm -f /tmp/credentials.json; continue
+      fi
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
       if [ -n "$CLAUDE_ENV_FILE" ]; then
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"

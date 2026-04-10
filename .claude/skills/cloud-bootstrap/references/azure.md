@@ -34,7 +34,7 @@ set -e
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
-PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "azure" ]; then exit 0; fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
@@ -46,7 +46,8 @@ if [ -z "$KEY" ]; then exit 0; fi
 
 # --- Install az CLI if missing (only after confirming auth is possible) ---
 if ! command -v az &> /dev/null; then
-  if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
+  INSTALLER=$(curl -sSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null) || true
+  if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | sudo bash; then
     echo "WARNING: Azure CLI install failed — skipping Azure auth."
     exit 0
   fi
