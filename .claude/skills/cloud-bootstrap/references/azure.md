@@ -105,14 +105,21 @@ Tell the user to run locally:
 ```bash
 az login
 az account set --subscription SUBSCRIPTION_ID
+
+# ARM token (for resource management: role assignments, subscriptions, etc.)
 az account get-access-token --query accessToken -o tsv
+
+# Graph token (for app registrations, service principals, client secrets)
+az account get-access-token --resource-type ms-graph --query accessToken -o tsv
 ```
 
-This produces a token valid for ~1 hour.
+The ARM token is used for Azure Resource Manager operations. The Graph token is needed for Microsoft Graph API calls (creating app registrations, adding client secrets, etc.). Both are valid for ~1 hour.
 
 ## API Approach
 
-Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with `curl -H "Authorization: Bearer $TOKEN"` against `https://management.azure.com` and `https://graph.microsoft.com`.
+Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with the appropriate token:
+- `curl -H "Authorization: Bearer $ARM_TOKEN"` against `https://management.azure.com` (resource management, role assignments)
+- `curl -H "Authorization: Bearer $GRAPH_TOKEN"` against `https://graph.microsoft.com` (app registrations, service principals, secrets)
 
 ## Create Service Principal
 
