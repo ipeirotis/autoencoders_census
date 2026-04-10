@@ -10,8 +10,6 @@ from tensorflow import keras
 from model.base import VAE
 from model.layers import build_encoder, build_decoder
 
-tf.config.run_functions_eagerly(True)
-
 
 class VariationalAutoencoderModel:
     def __init__(self, attribute_cardinalities):

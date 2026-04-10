@@ -5,8 +5,6 @@ from tensorflow.keras.layers import Lambda
 
 from model.layers import build_encoder, build_decoder
 
-tf.config.run_functions_eagerly(True)
-
 
 class VAE(keras.Model):
     def __init__(

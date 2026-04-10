@@ -107,8 +107,8 @@ Run systematic comparisons of AE vs. Chow-Liu tree on all built-in datasets. Rec
 - **`Concatenate()` with single attribute**: Fixed all three locations (`model/autoencoder.py` `build_decoder` and `build_decoder_hp`, `model/layers.py` `build_decoder`) to skip `Concatenate` and pass through the single tensor directly when there is only one attribute.
 - Added tests: `test_single_category_attribute_no_division_by_zero` (loss), `test_log_cardinalities_guards_cardinality_one` and `test_single_attribute_decoder_builds` (autoencoder).
 
-### 3.6 Remove global eager mode
-`tf.config.run_functions_eagerly(True)` is set at module level in `model/base.py:8` and `model/variational_autoencoder.py:13`. This forces all TensorFlow functions in the process to run eagerly, causing 2-10x training slowdown. This was likely added for debugging. Remove it or guard behind a `DEBUG` environment variable.
+### ~~3.6 Remove global eager mode~~ DONE
+Removed `tf.config.run_functions_eagerly(True)` from module level in `model/base.py` and `model/variational_autoencoder.py`. This was a debug leftover that forced all TensorFlow functions to run eagerly, causing 2-10x training slowdown. Graph mode is now used by default, which is the standard TensorFlow behavior.
 
 ### 3.7 Fix VAE serialization issues (LOW PRIORITY)
 - `kl_loss_weight` is overwritten to `0.0` in the constructor (model/base.py:36-40) for warmup scheduling. But `get_config()` (model/base.py:269-270) calls `.numpy()` on `self.kl_loss_weight`, which is a Python float (not a tensor) before the first training step, raising `AttributeError`.
