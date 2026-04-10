@@ -15,8 +15,6 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 
 import os
-import sys
-import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score, average_precision_score
 from dataset.loader import DataLoader
@@ -96,7 +94,7 @@ def print_comparison(dataset_name, all_results):
     print(f"\n{'=' * 80}")
     print(f"BENCHMARK: {dataset_name}")
     print(f"{'=' * 80}")
-    print(f"Ground truth: composite indicator (3+ simultaneous extreme values)")
+    print("Ground truth: composite indicator (3+ simultaneous extreme values)")
 
     if not all_results:
         print("  No results to display.")
