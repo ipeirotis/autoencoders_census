@@ -101,18 +101,31 @@ def _install_gcp_client_stubs() -> None:
         # sys.modules so `from google.cloud import firestore` resolves.
         # Use types.ModuleType (not MagicMock) and preserve any existing
         # real module so we don't clobber google-protobuf / TensorFlow.
+        # Populate __path__ from site-packages so namespace subpackages
+        # like google.protobuf remain discoverable.
         import types
+        import importlib
 
         if "google" not in sys.modules:
             _google = types.ModuleType("google")
-            _google.__path__ = []
+            # Use pkgutil-style namespace path so google.protobuf etc.
+            # can still be found in site-packages.
+            _google.__path__ = importlib.machinery.PathFinder.find_spec(
+                "google", path=None
+            ).submodule_search_locations[:] if importlib.machinery.PathFinder.find_spec(
+                "google", path=None
+            ) else []
             sys.modules["google"] = _google
 
         if "google.cloud" not in sys.modules:
             _gc = types.ModuleType("google.cloud")
-            _gc.__path__ = []
+            _google_mod = sys.modules["google"]
+            _spec = importlib.machinery.PathFinder.find_spec(
+                "google.cloud", path=getattr(_google_mod, "__path__", [])
+            )
+            _gc.__path__ = _spec.submodule_search_locations[:] if _spec else []
             sys.modules["google.cloud"] = _gc
-            sys.modules["google"].cloud = _gc
+            _google_mod.cloud = _gc
 
         # Set mock subpackages as attributes on google.cloud so that
         # `from google.cloud import X` finds them via getattr.
