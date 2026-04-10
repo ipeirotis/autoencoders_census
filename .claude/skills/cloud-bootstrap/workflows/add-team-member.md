@@ -32,12 +32,15 @@ Using the bootstrap token and provider-specific commands:
 
 1. Create a **new key** for the **existing** service account (do NOT create a new service account). See the "Add Key for Existing Service Account" section in the provider reference.
 2. Resolve the encryption key for the current user.
-3. Encrypt with the appropriate filename based on config format:
+3. Encrypt with the user's email in the filename. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)
-   # Check if config uses providers[] (multi-provider) or provider (single)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
-     PROVIDER=$(jq -r '.providers[0].provider' .cloud-config.json)
+     # PROVIDER must already be set from Step 1 — validate but do not overwrite
+     if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then
+       echo "ERROR: PROVIDER is not set — determine it from .cloud-config.json in Step 1."
+       exit 1
+     fi
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
@@ -46,12 +49,12 @@ Using the bootstrap token and provider-specific commands:
      -pass stdin \
      -in credentials.json -out "$ENC_FILE"
    ```
-   **Multi-provider note:** In repos with multiple providers, repeat steps 1–3 for **each** provider entry in `providers[]`. Each provider needs its own key created and encrypted to `.cloud-credentials.<provider>.<email>.enc`.
+   **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json
    ```
-5. Commit the new `.cloud-credentials.<email>.enc` file.
+5. Commit the new encrypted credentials file.
 
 ## Step 4: Ensure SessionStart Hook Exists
 
