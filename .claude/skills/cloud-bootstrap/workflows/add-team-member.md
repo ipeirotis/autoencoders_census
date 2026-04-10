@@ -46,6 +46,7 @@ Using the bootstrap token and provider-specific commands:
      -pass stdin \
      -in credentials.json -out "$ENC_FILE"
    ```
+   **Multi-provider note:** In repos with multiple providers, repeat steps 1–3 for **each** provider entry in `providers[]`. Each provider needs its own key created and encrypted to `.cloud-credentials.<provider>.<email>.enc`.
 4. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json
