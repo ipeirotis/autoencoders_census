@@ -47,7 +47,7 @@ set -e
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
-PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "aws" ]; then exit 0; fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
@@ -76,10 +76,17 @@ fi
 
 trap 'rm -f /tmp/credentials.json' EXIT
 
-export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
-export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
-export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
+AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json 2>/dev/null) || true
+AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json 2>/dev/null) || true
+AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json 2>/dev/null) || true
 rm -f /tmp/credentials.json
+
+if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+  echo "WARNING: Failed to parse AWS credentials — skipping AWS auth."
+  exit 0
+fi
+
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
 
 # Persist env vars for the session via CLAUDE_ENV_FILE
 if [ -n "$CLAUDE_ENV_FILE" ]; then
@@ -243,10 +250,12 @@ Prefer inline policies scoped to specific resources over broad managed policies.
 After decrypting credentials to `/tmp/credentials.json`:
 
 ```bash
-export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
-export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
-export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
+AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
+AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
+AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
 rm -f /tmp/credentials.json
+
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
 
 # Verify
 aws sts get-caller-identity
