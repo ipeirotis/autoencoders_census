@@ -66,8 +66,9 @@ resolve_credentials_key() {
 Determine the current user's email, then:
 
 1. If `.cloud-config.json` does NOT exist → read `workflows/first-time-setup.md`
-2. If `.cloud-config.json` exists BUT `.cloud-credentials.<user-email>.enc` does NOT → read `workflows/add-team-member.md`
-3. If `.cloud-credentials.<user-email>.enc` exists → read `workflows/authenticate.md`
+2. If `.cloud-config.json` exists BUT no credential file exists for the user → read `workflows/add-team-member.md`
+   - Check for both `.cloud-credentials.<user-email>.enc` (single-provider) and `.cloud-credentials.<provider>.<user-email>.enc` (multi-provider)
+3. If a matching credential file exists → read `workflows/authenticate.md`
 
 For other operations, read the corresponding workflow file in this skill's `workflows/` directory:
 - **Permission escalation** (403 / access denied errors) → `workflows/permission-escalation.md`
