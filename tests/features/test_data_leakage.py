@@ -299,5 +299,71 @@ class TestPrepareForTraining(unittest.TestCase):
         self.assertListEqual(list(X_train.columns), list(X_test.columns))
 
 
+class TestVectorizerPersistence(unittest.TestCase):
+    """Roundtrip test: save a fitted vectorizer then load and reuse it."""
+
+    def test_save_load_vectorizer_roundtrip(self):
+        import tempfile, os, joblib
+        from utils import save_model, load_vectorizer
+
+        train_df = pd.DataFrame({
+            "q1": ["a", "b", "c", "a", "b", "c"],
+            "q2": ["x", "y", "x", "y", "x", "y"],
+        })
+        vt = Table2Vector({"q1": "categorical", "q2": "categorical"})
+        vt.fit(train_df)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "model/")
+            os.makedirs(output_path, exist_ok=True)
+            # Save just the vectorizer (skip Keras model to keep test fast)
+            joblib.dump(vt, os.path.join(output_path, "vectorizer.joblib"))
+
+            # load_vectorizer expects model_path like "<dir>/autoencoder"
+            model_path = os.path.join(output_path, "autoencoder")
+            loaded = load_vectorizer(model_path)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(
+                loaded.get_cardinalities(["q1", "q2"]),
+                vt.get_cardinalities(["q1", "q2"]),
+            )
+
+            # Transform with loaded vectorizer must match original
+            test_df = pd.DataFrame({"q1": ["a", "b"], "q2": ["y", "x"]})
+            original_result = vt.transform(test_df)
+            loaded_result = loaded.transform(test_df)
+            pd.testing.assert_frame_equal(original_result, loaded_result)
+
+    def test_load_vectorizer_returns_none_for_old_models(self):
+        import tempfile, os
+        from utils import load_vectorizer
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No vectorizer.joblib exists
+            model_path = os.path.join(tmpdir, "autoencoder")
+            self.assertIsNone(load_vectorizer(model_path))
+
+    def test_inference_uses_training_categories_only(self):
+        """End-to-end: scoring data with extra categories uses training schema."""
+        train_df = pd.DataFrame({
+            "fruit": ["apple", "banana", "apple", "banana"],
+        })
+        score_df = pd.DataFrame({
+            "fruit": ["apple", "cherry"],  # cherry unseen in training
+        })
+
+        vt = Table2Vector({"fruit": "categorical"})
+        vt.fit(train_df)
+
+        # Score with the training-fitted vectorizer
+        scored = vt.transform(score_df)
+        # Width must match training (2 columns: apple, banana), not scoring (3)
+        self.assertEqual(scored.shape[1], 2)
+        # Cherry row should be all-zeros
+        cherry_row = scored.iloc[1]
+        self.assertEqual(cherry_row.sum(), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

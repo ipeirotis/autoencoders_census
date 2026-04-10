@@ -48,6 +48,7 @@ from utils import (
     save_hyperparameters,
     model_analysis,
     load_model,
+    load_vectorizer,
     save_to_csv,
     evaluate_errors,
     define_necessary_elements,
@@ -202,7 +203,7 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
 
-    _, X_train, X_test, _, cardinalities = prepare_for_training(
+    _, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
         df, test_size=config.get("test_size", 0.2)
     )
 
@@ -216,7 +217,7 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
     )
 
     logger.info("Saving model....")
-    save_model(model, output_path)
+    save_model(model, output_path, vectorizer=vectorizer)
     save_history(history, output_path)
 
     return model, history
@@ -321,7 +322,7 @@ def train(
 
     # 10. Save Results
     logger.info("Saving model....")
-    save_model(model, output)
+    save_model(model, output, vectorizer=vectorizer)
     logger.info(f"Saving history....")
     save_history(history, output)
     logger.info("Saving plots....")
@@ -475,9 +476,16 @@ def evaluate(
     variable_types = metadata.get("variable_types", {})
 
     logger.info(f"Transforming the data....")
-    project_data, vectorized_df, vectorizer, _ = prepare_for_model(
-        project_data, variable_types
-    )
+    saved_vectorizer = load_vectorizer(model_path)
+    if saved_vectorizer is not None:
+        # Use the training-fitted vectorizer so one-hot width matches the model
+        project_data = prepare_for_categorical(project_data)
+        vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
+        vectorizer = saved_vectorizer
+    else:
+        project_data, vectorized_df, vectorizer, _ = prepare_for_model(
+            project_data, variable_types
+        )
     variable_types = {c: "categorical" for c in project_data.columns}
 
     evaluator = Evaluator(model)
@@ -568,9 +576,16 @@ def find_outliers(
 
     # 4. Clean, vectorize, and compute cardinalities
     logger.info("Transforming the data....")
-    project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
-        project_data, variable_types
-    )
+    saved_vectorizer = load_vectorizer(model_path)
+    if saved_vectorizer is not None:
+        project_data = prepare_for_categorical(project_data)
+        vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
+        vectorizer = saved_vectorizer
+        attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
+    else:
+        project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+            project_data, variable_types
+        )
 
     # 5. Load model
     logger.info(f"Loading model from {model_path}")
