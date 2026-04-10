@@ -24,6 +24,8 @@ if [ -z "$KEY" ]; then exit 0; fi
 echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || exit 0
 
+trap 'rm -f /tmp/credentials.json' EXIT
+
 gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null
 gcloud config set project "$(jq -r .project_id "$CONFIG")" 2>/dev/null
 rm -f /tmp/credentials.json
