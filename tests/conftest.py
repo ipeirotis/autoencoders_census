@@ -97,9 +97,32 @@ def _install_gcp_client_stubs() -> None:
         _mock_storage = MagicMock(name="mock_storage_module")
         _mock_storage.Client = MagicMock(return_value=MagicMock(name="StorageClient"))
 
-        # Inject mock leaf modules.  Do NOT touch "google" or "google.cloud"
-        # namespace packages — they are shared with google-protobuf, grpcio,
-        # and TensorFlow and must keep their real __path__.
+        # Ensure "google" and "google.cloud" parent packages exist in
+        # sys.modules so `from google.cloud import firestore` resolves.
+        # Use types.ModuleType (not MagicMock) and preserve any existing
+        # real module so we don't clobber google-protobuf / TensorFlow.
+        import types
+
+        if "google" not in sys.modules:
+            _google = types.ModuleType("google")
+            _google.__path__ = []
+            sys.modules["google"] = _google
+
+        if "google.cloud" not in sys.modules:
+            _gc = types.ModuleType("google.cloud")
+            _gc.__path__ = []
+            sys.modules["google.cloud"] = _gc
+            sys.modules["google"].cloud = _gc
+
+        # Set mock subpackages as attributes on google.cloud so that
+        # `from google.cloud import X` finds them via getattr.
+        _gc_mod = sys.modules["google.cloud"]
+        _gc_mod.firestore = _mock_firestore
+        _gc_mod.firestore_v1 = _mock_firestore
+        _gc_mod.pubsub_v1 = _mock_pubsub
+        _gc_mod.storage = _mock_storage
+
+        # Inject mock leaf modules into sys.modules as well.
         sys.modules["google.cloud.firestore"] = _mock_firestore
         sys.modules["google.cloud.firestore_v1"] = _mock_firestore
         sys.modules["google.cloud.pubsub_v1"] = _mock_pubsub
