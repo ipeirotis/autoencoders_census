@@ -115,6 +115,11 @@ def save_to_csv(df: pd.DataFrame, output_path: str, suffix: str = "metrics"):
 
 
 def evaluate_errors(error_data, column, values):
+    if Qrels is None or Run is None or evaluate is None:
+        raise ImportError(
+            "ranx is required for evaluate_errors(). "
+            "Install it with: pip install ranx"
+        )
 
     error_data = error_data.replace("<NA>", "0")
     error_data = error_data.fillna("0")
@@ -218,12 +223,6 @@ def evaluate_errors(error_data, column, values):
 
     # Show plot
     plt.show()
-
-    if Qrels is None or Run is None or evaluate is None:
-        raise ImportError(
-            "ranx is required for evaluate_errors(). "
-            "Install it with: pip install ranx"
-        )
 
     qrels = {
         "query_1": {f"doc_{i + 1}": rel for i, rel in enumerate(relevant) if rel == 1}
