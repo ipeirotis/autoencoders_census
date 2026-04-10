@@ -314,7 +314,7 @@ class TestVectorizerPersistence(unittest.TestCase):
 
     def test_save_load_vectorizer_roundtrip(self):
         import tempfile, os, joblib
-        from utils import save_model, load_vectorizer
+        from utils import load_vectorizer
 
         train_df = pd.DataFrame({
             "q1": ["a", "b", "c", "a", "b", "c"],

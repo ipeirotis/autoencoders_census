@@ -267,10 +267,10 @@ def evaluate_errors(error_data, column, values):
         "precision@10",
         "precision@50",
         "precision@100",
-        f"map",
-        f"map@68",
+        "map",
+        "map@68",
         f"ndcg@{total_w_error}",
-        f"mrr",
+        "mrr",
     ]
     evaluation = evaluate(qrels, run, metrics)
 

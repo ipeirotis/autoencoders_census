@@ -5,10 +5,8 @@ Tests that worker extends Pub/Sub message ack deadline during processing
 to prevent timeout and redelivery for 10-15 minute jobs.
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import Mock, patch
 import time
-import threading
 
 
 def test_ack_extender_extends_deadline_periodically():

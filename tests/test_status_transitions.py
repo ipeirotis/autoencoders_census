@@ -8,7 +8,6 @@ Tests enforce business rules:
 - Error and canceled states reachable from any state
 """
 
-import pytest
 from worker import JobStatus, is_valid_transition
 
 

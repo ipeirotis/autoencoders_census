@@ -1,6 +1,5 @@
 
 import pandas as pd
-import numpy as np
 import logging
 from features.transform import Table2Vector
 
@@ -29,7 +28,7 @@ def test_reconstruction_logic():
 
     # 4. Simulate Model Reconstruction (just using the same data for perfect reconstruction, 
     # but let's change one slightly to simulate error)
-    reconstruction_vals = vectorized_df.values.copy()
+    vectorized_df.values.copy()
     
     # Let's say for row 1 (B, Y), the model predicts (A, Y)
     # col1 has categories A, B, C. A is index 0, B is index 1.

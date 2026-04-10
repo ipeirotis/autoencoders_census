@@ -32,7 +32,6 @@ import pandas as pd
 import yaml
 from sklearn.model_selection import train_test_split
 
-from google.cloud import storage
 from dataset.loader import DataLoader
 from evaluate.evaluator import Evaluator
 from evaluate.generator import Generator
@@ -264,7 +263,7 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
     model = get_model(model_name, cardinalities)
     trainer = Trainer(model, config)
 
-    logger.info(f"Training model....")
+    logger.info("Training model....")
     model, history = trainer.train(
         dataset=X_train, prior=prior,
         X_train=X_train, X_test=X_test,
@@ -338,7 +337,7 @@ def train(
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
     # 3. Initialize Loader
-    logger.info(f"Loading data....")
+    logger.info("Loading data....")
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -363,12 +362,12 @@ def train(
     )
 
     # 6. Build and Train model
-    logger.info(f"Loading model....")
+    logger.info("Loading model....")
     model = get_model(model_name, cardinalities)
 
     trainer = Trainer(model, config_dict)
 
-    logger.info(f"Training model....")
+    logger.info("Training model....")
     model, history = trainer.train(
         dataset=X_train, prior=prior,
         X_train=X_train, X_test=X_test,
@@ -377,7 +376,7 @@ def train(
     # 10. Save Results
     logger.info("Saving model....")
     save_model(model, output, vectorizer=vectorizer)
-    logger.info(f"Saving history....")
+    logger.info("Saving history....")
     save_history(history, output)
     logger.info("Saving plots....")
     model_analysis(history, output, model_name)
@@ -447,7 +446,7 @@ def search_hyperparameters(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Loading config from config file....")
+    logger.info("Loading config from config file....")
     with open(config, "r") as file:
         config = yaml.safe_load(file)
 
@@ -457,12 +456,12 @@ def search_hyperparameters(
         test_size=config.get("test_size", 0.2),
     )
 
-    logger.info(f"Loading model....")
+    logger.info("Loading model....")
     model = get_model(model_name, cardinalities)
 
     trainer = Trainer(model, config)
 
-    logger.info(f"Searching hyperparameters....")
+    logger.info("Searching hyperparameters....")
     best_hps = trainer.search_hyperparameters(
         dataset=X_train, prior=prior,
         X_train=X_train, X_test=X_test,
@@ -522,14 +521,14 @@ def evaluate(
 
     set_seed(seed)
 
-    logger.info(f"Loading model....")
+    logger.info("Loading model....")
     model = load_model(model_path)
 
-    logger.info(f"Loading data....")
+    logger.info("Loading data....")
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Transforming the data....")
+    logger.info("Transforming the data....")
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         # Use the training-fitted vectorizer so one-hot width matches the model
@@ -614,7 +613,7 @@ def find_outliers(
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
     # 2. Initialize Loader
-    logger.info(f"Loading data...")
+    logger.info("Loading data...")
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -808,7 +807,7 @@ def generate(
 
     set_seed(seed)
 
-    logger.info(f"Loading model....")
+    logger.info("Loading model....")
     model = load_model(model_path)
     decoder = model.decoder
 
@@ -824,7 +823,7 @@ def generate(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    logger.info(f"Loading data....")
+    logger.info("Loading data....")
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -836,7 +835,7 @@ def generate(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    logger.info(f"Creating the vectorizer....")
+    logger.info("Creating the vectorizer....")
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
@@ -861,7 +860,7 @@ def generate(
             for ind, val in zip(features_indices, desired_values)
         ]
 
-    logger.info(f"Generating samples....")
+    logger.info("Generating samples....")
 
     # Compute latent-space statistics from the encoder on training data
     # (the VAE's get_config() does not store prior_means / prior_log_vars)
@@ -1078,7 +1077,7 @@ def pca_baseline(
 
     df_combined = pd.concat([reconstruction_errors, outlier_dataset], axis=1)
 
-    metrics = evaluate_errors(df_combined, column_to_condition, outlier_values)
+    evaluate_errors(df_combined, column_to_condition, outlier_values)
 
 
 if __name__ == "__main__":

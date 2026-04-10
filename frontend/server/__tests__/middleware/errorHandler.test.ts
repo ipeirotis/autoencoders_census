@@ -6,6 +6,15 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import request from 'supertest';
 import express, { Express, Request, Response, NextFunction } from 'express';
 
+// Mock Cloud Logging so production-mode tests don't need GCP credentials
+jest.mock('@google-cloud/logging-winston', () => ({
+  LoggingWinston: jest.fn().mockImplementation(() => ({
+    on: jest.fn(),
+    log: jest.fn(),
+    levels: {},
+  })),
+}));
+
 describe('Error handler middleware', () => {
   let app: Express;
   const originalEnv = process.env.NODE_ENV;

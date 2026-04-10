@@ -6,7 +6,6 @@ reconstruction loss into per-attribute percentages for outlier explanation.
 """
 
 import numpy as np
-import pytest
 from evaluate.outliers import compute_per_column_contributions
 
 
