@@ -139,7 +139,7 @@ If `az` is not available, use the Microsoft Graph API:
 ```bash
 # Step 1: Create application
 curl -X POST "https://graph.microsoft.com/v1.0/applications" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"displayName": "claude-agent"}' \
   > app.json
@@ -149,13 +149,13 @@ OBJECT_ID=$(jq -r .id app.json)
 
 # Step 2: Create service principal
 curl -X POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"appId\": \"$APP_ID\"}"
 
 # Step 3: Add client secret
 curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"passwordCredential": {"displayName": "claude-code"}}' \
   > secret.json
@@ -193,11 +193,11 @@ Or via REST API:
 
 ```bash
 ROLE_DEFINITION_ID=$(curl -s "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions?api-version=2022-04-01&\$filter=roleName eq 'ROLE_NAME'" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.value[0].id')
+  -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id')
 
 curl -X PUT \
   "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments/$(uuidgen)?api-version=2022-04-01" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $ARM_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
     \"properties\": {
@@ -218,13 +218,13 @@ When a new team member joins, create a new client secret for the existing app. R
 # Get the app's object ID from its appId
 APP_ID=$(jq -r .service_account .cloud-config.json)
 OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '$APP_ID'" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.value[0].id')
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
 
 USER_EMAIL=$(git config user.email)
 
 # Add a new client secret labeled with the user's email
 curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
   > secret.json
@@ -249,14 +249,14 @@ List client secrets for the app:
 
 ```bash
 curl -s "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
-  -H "Authorization: Bearer $TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
 Remove a specific client secret (if a team member leaves):
 
 ```bash
 curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"keyId": "KEY_ID_TO_REMOVE"}'
 ```

@@ -141,7 +141,8 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       ;;
     azure)
       if ! command -v az &>/dev/null; then
-        if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
+        INSTALLER=$(curl -sSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null) || true
+        if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | sudo bash; then
           echo "WARNING: Azure CLI install failed — skipping Azure auth."
           rm -f /tmp/credentials.json; continue
         fi

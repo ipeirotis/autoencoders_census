@@ -66,10 +66,10 @@ if ! command -v gcloud &> /dev/null; then
   export PATH="/home/user/google-cloud-sdk/bin:$PATH"
 fi
 
+trap 'rm -f /tmp/credentials.json' EXIT
+
 (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || exit 0
-
-trap 'rm -f /tmp/credentials.json' EXIT
 
 if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
   echo "WARNING: GCP auth failed — credentials may be revoked. Run credential rotation to fix."
