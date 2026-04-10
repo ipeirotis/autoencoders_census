@@ -81,10 +81,10 @@ if ! command -v aws &> /dev/null; then
 fi
 
 # --- Decrypt and activate credentials ---
+trap 'rm -f /tmp/credentials.json' EXIT
+
 (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || exit 0
-
-trap 'rm -f /tmp/credentials.json' EXIT
 
 AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json 2>/dev/null) || true
 AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json 2>/dev/null) || true

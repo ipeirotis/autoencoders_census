@@ -54,10 +54,10 @@ if ! command -v az &> /dev/null; then
 fi
 
 # --- Decrypt and activate credentials ---
+trap 'rm -f /tmp/credentials.json' EXIT
+
 (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || exit 0
-
-trap 'rm -f /tmp/credentials.json' EXIT
 
 if ! az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
