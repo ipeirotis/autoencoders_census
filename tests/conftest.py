@@ -52,25 +52,120 @@ def _install_gcp_client_stubs() -> None:
     patch `worker.db` directly (e.g. `with patch.object(worker, "db", ...)`),
     which still works because the MagicMock we leave behind has MagicMock
     attribute access by default.
+
+    Strategy: try importing the real GCP libraries first (works in CI where
+    cryptography is healthy). If the import fails for ANY reason — including
+    pyo3_runtime.PanicException from a broken cryptography C extension —
+    fall back to injecting lightweight mock modules directly into
+    sys.modules, which avoids the google-auth → cryptography import chain
+    entirely.
     """
     try:
         from google.cloud import firestore as _firestore
         from google.cloud import pubsub_v1 as _pubsub_v1
         from google.cloud import storage as _storage
-    except ImportError:
-        # Google Cloud libraries not installed at all - nothing to patch,
-        # tests that depend on them will fail naturally with a clearer
-        # error message.
-        return
 
-    _firestore.Client = MagicMock(return_value=MagicMock(name="FirestoreClient"))
-    _pubsub_v1.SubscriberClient = MagicMock(
-        return_value=MagicMock(name="SubscriberClient")
-    )
-    _pubsub_v1.PublisherClient = MagicMock(
-        return_value=MagicMock(name="PublisherClient")
-    )
-    _storage.Client = MagicMock(return_value=MagicMock(name="StorageClient"))
+        # Real imports succeeded — patch Client factories in-place.
+        _firestore.Client = MagicMock(return_value=MagicMock(name="FirestoreClient"))
+        _pubsub_v1.SubscriberClient = MagicMock(
+            return_value=MagicMock(name="SubscriberClient")
+        )
+        _pubsub_v1.PublisherClient = MagicMock(
+            return_value=MagicMock(name="PublisherClient")
+        )
+        _storage.Client = MagicMock(return_value=MagicMock(name="StorageClient"))
+
+        # Make firestore.transactional a pass-through so decorated functions
+        # (e.g. update_job_status) keep their real implementation.
+        _firestore.transactional = lambda fn: fn
+
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException:
+        # Import failed (e.g. broken cryptography, missing packages).
+        # Inject mock modules directly into sys.modules instead.
+        _mock_firestore = MagicMock(name="mock_firestore_module")
+        _mock_firestore.Client = MagicMock(return_value=MagicMock(name="FirestoreClient"))
+        _mock_firestore.transactional = lambda fn: fn
+
+        _mock_pubsub = MagicMock(name="mock_pubsub_v1_module")
+        _mock_pubsub.SubscriberClient = MagicMock(
+            return_value=MagicMock(name="SubscriberClient")
+        )
+        _mock_pubsub.PublisherClient = MagicMock(
+            return_value=MagicMock(name="PublisherClient")
+        )
+
+        _mock_storage = MagicMock(name="mock_storage_module")
+        _mock_storage.Client = MagicMock(return_value=MagicMock(name="StorageClient"))
+
+        # Ensure "google" and "google.cloud" parent packages exist in
+        # sys.modules so `from google.cloud import firestore` resolves.
+        # Use types.ModuleType (not MagicMock) and preserve any existing
+        # real module so we don't clobber google-protobuf / TensorFlow.
+        # Populate __path__ from site-packages so namespace subpackages
+        # like google.protobuf remain discoverable.
+        import types
+        import importlib
+
+        if "google" not in sys.modules:
+            _google = types.ModuleType("google")
+            # Use pkgutil-style namespace path so google.protobuf etc.
+            # can still be found in site-packages.
+            _google.__path__ = importlib.machinery.PathFinder.find_spec(
+                "google", path=None
+            ).submodule_search_locations[:] if importlib.machinery.PathFinder.find_spec(
+                "google", path=None
+            ) else []
+            sys.modules["google"] = _google
+
+        if "google.cloud" not in sys.modules:
+            _gc = types.ModuleType("google.cloud")
+            _google_mod = sys.modules["google"]
+            _spec = importlib.machinery.PathFinder.find_spec(
+                "google.cloud", path=getattr(_google_mod, "__path__", [])
+            )
+            _gc.__path__ = _spec.submodule_search_locations[:] if _spec else []
+            sys.modules["google.cloud"] = _gc
+            _google_mod.cloud = _gc
+
+        # Set mock subpackages as attributes on google.cloud so that
+        # `from google.cloud import X` finds them via getattr.
+        _gc_mod = sys.modules["google.cloud"]
+        _gc_mod.firestore = _mock_firestore
+        _gc_mod.firestore_v1 = _mock_firestore
+        _gc_mod.pubsub_v1 = _mock_pubsub
+        _gc_mod.storage = _mock_storage
+
+        # Inject mock leaf modules into sys.modules as well.
+        sys.modules["google.cloud.firestore"] = _mock_firestore
+        sys.modules["google.cloud.firestore_v1"] = _mock_firestore
+        sys.modules["google.cloud.pubsub_v1"] = _mock_pubsub
+        sys.modules["google.cloud.storage"] = _mock_storage
+
+        # Pre-seed google.auth (and key sub-modules) with mocks so the
+        # import chain never reaches the broken cryptography C extension.
+        _mock_auth = MagicMock(name="mock_google_auth")
+        for _auth_key in [
+            "google.auth",
+            "google.auth.credentials",
+            "google.auth.default",
+            "google.auth.transport",
+            "google.auth.transport.grpc",
+            "google.auth.transport.requests",
+            "google.auth._default",
+            "google.auth.crypt",
+            "google.auth.crypt.es",
+        ]:
+            sys.modules.setdefault(_auth_key, _mock_auth)
+
+        _mock_oauth = MagicMock(name="mock_google_oauth2")
+        for _oauth_key in [
+            "google.oauth2",
+            "google.oauth2.service_account",
+            "google.oauth2.credentials",
+        ]:
+            sys.modules.setdefault(_oauth_key, _mock_oauth)
 
 
 _install_gcp_client_stubs()
