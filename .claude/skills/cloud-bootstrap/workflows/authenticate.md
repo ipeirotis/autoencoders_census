@@ -16,12 +16,13 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    ```
 5. Read the corresponding provider reference file in this skill's directory.
 6. Resolve the encryption key.
-7. Decrypt the user's credentials:
+7. Decrypt the user's credentials with restrictive permissions and guaranteed cleanup:
    ```bash
-   echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+   (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
-     -in ".cloud-credentials.${USER_EMAIL}.enc" -out /tmp/credentials.json
+     -in ".cloud-credentials.${USER_EMAIL}.enc" -out /tmp/credentials.json)
+   trap 'rm -f /tmp/credentials.json' EXIT
    ```
-8. Activate using the provider-specific commands from the reference file.
-9. **Delete `/tmp/credentials.json` immediately after activation.**
+8. Activate using the provider-specific commands from the reference file. If activation fails, warn the user rather than leaving credentials on disk — the `EXIT` trap ensures cleanup.
+9. **Delete `/tmp/credentials.json` immediately after activation** (the `EXIT` trap handles this automatically, but explicit removal is still recommended).
 10. **Verify credentials work** by running the smoke test command from the provider reference file (see "Verify (Smoke Test)" section). If the smoke test fails, inform the user that credentials may be expired or revoked and suggest re-running setup.

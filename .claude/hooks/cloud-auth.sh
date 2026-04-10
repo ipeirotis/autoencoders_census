@@ -5,7 +5,7 @@ set -e
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
-PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "gcp" ]; then exit 0; fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
@@ -34,7 +34,7 @@ if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/de
   echo "WARNING: GCP auth failed — credentials may be revoked. Run credential rotation to fix."
   exit 0
 fi
-PROJECT_ID="$(jq -r .project_id "$CONFIG")"
+PROJECT_ID="$(jq -r .project_id "$CONFIG" 2>/dev/null)" || PROJECT_ID=""
 if ! gcloud config set project "$PROJECT_ID" 2>/dev/null; then
   echo "WARNING: Failed to set GCP project to $PROJECT_ID — verify project_id in .cloud-config.json."
 fi
