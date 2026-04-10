@@ -57,7 +57,17 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${AWS_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
-# --- Install aws CLI if missing (only after confirming auth is possible) ---
+# --- Ensure aws is on PATH (check common install locations first) ---
+if ! command -v aws &> /dev/null; then
+  for dir in /home/user/bin /usr/local/bin /home/user/aws-cli/bin; do
+    if [ -x "$dir/aws" ]; then
+      export PATH="$dir:$PATH"
+      break
+    fi
+  done
+fi
+
+# --- Install aws CLI if still missing ---
 if ! command -v aws &> /dev/null; then
   if ! (curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
     && unzip -q /tmp/awscliv2.zip -d /tmp \
