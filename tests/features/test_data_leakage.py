@@ -196,6 +196,16 @@ class TestGetCardinalities(unittest.TestCase):
         cardinalities = vt.get_cardinalities(["q"])
         self.assertEqual(cardinalities, [2])
 
+    def test_single_category_gets_minimum_cardinality_of_two(self):
+        """A column with only 1 category in training must report cardinality 2
+        to avoid log(1)=0 division-by-zero in loss normalization."""
+        train_df = pd.DataFrame({"mood": ["happy", "happy", "happy"]})
+        vt = Table2Vector({"mood": "categorical"})
+        vt.fit(train_df)
+
+        cardinalities = vt.get_cardinalities(["mood"])
+        self.assertEqual(cardinalities, [2])
+
     def test_numeric_cardinality_is_one(self):
         train_df = pd.DataFrame({"score": [1.0, 2.0, 3.0]})
         vt = Table2Vector({"score": "numeric"})
