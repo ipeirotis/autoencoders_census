@@ -14,7 +14,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    USER_EMAIL=$(git config user.email)
    # Check if config uses providers[] (multi-provider) or provider (single)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
-     PROVIDER=$(jq -r '.provider' .cloud-config.json 2>/dev/null || jq -r '.providers[0].provider' .cloud-config.json)
+     PROVIDER=$(jq -e -r '.provider' .cloud-config.json 2>/dev/null || jq -r '.providers[0].provider' .cloud-config.json)
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"

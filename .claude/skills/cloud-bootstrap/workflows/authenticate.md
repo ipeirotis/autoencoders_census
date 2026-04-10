@@ -20,7 +20,7 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    ```bash
    # Check if config uses providers[] (multi-provider) or provider (single)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
-     PROVIDER=$(jq -r '.provider' .cloud-config.json 2>/dev/null || jq -r '.providers[0].provider' .cloud-config.json)
+     PROVIDER=$(jq -e -r '.provider' .cloud-config.json 2>/dev/null || jq -r '.providers[0].provider' .cloud-config.json)
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
      # Fall back to single-provider naming if provider-prefixed file doesn't exist
      [ ! -f "$ENC_FILE" ] && ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
