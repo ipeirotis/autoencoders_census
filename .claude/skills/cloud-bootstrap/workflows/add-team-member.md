@@ -32,12 +32,19 @@ Using the bootstrap token and provider-specific commands:
 
 1. Create a **new key** for the **existing** service account (do NOT create a new service account). See the "Add Key for Existing Service Account" section in the provider reference.
 2. Resolve the encryption key for the current user.
-3. Encrypt with the user's email in the filename:
+3. Encrypt with the appropriate filename based on config format:
    ```bash
    USER_EMAIL=$(git config user.email)
+   # Check if config uses providers[] (multi-provider) or provider (single)
+   if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
+     PROVIDER=$(jq -r '.providers[0].provider' .cloud-config.json)
+     ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
+   else
+     ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
+   fi
    echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
      -pass stdin \
-     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
+     -in credentials.json -out "$ENC_FILE"
    ```
 4. **Delete the plaintext credentials immediately:**
    ```bash
