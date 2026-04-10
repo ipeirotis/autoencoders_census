@@ -18,7 +18,14 @@ The Claude Code on the Web sandbox may not have `az` pre-installed. Use this scr
 
 ```bash
 if ! command -v az &> /dev/null; then
-  curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash
+  for dir in /usr/bin /usr/local/bin /home/user/bin; do
+    if [ -x "$dir/az" ]; then export PATH="$dir:$PATH"; break; fi
+  done
+fi
+if ! command -v az &> /dev/null; then
+  if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
+    echo "WARNING: Azure CLI install failed."
+  fi
 fi
 ```
 
@@ -30,7 +37,7 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
-# --- Check credential prerequisites before doing anything expensive ---
+# --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
@@ -44,34 +51,35 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${AZURE_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
-# --- Install az CLI if missing (only after confirming auth is possible) ---
+# --- Install az CLI if missing ---
 if ! command -v az &> /dev/null; then
-  INSTALLER=$(curl -sSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null) || true
-  if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | sudo bash; then
+  for dir in /usr/bin /usr/local/bin /home/user/bin; do
+    if [ -x "$dir/az" ]; then export PATH="$dir:$PATH"; break; fi
+  done
+fi
+if ! command -v az &> /dev/null; then
+  if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
     echo "WARNING: Azure CLI install failed — skipping Azure auth."
     exit 0
   fi
 fi
 
-# --- Decrypt and activate credentials ---
+# --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
 trap 'rm -f /tmp/credentials.json' EXIT
-
-(umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null) || exit 0
+if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
+  echo "WARNING: Failed to decrypt credentials — check AZURE_CREDENTIALS_KEY or .enc file integrity."
+  exit 0
+fi
 
 if ! az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \
   --tenant "$(jq -r .tenant /tmp/credentials.json)" 2>/dev/null; then
-  echo "WARNING: Azure auth failed — credentials may be revoked. Run credential rotation to fix."
+  echo "WARNING: az login failed — credentials may be revoked."
   exit 0
 fi
-
-SUBSCRIPTION="$(jq -r .project_id "$CONFIG")"
-if ! az account set --subscription "$SUBSCRIPTION" 2>/dev/null; then
-  echo "WARNING: Failed to set Azure subscription to $SUBSCRIPTION — verify project_id in .cloud-config.json."
-fi
-rm -f /tmp/credentials.json
+az account set --subscription "$(jq -r .project_id "$CONFIG" 2>/dev/null)" 2>/dev/null || true
 
 echo "Azure credentials activated for $USER_EMAIL"
 ```
@@ -107,20 +115,20 @@ Tell the user to run locally:
 az login
 az account set --subscription SUBSCRIPTION_ID
 
-# ARM token (for resource management: role assignments, subscriptions, etc.)
-az account get-access-token --query accessToken -o tsv
+# ARM token — for resource management and role assignments
+ARM_TOKEN=$(az account get-access-token --query accessToken -o tsv)
 
-# Graph token (for app registrations, service principals, client secrets)
-az account get-access-token --resource-type ms-graph --query accessToken -o tsv
+# Graph token — for app registrations, service principals, client secrets
+GRAPH_TOKEN=$(az account get-access-token --resource-type ms-graph --query accessToken -o tsv)
 ```
 
-The ARM token is used for Azure Resource Manager operations. The Graph token is needed for Microsoft Graph API calls (creating app registrations, adding client secrets, etc.). Both are valid for ~1 hour.
+Both tokens are valid for ~1 hour. **Important:** ARM tokens are NOT valid for Microsoft Graph API calls, and vice versa. Use the correct token for each endpoint.
 
 ## API Approach
 
 Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with the appropriate token:
-- `curl -H "Authorization: Bearer $ARM_TOKEN"` against `https://management.azure.com` (resource management, role assignments)
-- `curl -H "Authorization: Bearer $GRAPH_TOKEN"` against `https://graph.microsoft.com` (app registrations, service principals, secrets)
+- **ARM operations** (role assignments, subscriptions): `curl -H "Authorization: Bearer $ARM_TOKEN"` against `https://management.azure.com`
+- **Graph operations** (app registrations, service principals, secrets): `curl -H "Authorization: Bearer $GRAPH_TOKEN"` against `https://graph.microsoft.com`
 
 ## Create Service Principal
 
@@ -134,7 +142,7 @@ az ad sp create-for-rbac \
 
 This returns `appId`, `password` (client secret), and `tenant`. The credentials file is already in the right format.
 
-If `az` is not available, use the Microsoft Graph API:
+If `az` is not available, use the Microsoft Graph API (requires `$GRAPH_TOKEN`):
 
 ```bash
 # Step 1: Create application
@@ -189,7 +197,7 @@ az role assignment create \
   --scope "/subscriptions/$SUBSCRIPTION_ID"
 ```
 
-Or via REST API:
+Or via REST API (requires `$ARM_TOKEN`):
 
 ```bash
 ROLE_DEFINITION_ID=$(curl -s "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions?api-version=2022-04-01&\$filter=roleName eq 'ROLE_NAME'" \
@@ -215,7 +223,7 @@ Prefer scoping roles to specific resource groups rather than the entire subscrip
 When a new team member joins, create a new client secret for the existing app. Read the `appId` from `.cloud-config.json` (stored as `service_account`).
 
 ```bash
-# Get the app's object ID from its appId
+# Get the app's object ID from its appId (requires $GRAPH_TOKEN)
 APP_ID=$(jq -r .service_account .cloud-config.json)
 OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '$APP_ID'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
@@ -245,7 +253,7 @@ rm -f secret.json
 
 ## Secret Management
 
-List client secrets for the app:
+List client secrets for the app (requires `$GRAPH_TOKEN`):
 
 ```bash
 curl -s "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
