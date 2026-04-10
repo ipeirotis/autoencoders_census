@@ -74,6 +74,13 @@ service-account.json
 !package.json
 !tsconfig.json
 !cors.json
+!.cloud-config.json
+!.claude/settings.json
+
+# Cloud -- never commit plaintext credentials
+credentials.json
+credentials_clean.json
+/tmp/
 
 # --- Project Specific ---
 uploads/
