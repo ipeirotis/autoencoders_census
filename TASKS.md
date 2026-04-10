@@ -78,12 +78,12 @@ Several security issues need to be addressed before any public deployment:
 - **No message field validation** (worker.py:223-225): If `jobId`, `bucket`, or `file` is missing from the message, `None` is passed downstream, causing a crash deep in GCS code with an unhelpful error.
 - **No env var validation at startup** (worker.py:41-43): If `GOOGLE_CLOUD_PROJECT`, `GCS_BUCKET_NAME`, or `PUBSUB_SUBSCRIPTION_ID` is unset, the worker starts but crashes on the first message. Fail fast at startup.
 
-### 2.7 Remove hardcoded GCP identifiers from source code
-- `worker.py:196`: Hardcoded service account email `203111407489-compute@developer.gserviceaccount.com`
-- `worker.py:181`: Hardcoded staging bucket `gs://autoencoders-census-staging`
-- `train/task.py:32`: Hardcoded project ID `autoencoders-census` instead of reading from `os.getenv("GOOGLE_CLOUD_PROJECT")`
-
-These should all be read from environment variables.
+### ~~2.7 Remove hardcoded GCP identifiers from source code~~ DONE
+All three hardcoded GCP identifiers now read from environment variables with the original values as defaults:
+- `worker.py`: Staging bucket reads from `VERTEX_STAGING_BUCKET` env var (default: `gs://autoencoders-census-staging`)
+- `worker.py`: Service account reads from `VERTEX_SERVICE_ACCOUNT` env var (default: `203111407489-compute@developer.gserviceaccount.com`)
+- `train/task.py`: Project ID reads from `GOOGLE_CLOUD_PROJECT` env var (default: `autoencoders-census`)
+Also added `import os` to `train/task.py` and documented the new optional env vars in `worker.py`'s docstring.
 
 ### 2.8 Fix inconsistent outlier scoring between CLI and web
 The CLI `find_outliers` command uses `VAE.reconstruction_loss()` (per-attribute categorical crossentropy normalized by log-cardinality), but the worker (worker.py:141) and Vertex AI task (train/task.py:94) use raw MSE on one-hot vectors: `np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)`. These are fundamentally different scoring functions. Outlier rankings from the web UI differ significantly from CLI results, even on the same data and model. Unify on a single scoring function.
@@ -99,8 +99,8 @@ When a user uploads a CSV through the web UI, the system should either auto-sele
 ### 3.3 Add per-column outlier contribution scores
 The `get_outliers_list()` function returns an aggregate reconstruction error per row. For interpretability, also compute and return per-column reconstruction error so users can see *which* survey questions a flagged respondent answered anomalously.
 
-### 3.4 Benchmark model variants
-Run systematic comparisons of AE vs. Chow-Liu tree on all built-in datasets. Record metrics (accuracy, lift, ROC AUC from `evaluate` command, plus outlier detection precision from `evaluate_on_condition`) and document which approach works best under what conditions. The Chow-Liu tree (task 10) provides a fast, principled baseline with no training hyperparameters — understanding when the AE adds value over the tree is a key research question.
+### ~~3.4 Benchmark model variants~~ DONE (initial results)
+Initial AE vs Chow-Liu comparison completed on SADC 2015 and 2017 — see task 10.5 for full results. Summary: comparable ROC AUC (~0.71-0.76), AE better at top-of-list precision on 2017, Chow-Liu more robust on 2015 and dramatically faster. Remaining work: extend to non-SADC datasets (Pennycook, bot_bot_mturk, etc.) once those datasets are available locally, and benchmark the VAE variant.
 
 ### ~~3.5 Fix numerical stability issues in loss computation~~ DONE
 - **Division by log(1) = 0**: `model/loss.py` and `model/base.py` already guarded with `max(int(categories), 2)`. Fixed the remaining unguarded location in `AutoencoderModel.__init__` (`model/autoencoder.py`) which computed `np.log(cardinality)` without clamping — now uses `np.log(max(cardinality, 2))`.
@@ -257,7 +257,7 @@ gcloud firestore databases create --project=autoencoders-census --location=us-ce
 
 The `jobs` collection is created automatically when the first document is written.
 
-### 7.4 Pub/Sub
+### 7.4 Pub/Sub ✓ provisioned
 
 ```bash
 # Topic: Express server publishes here when a file is uploaded
@@ -269,6 +269,8 @@ gcloud pubsub subscriptions create job-upload-topic-sub \
   --project=autoencoders-census \
   --ack-deadline=600
 ```
+
+Both the topic and subscription are now live in the `autoencoders-census` project.
 
 ### 7.5 Artifact Registry + Docker image (for Vertex AI mode only)
 
@@ -602,6 +604,38 @@ Added `tests/test_chow_liu.py` with 26 tests across 4 test classes:
 - **`TestRankRowsByChowLiu`** (9 tests): scoring columns present, original columns preserved, rank is valid permutation, pct/gmean_prob in [0,1], z-scores centered at 0, logp/avg_logp consistency
 - **`TestChowLiuOutlierDetection`** (4 tests): injected random rows score lower than correlated rows, error column compatible with evaluate_on_condition, NaN handling, single-column edge case
 
-### 10.5 Benchmark Chow-Liu vs AE for outlier detection
+### ~~10.5 Benchmark Chow-Liu vs AE for outlier detection~~ DONE
 
-Run comparisons on all built-in datasets using `evaluate_on_condition` to measure whether the tree-based approach (which is much faster and has no training hyperparameters) matches or exceeds the autoencoder for detecting known bad respondents. This directly addresses the concern in 9.2 about lacking baseline comparisons and is a key research question for the project.
+Ran comparisons on SADC 2015 and SADC 2017 using the composite outlier indicator (respondents with 3+ simultaneous extreme food/body-measurement values) as ground truth. Benchmark script: `benchmark_ae_vs_cl.py`. Config for tuned AE: `config/benchmark_autoencoder.yaml` (latent_dim=8, 50 epochs, lr=0.001).
+
+#### Results: SADC 2017 (14,765 rows, 230 outliers, 1.56% prevalence)
+
+| Metric | AE (latent=8, 50ep) | AE (latent=2, 5ep) | Chow-Liu (α=1.0) |
+|--------|--------------------:|-------------------:|------------------:|
+| ROC AUC | **0.7568** | 0.7420 | 0.7517 |
+| Avg Precision | **0.0629** | 0.0486 | 0.0501 |
+| Precision@10 | **0.4000** | 0.1000 | 0.0000 |
+| Precision@50 | **0.2200** | 0.1800 | 0.0400 |
+| Precision@100 | 0.1100 | **0.1200** | 0.0900 |
+| Lift@10 | **25.7x** | 6.4x | 0.0x |
+| Recall@500 | **0.1522** | 0.1217 | **0.1522** |
+
+#### Results: SADC 2015 (15,624 rows, 295 outliers, 1.89% prevalence)
+
+| Metric | AE (latent=8, 50ep) | Chow-Liu (α=1.0) |
+|--------|--------------------:|------------------:|
+| ROC AUC | **0.7176** | 0.7060 |
+| Avg Precision | 0.0446 | **0.0466** |
+| Precision@100 | 0.0000 | **0.0200** |
+| Precision@295 (=n_outliers) | 0.0373 | **0.0712** |
+| Recall@500 | 0.0949 | **0.1288** |
+
+#### Key findings
+
+1. **AE and Chow-Liu have comparable ROC AUC** (~0.71-0.76 on both datasets). Neither method strongly dominates.
+2. **AE has better top-of-list precision on SADC 2017** — the AE concentrates true outliers in its top-10 and top-50 predictions much better than Chow-Liu (precision@10 of 0.40 vs 0.00). This suggests the AE captures multivariate patterns that the tree misses for the most extreme cases.
+3. **Chow-Liu is more robust on SADC 2015** — the AE's top-k precision drops to near zero on SADC 2015, while Chow-Liu maintains modest but consistent performance. This suggests the AE may overfit to dataset-specific patterns.
+4. **Larger latent dimension helps** — the tuned AE (latent=8, 50 epochs) outperforms the default config (latent=2, 5 epochs) on AUC and average precision, confirming TASKS.md 9.10's recommendation to increase the default.
+5. **Both methods struggle with low-prevalence detection** — with only 1.6-1.9% outlier prevalence, even the best method achieves only ~6% average precision. This highlights the challenge noted in 9.5 (training on contaminated data) and 9.3 (proxy ground truth).
+6. **Chow-Liu is dramatically faster** — fits in <1 second vs. ~50 seconds for AE training. For quick screening, Chow-Liu is a practical choice.
+7. **Ensemble potential** — since AE excels at top-of-list and Chow-Liu at consistency, combining both scores (task 9.2's recommendation) could yield the best of both worlds.

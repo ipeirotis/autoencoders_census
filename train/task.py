@@ -14,7 +14,8 @@ Usage (called by Vertex AI):
 """
 
 import argparse
-import logging 
+import logging
+import os
 import numpy as np
 import pandas as pd
 from google.cloud import storage, firestore
@@ -26,7 +27,7 @@ from model.autoencoder import AutoencoderModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 # Force the client to use YOUR specific project, not the internal Google one
-db = firestore.Client(project="autoencoders-census")
+db = firestore.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "autoencoders-census"))
 
 def train_and_predict(job_id, bucket_name, file_path):
     try:
