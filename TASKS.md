@@ -102,9 +102,10 @@ The `get_outliers_list()` function returns an aggregate reconstruction error per
 ### 3.4 Benchmark model variants
 Run systematic comparisons of AE vs. Chow-Liu tree on all built-in datasets. Record metrics (accuracy, lift, ROC AUC from `evaluate` command, plus outlier detection precision from `evaluate_on_condition`) and document which approach works best under what conditions. The Chow-Liu tree (task 10) provides a fast, principled baseline with no training hyperparameters — understanding when the AE adds value over the tree is a key research question.
 
-### 3.5 Fix numerical stability issues in loss computation
-- **Division by log(1) = 0**: `model/loss.py:62` and `model/base.py:121` normalize per-attribute crossentropy by `np.log(categories)`. If any attribute has cardinality 1, this is division by zero, producing `inf`/`NaN` loss. Commands that skip the Rule-of-9 filter (1.6) are vulnerable. Guard with `max(np.log(categories), epsilon)`.
-- **`Concatenate()` with single attribute**: `model/autoencoder.py:252` and `model/layers.py:39` call `Concatenate()(decoded_attrs)` which requires 2+ inputs. A single-column dataset passing Rule-of-9 crashes here.
+### ~~3.5 Fix numerical stability issues in loss computation~~ DONE
+- **Division by log(1) = 0**: `model/loss.py` and `model/base.py` already guarded with `max(int(categories), 2)`. Fixed the remaining unguarded location in `AutoencoderModel.__init__` (`model/autoencoder.py`) which computed `np.log(cardinality)` without clamping — now uses `np.log(max(cardinality, 2))`.
+- **`Concatenate()` with single attribute**: Fixed all three locations (`model/autoencoder.py` `build_decoder` and `build_decoder_hp`, `model/layers.py` `build_decoder`) to skip `Concatenate` and pass through the single tensor directly when there is only one attribute.
+- Added tests: `test_single_category_attribute_no_division_by_zero` (loss), `test_log_cardinalities_guards_cardinality_one` and `test_single_attribute_decoder_builds` (autoencoder).
 
 ### 3.6 Remove global eager mode
 `tf.config.run_functions_eagerly(True)` is set at module level in `model/base.py:8` and `model/variational_autoencoder.py:13`. This forces all TensorFlow functions in the process to run eagerly, causing 2-10x training slowdown. This was likely added for debugging. Remove it or guard behind a `DEBUG` environment variable.

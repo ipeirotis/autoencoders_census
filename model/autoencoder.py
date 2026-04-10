@@ -50,7 +50,7 @@ class AutoencoderModel:
         self.attribute_cardinalities = attribute_cardinalities
 
         log_cardinalities = [
-            np.log(cardinality) for cardinality in self.attribute_cardinalities
+            np.log(max(cardinality, 2)) for cardinality in self.attribute_cardinalities
         ]
         log_cardinalities_tensor = tf.constant(log_cardinalities, dtype=tf.float32)
         self.log_cardinalities_expanded = tf.expand_dims(
@@ -225,7 +225,7 @@ class AutoencoderModel:
             decoder_softmax = Dense(categories, activation="softmax")(x)
             decoded_attrs.append(decoder_softmax)
 
-        outputs = Concatenate()(decoded_attrs)
+        outputs = Concatenate()(decoded_attrs) if len(decoded_attrs) > 1 else decoded_attrs[0]
 
         return Model(decoder_inputs, outputs)
 
@@ -249,7 +249,7 @@ class AutoencoderModel:
             decoder_softmax = Dense(categories, activation="softmax")(x)
             decoded_attrs.append(decoder_softmax)
 
-        outputs = Concatenate()(decoded_attrs)
+        outputs = Concatenate()(decoded_attrs) if len(decoded_attrs) > 1 else decoded_attrs[0]
 
         return Model(decoder_inputs, outputs)
 

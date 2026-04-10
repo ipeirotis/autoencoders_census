@@ -51,3 +51,14 @@ class TestCustomLossAE(unittest.TestCase):
         self.assertEqual(config["percentile"], 90)
         self.assertIn("attribute_cardinalities", config)
         self.assertEqual(config["attribute_cardinalities"], self.attribute_cardinalities)
+
+    def test_single_category_attribute_no_division_by_zero(self):
+        """Cardinality-1 attributes must not cause inf/NaN via log(1)=0 division."""
+        cardinalities = [1, 3]  # first attribute has cardinality 1
+        y_true = np.array([[1, 1, 0, 0], [1, 0, 1, 0]], dtype=np.float32)
+        y_pred = np.array(
+            [[1.0, 0.8, 0.1, 0.1], [1.0, 0.1, 0.8, 0.1]], dtype=np.float32
+        )
+        loss_fn = CustomCategoricalCrossentropyAE(attribute_cardinalities=cardinalities)
+        result = loss_fn(y_true, y_pred)
+        self.assertTrue(np.isfinite(result.numpy()), f"Loss is not finite: {result.numpy()}")
