@@ -148,3 +148,37 @@ GOOGLE_CLOUD_PROJECT=your-project-id
 GCS_BUCKET_NAME=your-bucket-name
 PUBSUB_SUBSCRIPTION_ID=job-upload-topic-sub
 ```
+
+## Cloud Credentials
+
+This repo uses the **cloud-bootstrap** skill to manage encrypted GCP credentials.
+
+- **Provider:** GCP
+- **Project:** `autoencoders-census`
+- **Service account:** `claude-agent@autoencoders-census.iam.gserviceaccount.com`
+- **Roles granted:**
+  - `roles/storage.objectAdmin` -- Read/write data files in GCS buckets
+  - `roles/datastore.user` -- Firestore job tracking and state management
+  - `roles/pubsub.editor` -- Pub/Sub message processing
+  - `roles/aiplatform.user` -- Vertex AI training jobs
+  - `roles/bigquery.dataEditor` -- BigQuery data access
+  - `roles/bigquery.jobUser` -- BigQuery job execution
+  - `roles/secretmanager.admin` -- Store and retrieve secrets in Secret Manager
+
+### Multi-user setup
+
+Each team member has their own encrypted credentials file (`.cloud-credentials.<email>.enc`). Passphrases are never shared between users.
+
+### Authentication
+
+Authentication is handled automatically via a SessionStart hook (`.claude/hooks/cloud-auth.sh`). Each session decrypts the user's credentials and activates the service account. No manual steps needed.
+
+### Adding new team members
+
+New team members are onboarded via the cloud-bootstrap **Add Team Member** workflow. They need:
+1. Their own `GCP_CREDENTIALS_KEY` (or `CLOUD_CREDENTIALS_KEY`) environment variable set
+2. A bootstrap token from someone with **Service Account Key Admin** on the project
+
+### Permission escalation
+
+If you encounter 403 / access denied errors, follow the cloud-bootstrap **Permission Escalation** workflow to request additional roles.
