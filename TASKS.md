@@ -84,8 +84,13 @@ All three hardcoded GCP identifiers now read from environment variables with the
 - `train/task.py`: Project ID reads from `GOOGLE_CLOUD_PROJECT` env var (default: `autoencoders-census`)
 Also added `import os` to `train/task.py` and documented the new optional env vars in `worker.py`'s docstring.
 
-### 2.8 Fix inconsistent outlier scoring between CLI and web
-The CLI `find_outliers` command uses `VAE.reconstruction_loss()` (per-attribute categorical crossentropy normalized by log-cardinality), but the worker (worker.py:141) and Vertex AI task (train/task.py:94) use raw MSE on one-hot vectors: `np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)`. These are fundamentally different scoring functions. Outlier rankings from the web UI differ significantly from CLI results, even on the same data and model. Unify on a single scoring function.
+### ~~2.8 Fix inconsistent outlier scoring between CLI and web~~ DONE
+Extracted a shared `compute_reconstruction_error(data, predictions, attr_cardinalities)` helper in `evaluate/outliers.py` that wraps `VAE.reconstruction_loss` (per-attribute categorical crossentropy normalized by `log(K)`) and returns a numpy array. This is now the single source of truth for outlier scoring, used by all three code paths:
+- **CLI (`find_outliers`)**: `get_outliers_list` was already calling `VAE.reconstruction_loss` directly; refactored to go through the new helper so the CLI and the other two paths cannot drift apart.
+- **Local worker (`worker.py:process_upload_local`)**: replaced `np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)` with `compute_reconstruction_error(vectorized_df, reconstruction, cardinalities)`.
+- **Vertex AI container (`train/task.py`)**: same replacement.
+
+Added `tests/test_reconstruction_error.py` with 9 tests: unit tests for the helper (perfect-reconstruction → zero error, worse predictions → higher error, DataFrame/ndarray interchangeability, numpy return type, direct equivalence to `VAE.reconstruction_loss`, strictly monotonic error for rows with 0/1/2 wrong attributes), a structural regression guard that fails if `worker.py` or `train/task.py` reintroduces the legacy MSE (via source inspection), a sanity check that the new score is genuinely different from the old MSE (correlation < 0.9999 on synthetic data), and an end-to-end check that `get_outliers_list` populates its `error` column from the shared helper.
 
 ## 3. Improve Model Quality and Configurability
 

@@ -1,9 +1,48 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 from model.base import VAE
+
+
+def compute_reconstruction_error(
+    data: Union[pd.DataFrame, np.ndarray],
+    predictions: Union[pd.DataFrame, np.ndarray],
+    attr_cardinalities: List[int],
+) -> np.ndarray:
+    """
+    Compute per-row reconstruction error using per-attribute categorical
+    crossentropy normalized by ``log(K)``.
+
+    This is the single source of truth for outlier scoring. It must be used by
+    every code path that produces outlier rankings — the CLI ``find_outliers``
+    command, the local worker in ``worker.py``, and the Vertex AI container in
+    ``train/task.py`` — so that the web UI and the CLI produce identical
+    rankings on the same model and the same data (TASKS.md 2.8).
+
+    Args:
+        data: One-hot encoded inputs, shape ``(N, total_one_hot_dims)``.
+            DataFrame or ndarray.
+        predictions: Model reconstruction outputs with the same shape as
+            ``data``. Expected to contain per-attribute softmax blocks
+            (matching ``attr_cardinalities``).
+        attr_cardinalities: List of category counts per original attribute.
+            ``sum(attr_cardinalities)`` must equal ``data.shape[1]``.
+
+    Returns:
+        numpy array of shape ``(N,)`` containing per-row reconstruction error.
+        Higher values are more anomalous.
+    """
+    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
+    predictions_np = (
+        predictions.to_numpy()
+        if hasattr(predictions, "to_numpy")
+        else np.asarray(predictions)
+    )
+
+    loss = VAE.reconstruction_loss(attr_cardinalities, data_np, predictions_np)
+    return np.asarray(loss.numpy() if hasattr(loss, "numpy") else loss)
 
 
 def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
@@ -19,14 +58,12 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
     predictions = pd.DataFrame(predictions, columns=data.columns, index=data.index)
     errors = pd.DataFrame(index=data.index)
 
-    reconstruction_loss = VAE.reconstruction_loss(
-        attr_cardinalities,
-        data.to_numpy(),
-        predictions.to_numpy(),
+    reconstruction_loss_np = compute_reconstruction_error(
+        data, predictions, attr_cardinalities
     )
 
     if z1 is None:
-        errors["error"] = reconstruction_loss.numpy()
+        errors["error"] = reconstruction_loss_np
 
     else:
         if prior == "gaussian":
@@ -37,10 +74,10 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
                 z1, model.get_config()["temperature"], len(attr_cardinalities)
             )
 
-        custom_loss = reconstruction_loss + k * kl_loss
-        errors["error"] = custom_loss.numpy()
-        errors["reconstruction_loss"] = reconstruction_loss.numpy()
-        errors["kl_loss"] = kl_loss.numpy()
+        kl_loss_np = kl_loss.numpy() if hasattr(kl_loss, "numpy") else np.asarray(kl_loss)
+        errors["error"] = reconstruction_loss_np + k * kl_loss_np
+        errors["reconstruction_loss"] = reconstruction_loss_np
+        errors["kl_loss"] = kl_loss_np
 
     combined_df = pd.concat(
         [

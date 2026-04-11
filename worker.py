@@ -785,7 +785,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
     """
     # Lazy imports - TF must not be loaded at module scope
     from model.autoencoder import AutoencoderModel
-    from evaluate.outliers import compute_per_column_contributions
+    from evaluate.outliers import (
+        compute_per_column_contributions,
+        compute_reconstruction_error,
+    )
     import tensorflow as tf
 
     job_ref = db.collection('jobs').document(job_id)
@@ -1151,12 +1154,21 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.SCORING)
 
-        # 8. Calculate reconstruction error
+        # 8. Calculate reconstruction error.
+        #
+        # TASKS.md 2.8: Use the same per-attribute categorical crossentropy
+        # (normalized by log(K)) as the CLI `find_outliers` command so that
+        # web UI and CLI outlier rankings match on the same data/model.
+        # Previously this path used raw MSE on one-hot vectors, which is a
+        # fundamentally different scoring function and produced different
+        # rankings than the CLI.
         reconstruction = keras_model.predict(vectorized_df)
         if isinstance(reconstruction, list):
             reconstruction = reconstruction[0]
-        mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
-        df['reconstruction_error'] = mse
+        reconstruction_error = compute_reconstruction_error(
+            vectorized_df, reconstruction, cardinalities
+        )
+        df['reconstruction_error'] = reconstruction_error
 
         # 9. Get top outliers and compute per-column contributions.
         # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
