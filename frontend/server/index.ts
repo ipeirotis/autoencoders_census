@@ -43,10 +43,58 @@ const PUBSUB_TOPIC_NAME = "job-upload-topic"; // The topic your Worker listens t
 // No local instantiation needed - prevents connection pool exhaustion
 
 // --- Multer Middleware (Memory Storage) ---
-// Keeps the file in RAM (req.file.buffer) so we can stream it to GCS
+// Keeps the file in RAM (req.file.buffer) so we can stream it to GCS.
+//
+// fileFilter is a cheap first-line defense that rejects obviously non-CSV
+// uploads (by extension AND declared MIME type) *before* reading the full
+// payload into memory. The authoritative content check still happens inside
+// the route via validateCSVContent, which inspects the buffer with file-type
+// magic-number detection; but rejecting by extension/MIME here short-circuits
+// trivially wrong uploads so the server doesn't spend memory on them. See
+// TASKS.md 2.5 (No file-type validation on upload).
+export const ALLOWED_CSV_MIME_TYPES = new Set([
+  "text/csv",
+  "application/csv",
+  "application/vnd.ms-excel", // Windows Excel sometimes labels .csv this way
+  "text/plain",               // Some browsers fall back to text/plain for .csv
+  "application/octet-stream", // Curl / misconfigured clients
+]);
+
+// Helper: build a 400 Error so the Express error handler doesn't default
+// to 500 when multer forwards our fileFilter rejections.
+function makeUploadError(message: string): Error & { status: number } {
+  const err = new Error(message) as Error & { status: number };
+  err.status = 400;
+  return err;
+}
+
+/**
+ * Multer fileFilter exported so it can be unit-tested in isolation (see
+ * tests/utils/uploadFileFilter.test.ts). Exposes a pure function shape:
+ * given a file descriptor, invoke the multer callback with either
+ * `(null, true)` to accept or `(error)` to reject with status 400.
+ */
+export function csvUploadFileFilter(
+  _req: unknown,
+  file: { originalname?: string; mimetype: string },
+  cb: (err: Error | null, accept?: boolean) => void
+): void {
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  if (ext !== ".csv") {
+    cb(makeUploadError("Only .csv files are accepted"));
+    return;
+  }
+  if (!ALLOWED_CSV_MIME_TYPES.has(file.mimetype)) {
+    cb(makeUploadError("Unsupported content type for CSV upload"));
+    return;
+  }
+  cb(null, true);
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // Limit to 50MB
+  fileFilter: csvUploadFileFilter,
 });
 
 export function createServer() {
