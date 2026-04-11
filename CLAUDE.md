@@ -141,7 +141,11 @@ python -m pytest tests/ -v
 
 ### Architecture Patterns
 - All `DataLoader` methods return `(clean_df, metadata_dict)` where metadata has `variable_types` and `ignored_columns` keys (see TASKS.md 1.1)
-- Data cleaning is centralized in `prepare_for_model()` in `main.py` — used by `train`, `find_outliers`, `search_hyperparameters`, `evaluate`, `pca_baseline`, and `run_training_pipeline`. For categorical-only cleaning (e.g. Chow-Liu), use `prepare_for_categorical()` (TASKS.md 1.2, 1.6, 10.2)
+- Data cleaning and vectorization live in three helpers in `main.py`:
+  - `prepare_for_training()` — splits *before* fitting the vectorizer to prevent data leakage. Used by `train`, `search_hyperparameters`, and `run_training_pipeline` (TASKS.md 3.8).
+  - `prepare_for_model()` — fits and transforms the whole dataset at once. Used for scoring/evaluation: `evaluate`, `find_outliers`, `generate`, `pca_baseline` (TASKS.md 1.2, 1.6).
+  - `prepare_for_categorical()` — cleaning only (no vectorization), for `chow_liu_outliers` (TASKS.md 10.2).
+  All three share a common cleaning core (`fillna("missing")` → `astype(str)` → Rule-of-9 → sync variable_types).
 - Dataset configs live in a single source of truth: `define_necessary_elements()` in `utils.py` (TASKS.md 1.3)
 - Custom Keras losses are registered via `@keras.utils.register_keras_serializable()`
 - Models are saved in TensorFlow SavedModel format (`save_format="tf"`)
