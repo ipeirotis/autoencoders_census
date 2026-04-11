@@ -128,6 +128,51 @@ def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
     return value
 
 
+def _resolve_explicit_max_unique_values():
+    """Like :func:`_resolve_max_unique_values` but returns ``None``
+    when the operator has not explicitly set ``MAX_UNIQUE_VALUES``
+    (or set it to an invalid value).
+
+    Used by the Vertex dispatcher to decide whether to forward the
+    ``--max-unique-values`` CLI flag to the training container. The
+    dispatcher-vs-container compatibility contract is:
+
+    - If the env var is **unset or invalid**, we do not know that the
+      operator opted in to an override, so we omit the flag. An older
+      ``train/task.py`` (which does not yet recognise the flag) then
+      parses the arg list cleanly during a rolling deploy where the
+      worker is newer than the ``trainer:v1`` image (Codex P1 PR#49).
+    - If the env var is **explicitly set** to a valid value, the
+      operator wants that value in every code path, so we forward it.
+      A mismatched-image rolling deploy in this configuration is
+      operator error — they chose to set an override before the
+      container image supported it.
+
+    The plain :func:`_resolve_max_unique_values` cannot answer this
+    question because its contract is to always return a valid int
+    (falling back to the default), which would always append the flag
+    and defeat the backwards-compat path.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"omitting --max-unique-values from Vertex args"
+        )
+        return None
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"omitting --max-unique-values from Vertex args"
+        )
+        return None
+    return value
+
+
 def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_values=None):
     """Build the CLI arg list for the Vertex training container.
 
@@ -1748,11 +1793,22 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         # Vertex AI does NOT propagate the dispatcher's env vars to
         # the training container, so MAX_UNIQUE_VALUES on the worker
         # would otherwise be silently ignored by train/task.py.
+        #
+        # We intentionally use ``_resolve_explicit_max_unique_values``
+        # here (not ``_resolve_max_unique_values``): when the operator
+        # has NOT set the env var we want to pass ``None`` so that
+        # ``_build_vertex_training_args`` omits the flag entirely and
+        # an older ``train/task.py`` in the current ``trainer:v1``
+        # image can still parse the arg list during a rolling deploy
+        # where the worker is updated before the container (Codex P1
+        # PR#49). ``_resolve_max_unique_values`` always returns an int
+        # (falling back to the default 9), which would defeat that
+        # compatibility path.
         vertex_args = _build_vertex_training_args(
             job_id,
             bucket_name,
             file_path,
-            max_unique_values=_resolve_max_unique_values(),
+            max_unique_values=_resolve_explicit_max_unique_values(),
         )
 
         job.run(

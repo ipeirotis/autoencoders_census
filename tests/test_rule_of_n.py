@@ -447,11 +447,12 @@ class TestVertexContainerArgPropagation(unittest.TestCase):
     def test_worker_forwards_env_var_to_vertex(self):
         """End-to-end: when the operator sets MAX_UNIQUE_VALUES=20 on
         the worker, the helper that builds the Vertex CLI args picks
-        it up via ``_resolve_max_unique_values`` (the same function
-        used by the local path) so both modes stay in sync."""
+        it up via ``_resolve_explicit_max_unique_values`` (the same
+        function ``process_upload_vertex`` now uses) so both modes
+        stay in sync."""
         from worker import (
             _build_vertex_training_args,
-            _resolve_max_unique_values,
+            _resolve_explicit_max_unique_values,
         )
 
         with mock.patch.dict(os.environ, {"MAX_UNIQUE_VALUES": "20"}):
@@ -459,9 +460,109 @@ class TestVertexContainerArgPropagation(unittest.TestCase):
                 "j",
                 "b",
                 "f",
-                max_unique_values=_resolve_max_unique_values(),
+                max_unique_values=_resolve_explicit_max_unique_values(),
             )
         self.assertIn("--max-unique-values=20", args)
+
+    def test_worker_omits_flag_when_env_var_unset(self):
+        """Rolling-deploy safety: when the operator has NOT set
+        ``MAX_UNIQUE_VALUES``, the Vertex dispatcher must omit the
+        ``--max-unique-values`` flag entirely so a container running an
+        older ``train/task.py`` (which doesn't recognise the flag)
+        still parses the arg list cleanly (Codex P1 PR#49).
+
+        This is the scenario the first fix attempt missed:
+        ``_resolve_max_unique_values()`` always returns 9 when the env
+        var is unset, which would always append the flag and defeat
+        the backwards-compat path in ``_build_vertex_training_args``.
+        ``_resolve_explicit_max_unique_values()`` returns ``None`` in
+        that case, so the flag is correctly omitted.
+        """
+        from worker import (
+            _build_vertex_training_args,
+            _resolve_explicit_max_unique_values,
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAX_UNIQUE_VALUES", None)
+            resolved = _resolve_explicit_max_unique_values()
+            args = _build_vertex_training_args(
+                "j",
+                "b",
+                "f",
+                max_unique_values=resolved,
+            )
+        self.assertIsNone(resolved)
+        self.assertNotIn(
+            "--max-unique-values",
+            " ".join(args),
+            f"expected flag to be omitted; got {args}",
+        )
+        self.assertEqual(
+            args,
+            [
+                "--job-id=j",
+                "--bucket-name=b",
+                "--file-path=f",
+            ],
+        )
+
+    def test_worker_omits_flag_when_env_var_invalid(self):
+        """Same as ``test_worker_omits_flag_when_env_var_unset`` for
+        invalid values (non-integer, below 2): the resolver returns
+        ``None`` and the dispatcher omits the flag, preserving rolling
+        deploy compatibility."""
+        from worker import _resolve_explicit_max_unique_values
+
+        for bad in ("", "abc", "9.5", "0", "1", "-3"):
+            with mock.patch.dict(os.environ, {"MAX_UNIQUE_VALUES": bad}):
+                self.assertIsNone(
+                    _resolve_explicit_max_unique_values(),
+                    f"bad value {bad!r} should resolve to None",
+                )
+
+    def test_explicit_resolver_returns_valid_int(self):
+        """Happy path: valid env var → parsed int, not ``None``."""
+        from worker import _resolve_explicit_max_unique_values
+
+        with mock.patch.dict(os.environ, {"MAX_UNIQUE_VALUES": "15"}):
+            self.assertEqual(_resolve_explicit_max_unique_values(), 15)
+
+    def test_process_upload_vertex_uses_explicit_resolver(self):
+        """Drift guard: read ``worker.py`` as source and verify
+        ``process_upload_vertex`` references
+        ``_resolve_explicit_max_unique_values`` (not
+        ``_resolve_max_unique_values``) when building Vertex args.
+        If a future change regresses back to the non-explicit
+        resolver, the flag will always be appended and rolling
+        deploys break — this test catches that before CI / prod."""
+        import pathlib
+
+        source_path = pathlib.Path(__file__).resolve().parents[1] / "worker.py"
+        source = source_path.read_text()
+
+        # Locate the process_upload_vertex function body and check
+        # which resolver it passes into _build_vertex_training_args.
+        start = source.index("def process_upload_vertex(")
+        # Rough body end: the next top-level ``def `` declaration or
+        # end-of-file — good enough for a drift guard.
+        next_def = source.find("\ndef ", start + 1)
+        body = source[start:next_def] if next_def != -1 else source[start:]
+
+        self.assertIn("_build_vertex_training_args", body)
+        self.assertIn("_resolve_explicit_max_unique_values", body)
+        # Make sure the non-explicit resolver is NOT what we pass into
+        # _build_vertex_training_args. It may still appear in other
+        # contexts (e.g. logging), so look at the
+        # ``max_unique_values=`` keyword argument line specifically.
+        for line in body.splitlines():
+            if "max_unique_values=" in line and "_resolve_max_unique_values" in line:
+                self.fail(
+                    f"process_upload_vertex uses the non-explicit "
+                    f"resolver, which always returns an int and "
+                    f"defeats the rolling-deploy compat path: "
+                    f"{line.strip()!r}"
+                )
 
     def test_train_task_cli_accepts_max_unique_values(self):
         """``train/task.py``'s argparse must accept the new flag so
