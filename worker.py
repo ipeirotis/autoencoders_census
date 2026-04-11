@@ -44,6 +44,10 @@ from pydantic import BaseModel, Field, ValidationError
 
 from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from features.transform import Table2Vector
+from model.presets import (
+    build_model_config,
+    normalize_preset_name,
+)
 
 load_dotenv()
 
@@ -173,18 +177,25 @@ def _resolve_explicit_max_unique_values():
     return value
 
 
-def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_values=None):
+def _build_vertex_training_args(
+    job_id,
+    bucket_name,
+    file_path,
+    max_unique_values=None,
+    model_preset=None,
+):
     """Build the CLI arg list for the Vertex training container.
 
     ``CustomContainerTrainingJob.run()`` does NOT forward the
     dispatcher process's environment variables to the training
     container, so any ``MAX_UNIQUE_VALUES`` override set on the
     worker would be silently ignored by ``train/task.py``. We
-    therefore propagate the Rule-of-N threshold explicitly via the
-    ``--max-unique-values`` CLI arg (Codex P1 PR#49).
+    therefore propagate the Rule-of-N threshold (and TASKS.md 3.2's
+    model preset id) explicitly via CLI args.
 
-    The arg is only appended when a non-``None`` value is supplied so
-    that a Vertex container running an older ``train/task.py`` (which
+    Optional args (``--max-unique-values`` and ``--model-preset``)
+    are only appended when a non-``None`` value is supplied so that
+    a Vertex container running an older ``train/task.py`` (which
     doesn't yet recognise the flag) still accepts the arg list from
     the current dispatcher during a rolling deploy.
 
@@ -195,6 +206,8 @@ def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_value
         max_unique_values: Rule-of-N threshold to forward, or
             ``None`` to leave it out entirely (so the container
             falls back to its own default).
+        model_preset: Optional preset id from :mod:`model.presets`.
+            ``None`` omits the flag entirely.
 
     Returns:
         list[str]: the ``args`` parameter to pass to ``job.run()``.
@@ -206,14 +219,45 @@ def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_value
     ]
     if max_unique_values is not None:
         args.append(f"--max-unique-values={int(max_unique_values)}")
+    # Codex P1 r#50: treat 'auto' as equivalent to None and omit the
+    # flag. Semantically the trainer resolves both identically via
+    # `build_model_config` → `normalize_preset_name` → `auto_select_preset`,
+    # so sending `--model-preset=auto` vs omitting the flag produces
+    # the same resolved config on a new trainer — but only the
+    # "omit" variant is safe to send to an OLD trainer image (pre-
+    # `--model-preset` support in train/task.py) that would otherwise
+    # exit on the unrecognized CLI arg during a rolling deploy. This
+    # is defense-in-depth on top of the jobs.ts fix that stops
+    # emitting 'auto' in the Pub/Sub message: a stale worker image
+    # paired with a newer API server would otherwise still send
+    # --model-preset=auto here.
+    if model_preset is not None and str(model_preset).strip().lower() != "auto":
+        args.append(f"--model-preset={model_preset}")
     return args
 
 
 class PubSubMessage(BaseModel):
-    """Pydantic model for validating Pub/Sub message payload."""
+    """Pydantic model for validating Pub/Sub message payload.
+
+    ``modelPreset`` (TASKS.md 3.2) is the optional preset id chosen by
+    the user in the upload UI. The field is intentionally lenient: any
+    unknown / missing value is normalized to the ``auto`` sentinel by
+    :func:`model.presets.normalize_preset_name` later in the pipeline,
+    so a stale frontend or a legacy /start-job request that omits the
+    field still works. Validation here is also lenient — we accept any
+    string and let the normalizer (which logs the resolved value)
+    enforce the allowlist.
+    """
     jobId: str = Field(..., min_length=1, description="Firestore job document ID")
     bucket: str = Field(..., min_length=1, description="GCS bucket name")
     file: str = Field(..., min_length=1, description="GCS file path")
+    modelPreset: str | None = Field(
+        default=None,
+        description=(
+            "Optional model preset id from model.presets (auto/small/"
+            "medium/large). Unknown values fall back to 'auto'."
+        ),
+    )
 
 
 def validate_message(data) -> PubSubMessage:
@@ -1021,7 +1065,13 @@ def _safe_float(value, default=0.0):
         return default
 
 
-def process_upload_local(job_id, bucket_name, file_path, message):
+def process_upload_local(
+    job_id,
+    bucket_name,
+    file_path,
+    message,
+    model_preset=None,
+):
     """
     Process the uploaded CSV locally: download from GCS, train autoencoder,
     score outliers, and write results to Firestore.
@@ -1031,6 +1081,9 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         bucket_name: GCS bucket name
         file_path: GCS file path
         message: Pub/Sub message object for ack deadline extension
+        model_preset: Optional preset id from :mod:`model.presets`
+            (auto/small/medium/large). ``None`` and unknown values are
+            normalized to ``auto`` by ``build_model_config`` (TASKS.md 3.2).
     """
     # Lazy imports - TF must not be loaded at module scope
     from model.autoencoder import AutoencoderModel
@@ -1408,15 +1461,51 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
         ae_wrapper.INPUT_SHAPE = X_train.shape[1:]
 
+        # TASKS.md 3.2: pick a model config from the requested preset
+        # (or auto-select based on dataset shape). build_model_config is
+        # liberal in what it accepts — None / unknown preset names fall
+        # back to 'auto', and 'auto' is then resolved to a concrete
+        # small/medium/large id from the cleaned input dimension and
+        # row count. We log the requested vs resolved values so an
+        # operator can confirm the dropdown is wiring through correctly.
         input_dim = X_train.shape[1]
-        model_config = {
-            "learning_rate": 0.001,
-            "latent_space_dim": max(2, int(input_dim * 0.1)),
-            "encoder_layers": 2,
-            "decoder_layers": 2,
-            "encoder_units_1": int(input_dim * 0.5),
-            "decoder_units_1": int(input_dim * 0.5)
-        }
+        n_rows = len(process_df)
+        model_config, resolved_preset = build_model_config(
+            model_preset, input_dim=input_dim, n_rows=n_rows
+        )
+        requested_preset = normalize_preset_name(model_preset)
+        logger.info(
+            f"Job {job_id} model preset: requested={requested_preset!r}, "
+            f"resolved={resolved_preset!r}, input_dim={input_dim}, "
+            f"n_rows={n_rows}"
+        )
+        # Persist the resolved preset alongside the requested value so
+        # the frontend can show "model: medium (auto)" on the results
+        # page. Best-effort: a Firestore hiccup here should not fail
+        # the job. The two fields are stored at top level (not under
+        # `stats`) so a future analytics query can easily aggregate
+        # which presets are most commonly chosen.
+        try:
+            job_ref.update(
+                {
+                    'modelPreset': resolved_preset,
+                    'modelPresetRequested': requested_preset,
+                }
+            )
+        except Exception as preset_meta_err:
+            logger.warning(
+                f"Failed to persist modelPreset metadata for job "
+                f"{job_id}: {preset_meta_err}"
+            )
+
+        # Pull training-loop knobs out of the config dict before handing
+        # the rest to build_autoencoder() — that method only consumes
+        # network-shape keys (encoder_units_*, latent_space_dim, ...)
+        # and silently ignores anything else, but pop()-ing keeps the
+        # signature explicit and lets us reuse the same dict if we ever
+        # need to surface it on the job document.
+        epochs = int(model_config.pop('epochs', 15))
+        batch_size = int(model_config.pop('batch_size', 32))
 
         keras_model = ae_wrapper.build_autoencoder(model_config)
 
@@ -1441,11 +1530,14 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             logger.info(f"Job {job_id} was canceled before training, aborting")
             return
 
-        logger.info("Training autoencoder...")
+        logger.info(
+            f"Training autoencoder ({resolved_preset} preset, "
+            f"epochs={epochs}, batch_size={batch_size})..."
+        )
         try:
             keras_model.fit(
                 X_train, X_train,
-                epochs=15, batch_size=32, verbose=2,
+                epochs=epochs, batch_size=batch_size, verbose=2,
                 validation_data=(X_test, X_test),
                 callbacks=[CancellationCallback()]
             )
@@ -1607,7 +1699,13 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         extender.stop()
 
 
-def process_upload_vertex(job_id, bucket_name, file_path, message):
+def process_upload_vertex(
+    job_id,
+    bucket_name,
+    file_path,
+    message,
+    model_preset=None,
+):
     """
     Dispatch processing to a Vertex AI CustomContainerTrainingJob.
 
@@ -1616,6 +1714,10 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         bucket_name: GCS bucket name
         file_path: GCS file path
         message: Pub/Sub message object for ack deadline extension
+        model_preset: Optional preset id from :mod:`model.presets`
+            (auto/small/medium/large). Forwarded to the Vertex
+            training container via the ``--model-preset`` CLI flag
+            (TASKS.md 3.2).
     """
     from google.cloud import aiplatform
 
@@ -1775,6 +1877,25 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         # extender and writes a far-future `claimedAt`.
         extender.job_ref = job_ref
 
+        # TASKS.md 3.2: persist the requested model preset on the job
+        # document so the frontend can show "model: medium (auto)" while
+        # the Vertex training job is still running. We can't resolve
+        # 'auto' to a concrete preset here because that selection
+        # happens inside the Vertex container after it has loaded and
+        # cleaned the data — only the container knows the final
+        # input_dim and n_rows. Best-effort write: a Firestore hiccup
+        # here should not abort the dispatch.
+        requested_preset_for_vertex = normalize_preset_name(model_preset)
+        try:
+            job_ref.update(
+                {'modelPresetRequested': requested_preset_for_vertex}
+            )
+        except Exception as preset_meta_err:
+            logger.warning(
+                f"Failed to persist modelPresetRequested for Vertex "
+                f"job {job_id}: {preset_meta_err}"
+            )
+
         container_uri = f"us-central1-docker.pkg.dev/{PROJECT_ID}/autoencoder-repo/trainer:v1"
         logger.info(f"Target Image: {container_uri}")
 
@@ -1804,11 +1925,19 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         # PR#49). ``_resolve_max_unique_values`` always returns an int
         # (falling back to the default 9), which would defeat that
         # compatibility path.
+        # TASKS.md 3.2: forward the model preset id to the training
+        # container via --model-preset. Like --max-unique-values, the
+        # arg is only emitted when the caller actually provided a
+        # preset, so an older trainer:v1 image that doesn't yet
+        # recognise the flag still parses the arg list cleanly during
+        # a rolling deploy. The container resolves 'auto' to a
+        # concrete preset itself once it has cleaned the input.
         vertex_args = _build_vertex_training_args(
             job_id,
             bucket_name,
             file_path,
             max_unique_values=_resolve_explicit_max_unique_values(),
+            model_preset=requested_preset_for_vertex if model_preset is not None else None,
         )
 
         job.run(
@@ -1998,6 +2127,12 @@ def callback(message):
         job_id = validated.jobId
         bucket = validated.bucket
         file_path = validated.file
+        # TASKS.md 3.2: optional model preset chosen in the upload UI.
+        # The field is normalized to a known id (or 'auto') by
+        # build_model_config later in the pipeline; we pass it through
+        # untouched here so the worker logs / persists exactly what the
+        # client sent.
+        model_preset = validated.modelPreset
 
         # WORK-04: Read-only idempotency check. We intentionally do NOT mark
         # the message as processed here: the marker is written AFTER
@@ -2030,9 +2165,15 @@ def callback(message):
         # WORK-05/06: Process with ack extension, ack AFTER processing completes
         try:
             if _processing_mode == "vertex":
-                process_upload_vertex(job_id, bucket, file_path, message)
+                process_upload_vertex(
+                    job_id, bucket, file_path, message,
+                    model_preset=model_preset,
+                )
             else:
-                process_upload_local(job_id, bucket, file_path, message)
+                process_upload_local(
+                    job_id, bucket, file_path, message,
+                    model_preset=model_preset,
+                )
         except JobDocumentNotReadyError as not_ready:
             # Codex P1 (r3053739500): the job document hasn't been written
             # yet (race with /start-job). nack so Pub/Sub redelivers - do

@@ -23,6 +23,7 @@ from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from evaluate.outliers import compute_reconstruction_error
 from features.transform import Table2Vector
 from model.autoencoder import AutoencoderModel
+from model.presets import build_model_config, normalize_preset_name
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -60,7 +61,13 @@ def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
     return value
 
 
-def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
+def train_and_predict(
+    job_id,
+    bucket_name,
+    file_path,
+    max_unique_values=None,
+    model_preset=None,
+):
     """Run the end-to-end Vertex training pipeline.
 
     Args:
@@ -78,6 +85,13 @@ def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
             when the worker had ``MAX_UNIQUE_VALUES=15`` set,
             producing inconsistent feature filtering between local
             and Vertex modes (Codex P1 PR#49).
+        model_preset: Optional preset id from :mod:`model.presets`
+            (auto/small/medium/large). Forwarded by
+            ``worker.process_upload_vertex`` via the
+            ``--model-preset`` CLI flag (TASKS.md 3.2). ``None`` and
+            unknown values are normalized to ``auto`` by
+            ``build_model_config``, which then resolves it to a
+            concrete preset based on the cleaned input shape.
     """
     try:
         logger.info(f"Starting Vertex AI Job for {job_id}")
@@ -133,22 +147,37 @@ def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
         logger.info("Initializing AutoEncoderModel...")
         ae_wrapper = AutoencoderModel(attribute_cardinalities=cardinalities)
         ae_wrapper.INPUT_SHAPE = X_train.shape[1:]
-        
-        # 4. Configure & Train
+
+        # 4. Configure & Train (TASKS.md 3.2: pick a preset config from
+        # the requested preset, or auto-select based on dataset shape).
         input_dim = X_train.shape[1]
-        model_config = {
-            "learning_rate": 0.001,
-            "latent_space_dim": max(2, int(input_dim * 0.1)),
-            "encoder_layers": 2,
-            "decoder_layers": 2,
-            "encoder_units_1": int(input_dim * 0.5),
-            "decoder_units_1": int(input_dim * 0.5)
-        }
-        
+        n_rows = len(process_df)
+        model_config, resolved_preset = build_model_config(
+            model_preset, input_dim=input_dim, n_rows=n_rows
+        )
+        requested_preset = normalize_preset_name(model_preset)
+        logger.info(
+            f"Vertex job {job_id} model preset: requested={requested_preset!r}, "
+            f"resolved={resolved_preset!r}, input_dim={input_dim}, "
+            f"n_rows={n_rows}"
+        )
+
+        # Pull training-loop knobs out before passing the rest to
+        # build_autoencoder() (which only consumes network-shape keys).
+        epochs = int(model_config.pop('epochs', 15))
+        batch_size = int(model_config.pop('batch_size', 32))
+
         keras_model = ae_wrapper.build_autoencoder(model_config)
-        
-        logger.info("Training Model...")
-        keras_model.fit(X_train, X_train, epochs=15, batch_size=32, verbose=2, validation_data=(X_test, X_test))
+
+        logger.info(
+            f"Training Model ({resolved_preset} preset, epochs={epochs}, "
+            f"batch_size={batch_size})..."
+        )
+        keras_model.fit(
+            X_train, X_train,
+            epochs=epochs, batch_size=batch_size, verbose=2,
+            validation_data=(X_test, X_test),
+        )
         
         # 5. Predict & Score
         #
@@ -212,11 +241,17 @@ def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
         top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
         
         # 6. Save Results
+        # TASKS.md 3.2: persist the resolved preset alongside the
+        # results so the frontend can show "model: medium (auto)" on
+        # the completed job. modelPresetRequested is also stored for
+        # the auditing query "which presets did users actually pick?".
         db.collection('jobs').document(job_id).set({
             "status": "complete",
             "stats": stats,
             "outliers": top_outliers.to_dict(orient="records"),
-            "processedAt": firestore.SERVER_TIMESTAMP
+            "processedAt": firestore.SERVER_TIMESTAMP,
+            "modelPreset": resolved_preset,
+            "modelPresetRequested": requested_preset,
         }, merge=True)
         
         logger.info("Job Complete")
@@ -244,6 +279,18 @@ if __name__ == "__main__":
         default=None,
         dest='max_unique_values',
     )
+    # Model preset id forwarded from worker.process_upload_vertex
+    # (TASKS.md 3.2). Same env-var-vs-CLI-arg trade-off as
+    # --max-unique-values: Vertex doesn't inherit dispatcher env vars,
+    # so the worker forwards the user's choice via this flag. When
+    # absent we pass None into train_and_predict, which is then
+    # normalized to 'auto' inside build_model_config.
+    parser.add_argument(
+        '--model-preset',
+        type=str,
+        default=None,
+        dest='model_preset',
+    )
     args = parser.parse_args()
 
     train_and_predict(
@@ -251,4 +298,5 @@ if __name__ == "__main__":
         args.bucket_name,
         args.file_path,
         max_unique_values=args.max_unique_values,
+        model_preset=args.model_preset,
     )

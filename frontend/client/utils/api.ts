@@ -40,6 +40,25 @@ export interface JobStatus {
   error?: string;
   errorCode?: string;
   errorType?: string;
+  // TASKS.md 3.2: model preset metadata. `modelPreset` is the resolved
+  // preset id (small/medium/large) the worker actually used;
+  // `modelPresetRequested` is what the user / dropdown asked for
+  // (small/medium/large/auto). The two differ when the user picked
+  // 'auto' and the worker auto-selected a concrete preset based on
+  // dataset shape.
+  modelPreset?: string;
+  modelPresetRequested?: string;
+}
+
+/**
+ * TASKS.md 3.2: Model preset metadata served by `GET /api/jobs/presets`.
+ * Used to populate the upload-time dropdown. Mirrors the shape returned
+ * by the Python `model.presets.list_presets()` helper.
+ */
+export interface ModelPresetInfo {
+  id: string;
+  label: string;
+  description: string;
 }
 
 /**
@@ -100,12 +119,16 @@ async function uploadToGcs(url: string, file: File) {
 }
 
 // 3. Notify Backend to Start Worker
-async function startJob(jobId: string, gcsFileName: string) {
+async function startJob(jobId: string, gcsFileName: string, modelPreset?: string) {
+  const body: Record<string, string> = { jobId, gcsFileName };
+  if (modelPreset) {
+    body.modelPreset = modelPreset;
+  }
   const res = await fetch(`${API_BASE}/api/jobs/start-job`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ jobId, gcsFileName }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw new ApiError(await parseError(res, "Failed to start processing job"), res.status);
@@ -113,7 +136,12 @@ async function startJob(jobId: string, gcsFileName: string) {
 }
 
 // Main Upload Function
-export async function uploadCsv(file: File): Promise<UploadResponse> {
+//
+// `modelPreset` is the optional preset id chosen via the dropdown
+// (TASKS.md 3.2). When omitted (legacy callers, no dropdown wired up
+// yet), the server defaults it to 'auto' on its end so we never
+// publish an undefined value to Pub/Sub.
+export async function uploadCsv(file: File, modelPreset?: string): Promise<UploadResponse> {
   // A. Get URL - pass file.type so the server signs for that exact
   //    Content-Type (or omits the constraint if file.type is empty).
   const { url, jobId, gcsFileName } = await getUploadUrl(file.name, file.type);
@@ -122,9 +150,33 @@ export async function uploadCsv(file: File): Promise<UploadResponse> {
   await uploadToGcs(url, file);
 
   // C. Start Job
-  await startJob(jobId, gcsFileName);
+  await startJob(jobId, gcsFileName, modelPreset);
 
   return { jobId };
+}
+
+/**
+ * Fetch the available model presets from the API. The result populates
+ * the upload-time preset dropdown. Returns an empty array on failure
+ * so the caller can fall back to a sensible default ('auto') without
+ * blocking the upload UI.
+ */
+export async function fetchModelPresets(): Promise<ModelPresetInfo[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/jobs/presets`, {
+      credentials: "include",
+    });
+    if (!res.ok) {
+      return [];
+    }
+    const data = await res.json();
+    if (Array.isArray(data?.presets)) {
+      return data.presets as ModelPresetInfo[];
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }
 
 // Poll Status
