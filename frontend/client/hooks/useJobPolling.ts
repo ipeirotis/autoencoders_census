@@ -13,7 +13,13 @@ interface JobStatus {
   fileSize?: number;
   createdAt: string;
   updatedAt: string;
+  // TASKS.md 2.3: structured error fields written by worker.mark_job_error.
+  // `error` is the human-readable message, `errorCode` is a stable
+  // machine-readable identifier (e.g. "csv_too_large", "no_usable_columns"),
+  // and `errorType` buckets the code into a pipeline stage
+  // ("validation" | "processing" | "training" | "scoring" | "internal").
   error?: string;
+  errorCode?: string;
   errorType?: string;
 }
 

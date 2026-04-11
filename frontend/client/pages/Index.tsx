@@ -11,6 +11,7 @@ import { PreviewTable } from "@/components/PreviewTable"; // We reuse this for r
 import { ResultCard } from "@/components/ResultCard";
 import { parseCSVFile, type CSVParseResult } from "@/utils/csv-parser";
 import { uploadCsv, checkJobStatus, ApiError, type JobStatus } from "@/utils/api";
+import { resolveJobError } from "@/utils/jobErrors";
 import { logout as logoutRequest } from "@/utils/auth";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { cn } from "@/lib/utils";
@@ -59,7 +60,12 @@ export default function Index() {
           toast({ title: "Analysis Complete", description: "Outliers detected successfully." });
           clearInterval(interval);
         } else if (data.status === "error") {
-          setError(data.error || "Unknown error occurred");
+          // TASKS.md 2.3: prefer the structured {heading, message} from
+          // resolveJobError so the UI always shows a clean, friendly
+          // failure state even when the worker didn't provide a message
+          // string (legacy error payloads, internal crashes, etc.).
+          const { heading, message } = resolveJobError(data);
+          setError(`${heading}: ${message}`);
           setStatus("error");
           clearInterval(interval);
         }
