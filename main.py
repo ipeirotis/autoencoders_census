@@ -59,6 +59,48 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+def _coerce_max_unique_values(value):
+    """Normalize a user-supplied ``max_unique_values`` at config-ingestion
+    boundaries (YAML files, CLI flags).
+
+    - ``None`` (unset CLI flag, or ``max_unique_values: null`` in the
+      YAML — common in templated configs) coerces to the built-in
+      default instead of propagating downstream. Without this, a
+      ``None`` would reach ``prepare_for_categorical`` and crash on
+      ``None < 2`` with a confusing ``TypeError`` before data
+      processing even starts (Codex P2 PR#49).
+    - Non-integer values (e.g. a string "9" from an env-var leak into
+      the YAML loader, or a float like ``9.0``) are cast to ``int``.
+      Anything that can't be cast raises ``ValueError``.
+    - Integers below 2 raise ``ValueError`` — a threshold below 2 would
+      drop every column because the Rule-of-N filter also rejects
+      ``n_unique <= 1``.
+
+    Args:
+        value: The raw value from a CLI flag or YAML config.
+
+    Returns:
+        int: A validated ``max_unique_values`` suitable for passing
+        into ``DataLoader`` / ``prepare_for_*`` helpers.
+
+    Raises:
+        ValueError: If ``value`` is non-None but not a valid threshold.
+    """
+    if value is None:
+        return DEFAULT_MAX_UNIQUE_VALUES
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"max_unique_values must be an integer (got {value!r})"
+        ) from e
+    if coerced < 2:
+        raise ValueError(
+            f"max_unique_values must be >= 2 (got {coerced})"
+        )
+    return coerced
+
+
 def prepare_for_categorical(project_data, max_unique_values=DEFAULT_MAX_UNIQUE_VALUES):
     """Clean data for categorical-only models (Chow-Liu tree, etc.).
 
@@ -340,7 +382,8 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
 
     The optional ``max_unique_values`` YAML key in the config file
     overrides the default Rule-of-N threshold for data cleaning
-    (TASKS.md 3.1).
+    (TASKS.md 3.1). An explicit ``null`` in the YAML is coerced to
+    the default via ``_coerce_max_unique_values``.
     """
     logger.info(f"loading config from {config_path}...")
     with open(config_path, "r") as file:
@@ -349,7 +392,9 @@ def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="
     _, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
         df,
         test_size=config.get("test_size", 0.2),
-        max_unique_values=config.get("max_unique_values", DEFAULT_MAX_UNIQUE_VALUES),
+        max_unique_values=_coerce_max_unique_values(
+            config.get("max_unique_values")
+        ),
     )
 
     model = get_model(model_name, cardinalities)
@@ -445,11 +490,12 @@ def train(
         config_dict = yaml.safe_load(file)
 
     # CLI flag takes precedence over the YAML key, which takes precedence
-    # over the built-in default.
+    # over the built-in default. Both routes go through
+    # ``_coerce_max_unique_values`` so ``null`` in a templated YAML
+    # config doesn't crash downstream with ``None < 2`` (Codex P2 PR#49).
     if max_unique_values is None:
-        max_unique_values = config_dict.get(
-            "max_unique_values", DEFAULT_MAX_UNIQUE_VALUES
-        )
+        max_unique_values = config_dict.get("max_unique_values")
+    max_unique_values = _coerce_max_unique_values(max_unique_values)
 
     # 3. Initialize Loader
     logger.info("Loading data....")
@@ -561,10 +607,12 @@ def search_hyperparameters(
     with open(config, "r") as file:
         config = yaml.safe_load(file)
 
+    # CLI flag > YAML key > built-in default, coerced through
+    # ``_coerce_max_unique_values`` so ``null`` in a templated YAML
+    # doesn't crash downstream (Codex P2 PR#49).
     if max_unique_values is None:
-        max_unique_values = config.get(
-            "max_unique_values", DEFAULT_MAX_UNIQUE_VALUES
-        )
+        max_unique_values = config.get("max_unique_values")
+    max_unique_values = _coerce_max_unique_values(max_unique_values)
 
     data_loader = DataLoader(
         drop_columns,
@@ -652,9 +700,7 @@ def evaluate(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    effective_max_unique = (
-        max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
-    )
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
 
     set_seed(seed)
 
@@ -783,9 +829,7 @@ def find_outliers(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    effective_max_unique = (
-        max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
-    )
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
 
     # Load the training-fitted vectorizer *before* constructing the
     # DataLoader so that we can disable the Rule-of-N filter when a
@@ -925,9 +969,7 @@ def chow_liu_outliers(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    effective_max_unique = (
-        max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
-    )
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
 
     # 2. Initialize Loader
     logger.info("Loading data...")
@@ -1059,9 +1101,7 @@ def generate(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    effective_max_unique = (
-        max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
-    )
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
 
     # Load the training-fitted vectorizer *before* constructing the
     # DataLoader so that we can disable the Rule-of-N filter when a
@@ -1269,9 +1309,7 @@ def pca_baseline(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
-    effective_max_unique = (
-        max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
-    )
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
 
     data_loader = DataLoader(
         drop_columns,

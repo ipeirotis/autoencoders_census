@@ -38,6 +38,7 @@ from dataset.loader import DEFAULT_MAX_UNIQUE_VALUES, DataLoader
 from features.transform import Table2Vector
 from main import (
     _clean_for_saved_vectorizer,
+    _coerce_max_unique_values,
     prepare_for_categorical,
     prepare_for_model,
     prepare_for_training,
@@ -386,6 +387,98 @@ class TestApplyRuleOfNFlag(unittest.TestCase):
                 all(isinstance(v, str) for v in clean_df[col]),
                 f"column {col!r} contains non-string values",
             )
+
+
+class TestCoerceMaxUniqueValues(unittest.TestCase):
+    """``main._coerce_max_unique_values`` normalizes user-supplied
+    threshold values at config-ingestion boundaries (CLI flag, YAML
+    config). The crash Codex P2 flagged was: ``max_unique_values: null``
+    in a templated YAML returns ``None`` from ``.get()``, and the
+    downstream ``prepare_for_categorical`` path does
+    ``max_unique_values < 2`` which raises ``TypeError`` in Python 3
+    because ``None < 2`` is not orderable — before any data is even
+    touched.
+    """
+
+    def test_none_coerces_to_default(self):
+        """YAML ``null`` → default. This is the Codex P2 scenario."""
+        self.assertEqual(
+            _coerce_max_unique_values(None), DEFAULT_MAX_UNIQUE_VALUES
+        )
+
+    def test_int_passes_through(self):
+        self.assertEqual(_coerce_max_unique_values(15), 15)
+        self.assertEqual(_coerce_max_unique_values(2), 2)
+        self.assertEqual(_coerce_max_unique_values(9), 9)
+
+    def test_numeric_string_is_coerced(self):
+        """YAML loaders occasionally surface numeric strings (for
+        example when env-var interpolation is on). Accept and coerce."""
+        self.assertEqual(_coerce_max_unique_values("15"), 15)
+
+    def test_float_is_coerced_to_int(self):
+        """``9.0`` from a YAML ``!!float 9`` tag is valid."""
+        self.assertEqual(_coerce_max_unique_values(9.0), 9)
+
+    def test_below_two_raises(self):
+        for value in (1, 0, -3):
+            with self.assertRaises(ValueError):
+                _coerce_max_unique_values(value)
+
+    def test_non_integer_raises(self):
+        for value in ("abc", "9.5", [], {}):
+            with self.assertRaises(ValueError):
+                _coerce_max_unique_values(value)
+
+    def test_returns_int_even_when_passed_int_subclass(self):
+        """Sanity check: bool is an int subclass, but any int >= 2 is
+        accepted. Document the behaviour so no one is surprised."""
+        # True == 1 which is < 2, so True should raise.
+        with self.assertRaises(ValueError):
+            _coerce_max_unique_values(True)
+
+    def test_yaml_null_end_to_end_through_run_training_pipeline_config(self):
+        """Regression for Codex P2 PR#49: the YAML ingestion boundary
+        must translate ``max_unique_values: null`` to the default
+        before handing it to ``prepare_for_training``. This test
+        simulates the YAML-read step without actually invoking the
+        training pipeline (which would need TF), by asserting that a
+        parsed YAML dict with an explicit ``None`` roundtrips through
+        ``_coerce_max_unique_values`` to the default.
+        """
+        import yaml
+
+        yaml_text = """
+        test_size: 0.2
+        max_unique_values: null
+        """
+        config = yaml.safe_load(yaml_text)
+        self.assertIsNone(config["max_unique_values"])
+
+        coerced = _coerce_max_unique_values(config.get("max_unique_values"))
+        self.assertEqual(coerced, DEFAULT_MAX_UNIQUE_VALUES)
+
+    def test_yaml_missing_key_end_to_end(self):
+        """If the key is absent from the YAML entirely, ``.get()``
+        returns ``None``, which also coerces to the default."""
+        import yaml
+
+        yaml_text = "test_size: 0.2\n"
+        config = yaml.safe_load(yaml_text)
+        self.assertNotIn("max_unique_values", config)
+
+        coerced = _coerce_max_unique_values(config.get("max_unique_values"))
+        self.assertEqual(coerced, DEFAULT_MAX_UNIQUE_VALUES)
+
+    def test_yaml_explicit_value_is_honoured(self):
+        import yaml
+
+        yaml_text = "max_unique_values: 15\n"
+        config = yaml.safe_load(yaml_text)
+        self.assertEqual(
+            _coerce_max_unique_values(config.get("max_unique_values")),
+            15,
+        )
 
 
 class TestVertexContainerArgPropagation(unittest.TestCase):
