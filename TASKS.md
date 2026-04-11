@@ -48,15 +48,14 @@ All `print("DEBUG: ...")` statements in `main.py` have been replaced with proper
 ### ~~2.1 Implement end-to-end upload processing in worker.py~~ DONE
 `worker.py` now has two modes: `--mode=local` (default) processes uploads entirely locally (download from GCS, train autoencoder, score outliers, write to Firestore), and `--mode=vertex` dispatches to Vertex AI. The local mode enables running the demo without any Vertex AI setup. The worker also writes a `"processing"` status to Firestore before starting, so the frontend can show progress.
 
-### 2.2 Handle arbitrary user CSV uploads robustly
-The current `load_uploaded_csv` path in `DataLoader` calls `prepare_original_dataset()` which bins numeric variables and applies the Rule of 9 filter. Verify this works correctly for CSVs with:
-- Mixed numeric and categorical columns
-- Columns with special characters, spaces, or unicode in names
-- Very wide datasets (100+ columns)
-- Datasets with mostly missing values
-- Completely numeric datasets (no categorical columns to keep)
+### ~~2.2 Handle arbitrary user CSV uploads robustly~~ DONE
+Added `tests/test_upload_pipeline.py` with 13 integration tests that exercise `DataLoader.load_uploaded_csv()` on the edge cases called out in this task: mixed numeric + categorical columns, special characters in column names (spaces, hyphens, dots, slashes), unicode column names and values (including emoji), wide datasets (120 columns), mostly-missing datasets (>90% NaN), and completely-numeric datasets (all columns binned through `convert_to_categorical`). Each test asserts the result is consumable by `Table2Vector` end-to-end (no NaN in the one-hot matrix).
 
-Add integration tests covering these edge cases.
+Fixed two pre-existing bugs in `DataLoader.prepare_original_dataset()` that the new tests exposed:
+- **Rule of 9 was one-sided**: the filter only dropped columns with `n_unique > 9` but kept single-value columns, even though `CLAUDE.md` specifies "Columns with more than 9 unique values **or only 1 unique value** are dropped". Fixed to `1 < n_unique <= 9`, matching `worker.py`'s inline cleaning and `main.prepare_for_categorical`. All-NaN numeric columns (which `convert_to_categorical` turns into a constant `"NA"` column) are now correctly dropped.
+- **NaN in categorical columns became the literal string `"nan"`**: the old path did `astype(str)` without filling NaN, producing unhelpful `col__nan` one-hot buckets. Fixed by filling NaN with `"missing"` after `convert_to_categorical` (which already handles NaN for numerics via its own "missing" bin), matching worker.py and `main.prepare_for_categorical` behaviour.
+
+Also removed the `@unittest.skip` marker from `tests/test_upload_pipeline.py` since the upload path is now usable as a baseline. Metadata shape is verified by `test_metadata_is_consistent_with_clean_df` (variable_types keys match clean_df columns, ignored columns are disjoint from kept columns).
 
 ### 2.3 Add input validation and error reporting
 When a user uploads a malformed CSV (wrong encoding, not actually CSV, empty file, single-column file), the system should return a clear error message to the frontend rather than a stack trace. Add validation in the upload path and propagate structured error messages to Firestore/frontend.

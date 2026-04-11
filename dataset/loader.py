@@ -470,17 +470,23 @@ class DataLoader:
     def prepare_original_dataset(self, project_data, replacements):
         """
         1. Bins numeric data (making it categorical)
-        2. Checks ALL columns for cardinality 
-        3. Drops anything with > 9 unique values 
-        4. Returns cleaned dataframe and list of ignored columns
+        2. Fills remaining NaN values in categorical columns with "missing"
+        3. Applies the Rule of 9: keep columns with 2-9 unique values,
+           drop anything with <= 1 or > 9 unique values
+        4. Returns cleaned dataframe and metadata (ignored_columns +
+           variable_types)
+
+        This mirrors the inline cleaning in ``worker.py`` and the shared
+        ``main.prepare_for_categorical`` helper so that the upload path
+        produces the same clean frame as the CLI / worker paths.
         """
         # Apply replacements
         for k, v in replacements.items():
             if k in project_data.columns: # ensure code doesn't crash if col doesn't exist in current dataset
                 project_data[k] = project_data[k].replace(v)
 
-        # 1. Identify and Bin Numeric Columns 
-        # Only treat as numeric if the col is truly numeric 
+        # 1. Identify and Bin Numeric Columns
+        # Only treat as numeric if the col is truly numeric
         numeric_vars = []
         for col in project_data.columns:
             if pd.api.types.is_numeric_dtype(project_data[col]):
@@ -488,38 +494,52 @@ class DataLoader:
 
         project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
 
-        # 2. Filter High-Cardinality Columns 
+        # 2. Fill NaN in non-numeric columns with the literal string
+        # "missing" so that (a) the Rule-of-9 count below treats missing as
+        # a real category and (b) downstream ``astype(str)`` does not turn
+        # NaN into the string "nan". ``convert_to_categorical`` already
+        # handles NaN for numeric columns via its "missing" bin, so this
+        # is a no-op on the newly-created ``*_cat`` columns.
+        project_data = project_data.fillna("missing")
+
+        # 3. Rule of 9: keep columns with 2-9 unique values.
+        # Both extremes are dropped — > 9 values is too high-cardinality for
+        # the autoencoder to learn a meaningful one-hot, and a single
+        # unique value provides no signal at all.
         kept_columns = []
         ignored_columns = []
-        
+
         MAX_UNIQUE = 9
-        
+
         for col in project_data.columns:
-            # Drop NaN first to get true unique count 
             n_unique = project_data[col].nunique(dropna=True)
-            
-            if n_unique <= MAX_UNIQUE:
+
+            if 1 < n_unique <= MAX_UNIQUE:
                 kept_columns.append(col)
                 # kept as string for the Autoencoder
                 project_data[col] = project_data[col].astype(str)
             else:
+                if n_unique <= 1:
+                    reason = "Low cardinality (<= 1 unique value)"
+                else:
+                    reason = f"High cardinality (> {MAX_UNIQUE} unique values)"
                 ignored_columns.append({
                     "name": col,
-                    "unique_values": n_unique,
-                    "reason": f"High cardinality (> {MAX_UNIQUE} unique values)"
+                    "unique_values": int(n_unique),
+                    "reason": reason,
                 })
 
-        # 3. Construct Final dataframe
+        # 4. Construct Final dataframe
         clean_df = project_data[kept_columns].copy()
-        
-        # 4. Prepare Metadata
+
+        # 5. Prepare Metadata
         variable_types = {c: "categorical" for c in clean_df.columns}
-        
+
         metadata = {
             "ignored_columns": ignored_columns,
             "variable_types": variable_types
         }
-        
+
         return clean_df, metadata
 
     def find_outlier_data(self, data, outlier_column):
