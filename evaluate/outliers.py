@@ -82,10 +82,21 @@ def compute_reconstruction_error(
         # zero loss with the maximum normalized value (1.0) so these rows
         # are penalized at least as strongly as a uniformly wrong
         # prediction would be.
-        attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
-        ce_final = tf.where(
-            attr_observed, ce_normalized, tf.ones_like(ce_normalized)
-        )
+        #
+        # Restriction: apply this override ONLY to categorical one-hot
+        # blocks (``categories > 1``). Numeric features produced by
+        # ``Table2Vector`` have ``categories == 1`` (a single
+        # MinMax-scaled scalar), so a valid scaled numeric value in
+        # ``[0, 0.5]`` would otherwise trip the "unseen" heuristic and
+        # get forced to loss 1.0, silently distorting rankings on
+        # datasets with numeric features (Codex P1 #2 on PR #46).
+        if int(categories) > 1:
+            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
+            ce_final = tf.where(
+                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
+            )
+        else:
+            ce_final = ce_normalized
 
         per_attr_losses.append(ce_final)
         start_idx += categories
