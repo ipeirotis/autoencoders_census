@@ -33,6 +33,7 @@ class DataLoader:
         additional_rename_columns=None,
         additional_columns_of_interest=None,
         max_unique_values=None,
+        apply_rule_of_n=True,
     ):
         self.DROP_COLUMNS = drop_columns
         self.RENAME_COLUMNS = rename_columns
@@ -56,6 +57,19 @@ class DataLoader:
                 "values."
             )
         self.max_unique_values = int(max_unique_values)
+        # When ``False``, ``prepare_original_dataset`` skips the
+        # Rule-of-N filter entirely — numeric binning, NaN-fill, and
+        # string casting still run, but every surviving column is kept
+        # regardless of cardinality. Scoring paths set this to ``False``
+        # when a saved training-time vectorizer is present so that the
+        # vectorizer (not the loader) is the authoritative source of
+        # truth on which columns the model expects. Without this,
+        # columns whose training-time cardinality exceeded the current
+        # loader threshold would be silently dropped here and then
+        # backfilled as constant ``"missing"`` values by
+        # ``_clean_for_saved_vectorizer``, corrupting model inputs
+        # (Codex P1 PR#49).
+        self.apply_rule_of_n = bool(apply_rule_of_n)
 
     def load_2015(self):
         url = "data/sadc_2015only_national.csv"
@@ -503,7 +517,13 @@ class DataLoader:
 
         return continuous_columns
 
-    def prepare_original_dataset(self, project_data, replacements, max_unique_values=None):
+    def prepare_original_dataset(
+        self,
+        project_data,
+        replacements,
+        max_unique_values=None,
+        apply_rule_of_n=None,
+    ):
         """
         1. Bins numeric data (making it categorical)
         2. Fills remaining NaN values in categorical columns with "missing"
@@ -515,6 +535,13 @@ class DataLoader:
         4. Returns cleaned dataframe and metadata (ignored_columns +
            variable_types)
 
+        When ``apply_rule_of_n`` is ``False`` (either per-call or via
+        the loader instance attribute), step 3 is skipped: every column
+        is kept regardless of cardinality, still cast to string. Scoring
+        paths that load a trained vectorizer use this so the vectorizer
+        (not the loader) is the authoritative source of truth on which
+        columns the model expects.
+
         This mirrors the inline cleaning in ``worker.py`` and the shared
         ``main.prepare_for_categorical`` helper so that the upload path
         produces the same clean frame as the CLI / worker paths.
@@ -525,6 +552,8 @@ class DataLoader:
             raise ValueError(
                 f"max_unique_values must be >= 2 (got {max_unique_values})"
             )
+        if apply_rule_of_n is None:
+            apply_rule_of_n = self.apply_rule_of_n
 
         # Apply replacements
         for k, v in replacements.items():
@@ -548,30 +577,39 @@ class DataLoader:
         # is a no-op on the newly-created ``*_cat`` columns.
         project_data = project_data.fillna("missing")
 
-        # 3. Rule of N: keep columns with 2..N unique values.
-        # Both extremes are dropped — > N values is too high-cardinality for
-        # the autoencoder to learn a meaningful one-hot, and a single
-        # unique value provides no signal at all.
         kept_columns = []
         ignored_columns = []
 
-        for col in project_data.columns:
-            n_unique = project_data[col].nunique(dropna=True)
-
-            if 1 < n_unique <= max_unique_values:
-                kept_columns.append(col)
-                # kept as string for the Autoencoder
+        if not apply_rule_of_n:
+            # Scoring path with a saved vectorizer: skip cardinality
+            # filtering entirely and let the vectorizer decide which
+            # columns the model expects. We still cast to string so
+            # downstream one-hot encoding receives consistent dtypes.
+            for col in project_data.columns:
                 project_data[col] = project_data[col].astype(str)
-            else:
-                if n_unique <= 1:
-                    reason = "Low cardinality (<= 1 unique value)"
+                kept_columns.append(col)
+        else:
+            # 3. Rule of N: keep columns with 2..N unique values.
+            # Both extremes are dropped — > N values is too high-cardinality
+            # for the autoencoder to learn a meaningful one-hot, and a
+            # single unique value provides no signal at all.
+            for col in project_data.columns:
+                n_unique = project_data[col].nunique(dropna=True)
+
+                if 1 < n_unique <= max_unique_values:
+                    kept_columns.append(col)
+                    # kept as string for the Autoencoder
+                    project_data[col] = project_data[col].astype(str)
                 else:
-                    reason = f"High cardinality (> {max_unique_values} unique values)"
-                ignored_columns.append({
-                    "name": col,
-                    "unique_values": int(n_unique),
-                    "reason": reason,
-                })
+                    if n_unique <= 1:
+                        reason = "Low cardinality (<= 1 unique value)"
+                    else:
+                        reason = f"High cardinality (> {max_unique_values} unique values)"
+                    ignored_columns.append({
+                        "name": col,
+                        "unique_values": int(n_unique),
+                        "reason": reason,
+                    })
 
         # 4. Construct Final dataframe
         clean_df = project_data[kept_columns].copy()

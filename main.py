@@ -631,7 +631,9 @@ def search_hyperparameters(
     help=(
         "Upper bound on unique values per column for the Rule-of-N filter "
         "(default 9). Only applies when no saved vectorizer is present; "
-        "otherwise the training-fitted vectorizer dictates kept columns."
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
     ),
     type=int,
     default=None,
@@ -654,6 +656,21 @@ def evaluate(
         max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
     )
 
+    set_seed(seed)
+
+    logger.info("Loading model....")
+    model = load_model(model_path)
+
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present. Otherwise columns whose training-time
+    # cardinality exceeded the current loader threshold would be
+    # silently dropped here and backfilled as constant ``"missing"``
+    # values by ``_clean_for_saved_vectorizer`` below, corrupting model
+    # inputs (Codex P1 PR#49).
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
+
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -662,19 +679,14 @@ def evaluate(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
         max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
-
-    set_seed(seed)
-
-    logger.info("Loading model....")
-    model = load_model(model_path)
 
     logger.info("Loading data....")
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
     logger.info("Transforming the data....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         # Use the training-fitted vectorizer so one-hot width matches the model
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
@@ -739,7 +751,9 @@ def evaluate(
     help=(
         "Upper bound on unique values per column for the Rule-of-N filter "
         "(default 9). Only applies when no saved vectorizer is present; "
-        "otherwise the training-fitted vectorizer dictates kept columns."
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
     ),
     type=int,
     default=None,
@@ -773,6 +787,13 @@ def find_outliers(
         max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
     )
 
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present (Codex P1 PR#49). See ``evaluate`` for
+    # the full rationale.
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
+
     # 2. Initialize Loader
     logger.info("Loading data...")
     data_loader = DataLoader(
@@ -783,6 +804,7 @@ def find_outliers(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
         max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
 
     # 3. Load data -- all loaders return (DataFrame, metadata_dict)
@@ -791,7 +813,6 @@ def find_outliers(
 
     # 4. Clean and vectorize
     logger.info("Transforming the data....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
@@ -998,7 +1019,10 @@ def chow_liu_outliers(
     "--max_unique_values",
     help=(
         "Upper bound on unique values per column for the Rule-of-N filter "
-        "(default 9). Only applies when no saved vectorizer is present."
+        "(default 9). Only applies when no saved vectorizer is present; "
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
     ),
     type=int,
     default=None,
@@ -1039,6 +1063,13 @@ def generate(
         max_unique_values if max_unique_values is not None else DEFAULT_MAX_UNIQUE_VALUES
     )
 
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present (Codex P1 PR#49). See ``evaluate`` for
+    # the full rationale.
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
+
     logger.info("Loading data....")
     data_loader = DataLoader(
         drop_columns,
@@ -1048,12 +1079,12 @@ def generate(
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
         max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
     logger.info("Creating the vectorizer....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
