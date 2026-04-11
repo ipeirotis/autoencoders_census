@@ -131,9 +131,22 @@ export const validateUploadUrl: (ValidationChain | typeof handleValidationErrors
 ];
 
 /**
+ * Allowed model preset ids (TASKS.md 3.2). Must stay in sync with
+ * `VALID_PRESETS` in `model/presets.py`. Anything outside this list is
+ * coerced to `auto` by the worker, but we reject it at the API layer
+ * too so an invalid value never reaches Pub/Sub.
+ *
+ * NOTE: model/presets.py and frontend/server/utils/modelPresets.ts both
+ * mirror this list. When adding a preset, update all three call sites.
+ */
+export const VALID_MODEL_PRESETS = ['auto', 'small', 'medium', 'large'] as const;
+
+/**
  * Validation chain for start job request
  * - Job ID must be valid UUID
  * - GCS filename required
+ * - modelPreset is optional and must be one of VALID_MODEL_PRESETS
+ *   when present (TASKS.md 3.2)
  */
 export const validateStartJob: (ValidationChain | typeof handleValidationErrors)[] = [
   body('jobId')
@@ -142,5 +155,14 @@ export const validateStartJob: (ValidationChain | typeof handleValidationErrors)
   body('gcsFileName')
     .notEmpty()
     .withMessage('GCS filename required'),
+  body('modelPreset')
+    .optional({ nullable: true })
+    .isString()
+    .withMessage('Model preset must be a string')
+    .bail()
+    .isIn(VALID_MODEL_PRESETS as unknown as string[])
+    .withMessage(
+      `Model preset must be one of: ${VALID_MODEL_PRESETS.join(', ')}`
+    ),
   handleValidationErrors,
 ];

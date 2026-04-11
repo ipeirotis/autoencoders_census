@@ -19,9 +19,15 @@ import { v4 as uuidv4 } from "uuid";
 import { format } from 'fast-csv';
 import { requireAuth } from '../middleware/auth';
 import { uploadLimiter, uploadUrlLimiter, pollLimiter, downloadLimiter } from '../middleware/rateLimits';
-import { validateJobId, validateUploadUrl, validateStartJob } from '../middleware/validation';
+import {
+  validateJobId,
+  validateUploadUrl,
+  validateStartJob,
+  VALID_MODEL_PRESETS,
+} from '../middleware/validation';
 import { generateSafeFilename } from '../utils/fileValidation';
 import { sanitizeFormulaInjection } from '../utils/csvSanitization';
+import { MODEL_PRESETS } from '../utils/modelPresets';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
 import { storage, firestore, pubsub } from '../config/gcp-clients';
@@ -53,6 +59,22 @@ const RESUMABLE_STATUSES = new Set([
   "training",
   "scoring",
 ]);
+
+// 0. List Available Model Presets (TASKS.md 3.2)
+//
+// Returns the metadata for the upload-time model preset dropdown.
+// Public endpoint (no auth) because (a) the frontend needs to render
+// the dropdown before the user logs in if they bookmark a deep link,
+// and (b) the response is static catalog data with no per-user
+// content. Mirrors `model.presets.list_presets()` in Python — see
+// `frontend/server/utils/modelPresets.ts` for the synchronization
+// contract.
+//
+// IMPORTANT: this MUST be registered before any `/:id` patterns so a
+// future GET /:id route doesn't accidentally swallow it.
+router.get("/presets", (_req, res) => {
+  res.json({ presets: MODEL_PRESETS });
+});
 
 // 1. Get Signed URL for Upload
 router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, async (req, res) => {
@@ -91,7 +113,7 @@ router.post("/upload-url", requireAuth, uploadUrlLimiter, validateUploadUrl, asy
 // 2. Start Processing (Trigger Pub/Sub)
 router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (req, res) => {
   try {
-    const { jobId, gcsFileName } = req.body;
+    const { jobId, gcsFileName, modelPreset } = req.body;
     const userId = (req as any).user.id;
 
     // Authorization: ensure the caller owns the file path.
@@ -103,10 +125,24 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
       return res.status(403).json({ error: "Forbidden: file path does not belong to caller" });
     }
 
+    // TASKS.md 3.2: optional model preset chosen via the dropdown.
+    // validateStartJob has already enforced the allowlist when the
+    // field is present, so we trust the value here. Default to 'auto'
+    // when the client omits the field so the worker logs / persists
+    // a deterministic value instead of `undefined`.
+    const resolvedPreset =
+      typeof modelPreset === 'string' && (VALID_MODEL_PRESETS as readonly string[]).includes(modelPreset)
+        ? modelPreset
+        : 'auto';
+
     const messageJson = {
       jobId: jobId,
       bucket: BUCKET_NAME,
       file: gcsFileName,
+      // Forward the preset id through Pub/Sub. The worker tolerates
+      // missing / unknown values (normalized to 'auto'), so older
+      // workers running before this PR still parse the message.
+      modelPreset: resolvedPreset,
     };
 
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
@@ -122,6 +158,11 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
         createdAt: new Date(),
         userId,
         gcsFileName,
+        // Persist the requested preset on the job doc so the frontend
+        // can show "model: medium (auto)" while the worker is still
+        // running. The worker overwrites this with the resolved preset
+        // (small/medium/large) once it has cleaned the input.
+        modelPresetRequested: resolvedPreset,
       });
     } catch (createErr: any) {
       if (createErr?.code !== 6) {

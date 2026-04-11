@@ -10,13 +10,30 @@ import { Dropzone } from "@/components/Dropzone";
 import { PreviewTable } from "@/components/PreviewTable"; // We reuse this for results!
 import { ResultCard } from "@/components/ResultCard";
 import { parseCSVFile, type CSVParseResult } from "@/utils/csv-parser";
-import { uploadCsv, checkJobStatus, ApiError, type JobStatus } from "@/utils/api";
+import {
+  uploadCsv,
+  checkJobStatus,
+  fetchModelPresets,
+  ApiError,
+  type JobStatus,
+  type ModelPresetInfo,
+} from "@/utils/api";
 import { resolveJobError } from "@/utils/jobErrors";
 import { logout as logoutRequest } from "@/utils/auth";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { cn } from "@/lib/utils";
 import { PreviewErrorBoundary } from "@/components/error-boundaries/PreviewErrorBoundary";
 import { ResultsErrorBoundary } from "@/components/error-boundaries/ResultsErrorBoundary";
+
+// Fallback preset list used when the /api/jobs/presets fetch fails (e.g.
+// offline dev). Mirrors the canonical list in
+// `frontend/server/utils/modelPresets.ts` so the dropdown still renders.
+const FALLBACK_PRESETS: ModelPresetInfo[] = [
+  { id: "auto", label: "Auto", description: "Pick a preset automatically." },
+  { id: "small", label: "Small", description: "Compact 1-layer model." },
+  { id: "medium", label: "Medium", description: "Balanced 2-layer model." },
+  { id: "large", label: "Large", description: "Higher-capacity 3-layer model." },
+];
 
 export default function Index() {
   const [file, setFile] = useState<File | null>(null);
@@ -27,9 +44,31 @@ export default function Index() {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  // TASKS.md 3.2: model preset dropdown state. `presets` is the list
+  // fetched from /api/jobs/presets (with FALLBACK_PRESETS as a backup);
+  // `selectedPreset` is the id passed to uploadCsv.
+  const [presets, setPresets] = useState<ModelPresetInfo[]>(FALLBACK_PRESETS);
+  const [selectedPreset, setSelectedPreset] = useState<string>("auto");
   const { toast } = useToast();
   const navigate = useNavigate();
   const { user, setUser } = useCurrentUser();
+
+  // Fetch model presets once on mount. We don't block rendering on this:
+  // FALLBACK_PRESETS already gives the dropdown four sensible options,
+  // so a slow / failed network round-trip just means the user can't see
+  // the freshly-edited descriptions until next visit.
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelPresets().then((fetched) => {
+      if (cancelled) return;
+      if (fetched.length > 0) {
+        setPresets(fetched);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleLogout = useCallback(async () => {
     setLoggingOut(true);
@@ -104,7 +143,8 @@ export default function Index() {
     setStatus("processing"); // Show spinner
 
     try {
-      const response = await uploadCsv(file);
+      // TASKS.md 3.2: forward the user's preset choice to the worker.
+      const response = await uploadCsv(file, selectedPreset);
       // Navigate to the dedicated progress page so the user gets the
       // full monitoring/cancel/export UI introduced in Phase 4.
       navigate(`/job/${response.jobId}`);
@@ -117,7 +157,7 @@ export default function Index() {
       setError(err.message);
       setStatus("error");
     }
-  }, [file, setUser]);
+  }, [file, selectedPreset, navigate, setUser]);
 
   const handleReset = () => {
     setFile(null);
@@ -184,6 +224,35 @@ export default function Index() {
                 <PreviewErrorBoundary>
                   <PreviewTable rows={preview.rows} headers={preview.headers} totalRows={preview.totalRows} />
                 </PreviewErrorBoundary>
+
+                {/* TASKS.md 3.2: Model preset picker. Defaults to "auto"
+                    which lets the worker pick a preset based on the
+                    cleaned dataset shape. */}
+                <div className="mt-6">
+                  <label
+                    htmlFor="model-preset"
+                    className="block text-sm font-semibold mb-1 text-gray-800"
+                  >
+                    Model preset
+                  </label>
+                  <select
+                    id="model-preset"
+                    value={selectedPreset}
+                    onChange={(e) => setSelectedPreset(e.target.value)}
+                    disabled={isProcessing}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  >
+                    {presets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {presets.find((p) => p.id === selectedPreset)?.description ||
+                      "Choose a model size for the autoencoder."}
+                  </p>
+                </div>
 
                 <div className="mt-4 flex gap-4">
                   <Button onClick={handleUpload} disabled={isProcessing} size="lg" className="flex-1">

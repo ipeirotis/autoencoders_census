@@ -300,5 +300,78 @@ describe('Jobs validation middleware', () => {
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
     });
+
+    // TASKS.md 3.2: optional modelPreset validation. The field is
+    // optional (back-compat with legacy callers that don't yet send
+    // it) but must be one of the allowlisted ids when present.
+    it('should accept omitting modelPreset', async () => {
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+      const response = await request(app)
+        .post('/test-start-job')
+        .send({ jobId: validUuid, gcsFileName: 'uploads/user123/file.csv' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+    });
+
+    it.each(['auto', 'small', 'medium', 'large'])(
+      'should accept modelPreset=%s',
+      async (preset) => {
+        const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+        const response = await request(app)
+          .post('/test-start-job')
+          .send({
+            jobId: validUuid,
+            gcsFileName: 'uploads/user123/file.csv',
+            modelPreset: preset,
+          });
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+      }
+    );
+
+    it('should reject unknown modelPreset value', async () => {
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+      const response = await request(app)
+        .post('/test-start-job')
+        .send({
+          jobId: validUuid,
+          gcsFileName: 'uploads/user123/file.csv',
+          modelPreset: 'xxl',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('Validation failed');
+      expect(response.body.details).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'modelPreset',
+            message: expect.stringContaining('must be one of'),
+          }),
+        ])
+      );
+    });
+
+    it('should reject non-string modelPreset', async () => {
+      const validUuid = '123e4567-e89b-12d3-a456-426614174000';
+      const response = await request(app)
+        .post('/test-start-job')
+        .send({
+          jobId: validUuid,
+          gcsFileName: 'uploads/user123/file.csv',
+          modelPreset: 42,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('Validation failed');
+      expect(response.body.details).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'modelPreset',
+          }),
+        ])
+      );
+    });
   });
 });

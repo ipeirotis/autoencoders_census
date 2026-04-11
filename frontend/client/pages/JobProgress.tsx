@@ -159,6 +159,27 @@ export default function JobProgress() {
               fileSize={job.fileSize || 0}
             />
 
+            {/* TASKS.md 3.2: surface the chosen model preset.
+                modelPreset is the worker-resolved preset (small/medium/large);
+                modelPresetRequested is what the dropdown sent. We show
+                "(auto)" alongside when the user picked auto so it's clear
+                where the chosen preset came from. */}
+            {(job.modelPreset || job.modelPresetRequested) && (
+              <div className="text-xs text-gray-600">
+                <span className="font-semibold">Model preset:</span>{' '}
+                <span className="font-mono">
+                  {job.modelPreset || job.modelPresetRequested}
+                </span>
+                {job.modelPreset &&
+                  job.modelPresetRequested &&
+                  job.modelPresetRequested !== job.modelPreset && (
+                    <span className="ml-1 text-gray-500">
+                      ({job.modelPresetRequested})
+                    </span>
+                  )}
+              </div>
+            )}
+
             {isActive && (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
