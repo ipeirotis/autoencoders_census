@@ -163,6 +163,12 @@ GCS_BUCKET_NAME=your-bucket-name
 PUBSUB_SUBSCRIPTION_ID=job-upload-topic-sub
 ```
 
+## PR Workflow
+
+Once you are done with your work, create a pull request and then start monitoring it for review comments. Codex is configured to auto-review every PR in this repo, so always wait for its review and address its feedback before considering the task done — code being pushed is not the finish line.
+
+For GitHub interactions (opening the PR, fetching review comments, replying, checking CI), prefer the GitHub MCP tools (`mcp__github__*`) when they are available. Fall back to the `gh` CLI with `GITHUB_TOKEN` only if the MCP tools are not present in the current environment or a specific MCP call fails.
+
 ## Cloud Credentials
 
 This repo uses the **cloud-bootstrap** skill to manage encrypted GCP credentials.
