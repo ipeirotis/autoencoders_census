@@ -248,8 +248,6 @@ class TestProcessUploadLocalStageClassification:
         and raise ``predict_side_effect`` inside keras_model.predict.
         Returns the final update_job_status call payload (the one where
         the ERROR transition is written via mark_job_error)."""
-        import io
-        from unittest.mock import ANY
         import pandas as pd
         import worker
 
