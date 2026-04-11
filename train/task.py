@@ -60,7 +60,25 @@ def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
     return value
 
 
-def train_and_predict(job_id, bucket_name, file_path):
+def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
+    """Run the end-to-end Vertex training pipeline.
+
+    Args:
+        job_id: Firestore job document ID.
+        bucket_name: GCS bucket containing the uploaded CSV.
+        file_path: GCS object path to the uploaded CSV.
+        max_unique_values: Optional explicit Rule-of-N threshold. When
+            ``None`` we fall back to the ``MAX_UNIQUE_VALUES``
+            environment variable (via ``_resolve_max_unique_values``).
+            The dispatcher in ``worker.process_upload_vertex`` passes
+            this in as a CLI argument (``--max-unique-values=N``)
+            because the Vertex training container does NOT inherit the
+            dispatcher process's env vars — without explicit
+            propagation the container silently defaulted to 9 even
+            when the worker had ``MAX_UNIQUE_VALUES=15`` set,
+            producing inconsistent feature filtering between local
+            and Vertex modes (Codex P1 PR#49).
+    """
     try:
         logger.info(f"Starting Vertex AI Job for {job_id}")
 
@@ -75,8 +93,11 @@ def train_and_predict(job_id, bucket_name, file_path):
         df = loader.load_original_data(csv_bytes)
 
         # Rule of N Filter (TASKS.md 3.1: threshold is configurable via
-        # the MAX_UNIQUE_VALUES env var; defaults to 9).
-        max_unique_values = _resolve_max_unique_values()
+        # the --max-unique-values CLI arg or MAX_UNIQUE_VALUES env var;
+        # defaults to 9).
+        if max_unique_values is None:
+            max_unique_values = _resolve_max_unique_values()
+        logger.info(f"Using Rule-of-N threshold: {max_unique_values}")
         stats = {"total_rows": len(df), "kept_columns": [], "ignored_columns": []}
         process_df = df.fillna("missing").astype(str)
 
@@ -210,6 +231,24 @@ if __name__ == "__main__":
     parser.add_argument('--job-id', type=str, required=True)
     parser.add_argument('--bucket-name', type=str, required=True)
     parser.add_argument('--file-path', type=str, required=True)
+    # Rule-of-N threshold forwarded from worker.process_upload_vertex.
+    # Optional: when absent we fall back to the MAX_UNIQUE_VALUES env
+    # var, which in turn falls back to the module default (9). Vertex
+    # AI CustomContainerTrainingJob.run() does not propagate the
+    # dispatcher's env vars to the training container, so this CLI
+    # arg is the only reliable channel for the override (Codex P1
+    # PR#49).
+    parser.add_argument(
+        '--max-unique-values',
+        type=int,
+        default=None,
+        dest='max_unique_values',
+    )
     args = parser.parse_args()
-    
-    train_and_predict(args.job_id, args.bucket_name, args.file_path)
+
+    train_and_predict(
+        args.job_id,
+        args.bucket_name,
+        args.file_path,
+        max_unique_values=args.max_unique_values,
+    )

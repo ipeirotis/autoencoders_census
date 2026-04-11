@@ -128,6 +128,42 @@ def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
     return value
 
 
+def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_values=None):
+    """Build the CLI arg list for the Vertex training container.
+
+    ``CustomContainerTrainingJob.run()`` does NOT forward the
+    dispatcher process's environment variables to the training
+    container, so any ``MAX_UNIQUE_VALUES`` override set on the
+    worker would be silently ignored by ``train/task.py``. We
+    therefore propagate the Rule-of-N threshold explicitly via the
+    ``--max-unique-values`` CLI arg (Codex P1 PR#49).
+
+    The arg is only appended when a non-``None`` value is supplied so
+    that a Vertex container running an older ``train/task.py`` (which
+    doesn't yet recognise the flag) still accepts the arg list from
+    the current dispatcher during a rolling deploy.
+
+    Args:
+        job_id: Firestore job document ID.
+        bucket_name: GCS bucket containing the uploaded CSV.
+        file_path: GCS object path to the uploaded CSV.
+        max_unique_values: Rule-of-N threshold to forward, or
+            ``None`` to leave it out entirely (so the container
+            falls back to its own default).
+
+    Returns:
+        list[str]: the ``args`` parameter to pass to ``job.run()``.
+    """
+    args = [
+        f"--job-id={job_id}",
+        f"--bucket-name={bucket_name}",
+        f"--file-path={file_path}",
+    ]
+    if max_unique_values is not None:
+        args.append(f"--max-unique-values={int(max_unique_values)}")
+    return args
+
+
 class PubSubMessage(BaseModel):
     """Pydantic model for validating Pub/Sub message payload."""
     jobId: str = Field(..., min_length=1, description="Firestore job document ID")
@@ -1708,12 +1744,19 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
             container_uri=container_uri
         )
 
+        # Forward the Rule-of-N threshold explicitly as a CLI arg —
+        # Vertex AI does NOT propagate the dispatcher's env vars to
+        # the training container, so MAX_UNIQUE_VALUES on the worker
+        # would otherwise be silently ignored by train/task.py.
+        vertex_args = _build_vertex_training_args(
+            job_id,
+            bucket_name,
+            file_path,
+            max_unique_values=_resolve_max_unique_values(),
+        )
+
         job.run(
-            args=[
-                f"--job-id={job_id}",
-                f"--bucket-name={bucket_name}",
-                f"--file-path={file_path}"
-            ],
+            args=vertex_args,
             replica_count=1,
             service_account=os.getenv("VERTEX_SERVICE_ACCOUNT", "203111407489-compute@developer.gserviceaccount.com"),
             machine_type="n1-standard-4",

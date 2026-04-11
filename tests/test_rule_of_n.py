@@ -388,6 +388,138 @@ class TestApplyRuleOfNFlag(unittest.TestCase):
             )
 
 
+class TestVertexContainerArgPropagation(unittest.TestCase):
+    """The Rule-of-N threshold must flow from the worker dispatcher
+    into the Vertex AI training container via a CLI arg, because
+    ``CustomContainerTrainingJob.run()`` does not forward the
+    dispatcher's env vars to the container (Codex P1 PR#49).
+    """
+
+    def test_build_vertex_args_includes_max_unique_values(self):
+        from worker import _build_vertex_training_args
+
+        args = _build_vertex_training_args(
+            "job-123",
+            "my-bucket",
+            "uploads/job-123/data.csv",
+            max_unique_values=15,
+        )
+        self.assertIn("--job-id=job-123", args)
+        self.assertIn("--bucket-name=my-bucket", args)
+        self.assertIn("--file-path=uploads/job-123/data.csv", args)
+        self.assertIn("--max-unique-values=15", args)
+
+    def test_build_vertex_args_omits_max_unique_values_when_none(self):
+        """Backwards compat: when ``max_unique_values=None`` (not
+        supplied), the arg is omitted so a Vertex container running an
+        older ``train/task.py`` that doesn't recognise the flag still
+        accepts the args."""
+        from worker import _build_vertex_training_args
+
+        args = _build_vertex_training_args(
+            "job-123",
+            "my-bucket",
+            "uploads/job-123/data.csv",
+            max_unique_values=None,
+        )
+        self.assertEqual(
+            args,
+            [
+                "--job-id=job-123",
+                "--bucket-name=my-bucket",
+                "--file-path=uploads/job-123/data.csv",
+            ],
+        )
+
+    def test_build_vertex_args_coerces_to_int_string(self):
+        """Any numeric value is emitted as a base-10 int string so
+        ``argparse`` on the container side parses it cleanly."""
+        from worker import _build_vertex_training_args
+
+        args = _build_vertex_training_args(
+            "j",
+            "b",
+            "f",
+            max_unique_values=9.0,  # e.g. float from a YAML config
+        )
+        self.assertIn("--max-unique-values=9", args)
+
+    def test_worker_forwards_env_var_to_vertex(self):
+        """End-to-end: when the operator sets MAX_UNIQUE_VALUES=20 on
+        the worker, the helper that builds the Vertex CLI args picks
+        it up via ``_resolve_max_unique_values`` (the same function
+        used by the local path) so both modes stay in sync."""
+        from worker import (
+            _build_vertex_training_args,
+            _resolve_max_unique_values,
+        )
+
+        with mock.patch.dict(os.environ, {"MAX_UNIQUE_VALUES": "20"}):
+            args = _build_vertex_training_args(
+                "j",
+                "b",
+                "f",
+                max_unique_values=_resolve_max_unique_values(),
+            )
+        self.assertIn("--max-unique-values=20", args)
+
+    def test_train_task_cli_accepts_max_unique_values(self):
+        """``train/task.py``'s argparse must accept the new flag so
+        the dispatcher's CLI arg lands somewhere on the container
+        side."""
+        import argparse
+
+        # Mirror the argparse config in train/task.py's __main__.
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--job-id", type=str, required=True)
+        parser.add_argument("--bucket-name", type=str, required=True)
+        parser.add_argument("--file-path", type=str, required=True)
+        parser.add_argument(
+            "--max-unique-values",
+            type=int,
+            default=None,
+            dest="max_unique_values",
+        )
+        parsed = parser.parse_args([
+            "--job-id=j",
+            "--bucket-name=b",
+            "--file-path=f",
+            "--max-unique-values=15",
+        ])
+        self.assertEqual(parsed.max_unique_values, 15)
+
+        # And it's optional, defaulting to None.
+        parsed2 = parser.parse_args([
+            "--job-id=j",
+            "--bucket-name=b",
+            "--file-path=f",
+        ])
+        self.assertIsNone(parsed2.max_unique_values)
+
+    def test_train_task_module_registers_same_cli_contract(self):
+        """Drift guard: if someone renames/removes ``--max-unique-values``
+        on ``train/task.py``, this test fails so the worker→container
+        contract stays aligned."""
+        import pathlib
+        source_path = pathlib.Path(__file__).resolve().parents[1] / "train" / "task.py"
+        source = source_path.read_text()
+        self.assertIn("--max-unique-values", source)
+        self.assertIn("max_unique_values", source)
+
+    def test_train_task_train_and_predict_accepts_max_unique_values(self):
+        """``train_and_predict`` must accept ``max_unique_values`` as a
+        keyword argument so the CLI layer can forward the parsed flag
+        to it without the function ignoring or error-ing."""
+        import inspect
+        from train.task import train_and_predict
+
+        sig = inspect.signature(train_and_predict)
+        self.assertIn("max_unique_values", sig.parameters)
+        self.assertEqual(
+            sig.parameters["max_unique_values"].default, None
+        )
+
+
 class TestSavedVectorizerScoringRegression(unittest.TestCase):
     """End-to-end regression for Codex P1 PR#49: a model trained with
     ``max_unique_values=15`` must continue to score correctly on the
