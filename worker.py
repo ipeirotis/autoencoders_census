@@ -355,6 +355,115 @@ class JobStatus(str, Enum):
     CANCELED = "canceled"
 
 
+# TASKS.md 2.3: Structured error reporting.
+# When a job fails, the worker writes a classified error payload to Firestore
+# so the frontend can surface a clear, user-facing message instead of a raw
+# Python traceback. Each failure has a stable `errorCode` (machine-readable,
+# safe to branch on in the UI or in tests) and an `errorType` bucket that
+# groups codes into the pipeline stage where the problem surfaced
+# (validation of the uploaded CSV, data loading, model training, scoring,
+# or an unclassified internal bug).
+class ErrorType(str, Enum):
+    """High-level bucket for the pipeline stage where an error occurred."""
+    VALIDATION = "validation"   # CSV failed pre-processing validation
+    PROCESSING = "processing"   # DataLoader / cleaning / vectorization
+    TRAINING = "training"       # Model training
+    SCORING = "scoring"         # Reconstruction / outlier scoring
+    INTERNAL = "internal"       # Unclassified / unexpected
+
+
+class ErrorCode(str, Enum):
+    """Stable machine-readable error codes for the upload pipeline."""
+    # Validation (pre-load)
+    CSV_TOO_LARGE = "csv_too_large"
+    CSV_EMPTY = "csv_empty"
+    CSV_ENCODING = "csv_encoding"
+    CSV_PARSE = "csv_parse"
+    CSV_INCONSISTENT_COLUMNS = "csv_inconsistent_columns"
+    CSV_TOO_FEW_ROWS = "csv_too_few_rows"
+    CSV_TOO_FEW_COLUMNS = "csv_too_few_columns"
+
+    # Processing (post-load, pre-train)
+    LOAD_FAILURE = "load_failure"
+    NO_USABLE_COLUMNS = "no_usable_columns"
+
+    # Later pipeline stages
+    TRAINING_FAILURE = "training_failure"
+    SCORING_FAILURE = "scoring_failure"
+
+    # Catch-all
+    INTERNAL_ERROR = "internal_error"
+
+
+class UploadValidationError(ValueError):
+    """
+    User-facing validation error with a stable error code.
+
+    Subclasses ``ValueError`` so that existing ``except ValueError`` /
+    ``pytest.raises(ValueError, ...)`` call sites (notably
+    ``tests/test_csv_validation.py``) continue to work unchanged. Adds an
+    ``error_code`` attribute (an :class:`ErrorCode` value) so the worker can
+    route the error into a structured Firestore payload via
+    :func:`mark_job_error`, and an ``error_type`` that defaults to
+    ``VALIDATION`` but can be overridden for post-load failures that still
+    want to reuse the same structured path (e.g. ``NO_USABLE_COLUMNS`` is
+    raised from ``PROCESSING``).
+    """
+    def __init__(self, message, error_code, error_type=ErrorType.VALIDATION):
+        super().__init__(message)
+        self.error_code = error_code
+        self.error_type = error_type
+
+
+def mark_job_error(
+    job_ref,
+    job_id,
+    message,
+    error_code,
+    error_type=ErrorType.PROCESSING,
+):
+    """
+    Write a structured error state to the job's Firestore document.
+
+    Args:
+        job_ref: Firestore DocumentReference for the job.
+        job_id: Job ID (for logging).
+        message: Human-readable error message suitable for display.
+        error_code: :class:`ErrorCode` value or plain string. Stored as a
+            string so the client can branch on it.
+        error_type: :class:`ErrorType` value or plain string. Defaults to
+            PROCESSING since most post-validation failures land there.
+
+    Best-effort: if the transition to ERROR is invalid (e.g. the job is
+    already in a terminal state) the failure is logged but not re-raised.
+    """
+    code_value = (
+        error_code.value if isinstance(error_code, ErrorCode) else str(error_code)
+    )
+    type_value = (
+        error_type.value if isinstance(error_type, ErrorType) else str(error_type)
+    )
+    transaction = db.transaction()
+    try:
+        update_job_status(
+            transaction,
+            job_ref,
+            JobStatus.ERROR,
+            {
+                'error': message,
+                'errorCode': code_value,
+                'errorType': type_value,
+            },
+        )
+    except ValueError as transition_err:
+        # Job may be in a terminal state already (e.g. CANCELED) - log and
+        # move on; the real error is already captured in the caller's log.
+        logger.error(
+            f"Job {job_id} failed ({code_value}: {message}) but could not "
+            f"update status: {transition_err}"
+        )
+
+
 # Define allowed transitions (WORK-08)
 ALLOWED_TRANSITIONS = {
     JobStatus.QUEUED: [JobStatus.PROCESSING, JobStatus.ERROR, JobStatus.CANCELED],
@@ -635,7 +744,8 @@ def validate_environment():
 def validate_csv(csv_bytes, max_size_mb=100):
     """
     Validate CSV encoding, structure, and size.
-    Returns (encoding, column_count, row_count) or raises ValueError.
+    Returns (encoding, column_count, row_count) or raises
+    :class:`UploadValidationError` (a ``ValueError`` subclass).
 
     This function implements defense-in-depth CSV validation to catch
     encoding errors, malformed CSVs, and edge cases before training starts.
@@ -646,6 +756,14 @@ def validate_csv(csv_bytes, max_size_mb=100):
     WORK-13: Edge case handling (unicode characters)
     WORK-14: Edge case handling (mostly-missing values)
 
+    TASKS.md 2.3: Every failure path raises :class:`UploadValidationError`
+    with a stable :class:`ErrorCode`, so ``process_upload_local`` can write a
+    structured error payload to Firestore and the frontend can display a
+    clear, user-facing message without leaking internal error strings or
+    stack traces. The exception still inherits from ``ValueError`` so
+    existing ``pytest.raises(ValueError, match=...)`` call sites continue
+    to work.
+
     Args:
         csv_bytes: Raw CSV file bytes
         max_size_mb: Maximum file size in MB (default: 100)
@@ -654,12 +772,17 @@ def validate_csv(csv_bytes, max_size_mb=100):
         tuple: (encoding, column_count, row_count)
 
     Raises:
-        ValueError: If file too large, encoding unclear, structure invalid, or edge cases
+        UploadValidationError: If file too large, encoding unclear,
+            structure invalid, or edge cases. Each failure path sets a
+            specific :class:`ErrorCode`.
     """
     # WORK-11: Check size limit
     size_mb = len(csv_bytes) / (1024 * 1024)
     if size_mb > max_size_mb:
-        raise ValueError(f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
+        raise UploadValidationError(
+            f"CSV file too large: {size_mb:.1f}MB (max {max_size_mb}MB)",
+            error_code=ErrorCode.CSV_TOO_LARGE,
+        )
 
     # WORK-09: Detect encoding. Try the chardet guess first, then fall back
     # through a small list of Windows/Western European codecs before finally
@@ -708,17 +831,24 @@ def validate_csv(csv_bytes, max_size_mb=100):
             # Validate subsequent chunks have same structure
             for chunk in chunk_iterator:
                 if len(chunk.columns) != expected_columns:
-                    raise ValueError(
+                    raise UploadValidationError(
                         f"Inconsistent column count: expected {expected_columns}, "
-                        f"got {len(chunk.columns)}"
+                        f"got {len(chunk.columns)}",
+                        error_code=ErrorCode.CSV_INCONSISTENT_COLUMNS,
                     )
                 total_rows += len(chunk)
 
             # Minimum data requirements
             if total_rows < 10:
-                raise ValueError(f"CSV must have at least 10 rows (found {total_rows})")
+                raise UploadValidationError(
+                    f"CSV must have at least 10 rows (found {total_rows})",
+                    error_code=ErrorCode.CSV_TOO_FEW_ROWS,
+                )
             if expected_columns < 2:
-                raise ValueError(f"CSV must have at least 2 columns (found {expected_columns})")
+                raise UploadValidationError(
+                    f"CSV must have at least 2 columns (found {expected_columns})",
+                    error_code=ErrorCode.CSV_TOO_FEW_COLUMNS,
+                )
 
             logger.info(
                 f"CSV validation passed: {total_rows} rows, {expected_columns} columns, "
@@ -734,16 +864,26 @@ def validate_csv(csv_bytes, max_size_mb=100):
             )
             continue
         except pd.errors.ParserError as e:
-            raise ValueError(f"CSV parsing error: {str(e)}")
+            raise UploadValidationError(
+                f"CSV parsing error: {str(e)}",
+                error_code=ErrorCode.CSV_PARSE,
+            )
         except pd.errors.EmptyDataError:
-            raise ValueError("CSV file is empty")
+            raise UploadValidationError(
+                "CSV file is empty",
+                error_code=ErrorCode.CSV_EMPTY,
+            )
         except StopIteration:
-            raise ValueError("CSV file is empty")
+            raise UploadValidationError(
+                "CSV file is empty",
+                error_code=ErrorCode.CSV_EMPTY,
+            )
 
     # All candidate encodings failed with UnicodeDecodeError.
-    raise ValueError(
+    raise UploadValidationError(
         f"Encoding error: no candidate encoding from {candidate_encodings} "
-        f"could decode the CSV ({last_unicode_err})"
+        f"could decode the CSV ({last_unicode_err})",
+        error_code=ErrorCode.CSV_ENCODING,
     )
 
 
@@ -1023,17 +1163,22 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         blob = bucket.blob(file_path)
         csv_bytes = blob.download_as_bytes()
 
-        # WORK-09/10/11/13/14: Validate CSV before processing
+        # WORK-09/10/11/13/14: Validate CSV before processing.
+        # TASKS.md 2.3: UploadValidationError carries a stable error_code
+        # that is routed through mark_job_error so the frontend sees a
+        # structured {error, errorCode, errorType} payload instead of a
+        # bare error string.
         try:
             encoding, col_count, row_count = validate_csv(csv_bytes)
             logger.info(f"CSV validation passed: {row_count} rows, {col_count} columns, {encoding} encoding")
-        except ValueError as e:
-            # Update job status with validation error
-            transaction = db.transaction()
-            update_job_status(transaction, job_ref, JobStatus.ERROR, {
-                'error': str(e),
-                'errorType': 'validation'
-            })
+        except UploadValidationError as e:
+            mark_job_error(
+                job_ref,
+                job_id,
+                str(e),
+                error_code=e.error_code,
+                error_type=e.error_type,
+            )
             logger.error(f"CSV validation failed for job {job_id}: {e}")
             return
 
@@ -1044,9 +1189,27 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # pass validation but be silently decoded as Latin-1 or UTF-8 at
         # parse time, corrupting categorical values and therefore the
         # resulting outlier scores.
-        loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
-        df = loader.load_original_data(csv_bytes, encoding=encoding)
-        logger.info(f"Loaded CSV data. Shape: {df.shape}")
+        try:
+            loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
+            df = loader.load_original_data(csv_bytes, encoding=encoding)
+            logger.info(f"Loaded CSV data. Shape: {df.shape}")
+        except Exception as load_err:
+            # The CSV passed validate_csv but DataLoader still could not
+            # read it - usually a pandas parse quirk that the streaming
+            # validator missed. Surface a clean LOAD_FAILURE code instead
+            # of leaking the raw exception message.
+            mark_job_error(
+                job_ref,
+                job_id,
+                "Failed to load CSV data. The file may be malformed.",
+                error_code=ErrorCode.LOAD_FAILURE,
+                error_type=ErrorType.PROCESSING,
+            )
+            logger.error(
+                f"DataLoader.load_original_data failed for job {job_id}: "
+                f"{load_err}"
+            )
+            return
 
         # 3. Calculate stats for the frontend 'Overview' tab
         stats = {
@@ -1081,7 +1244,32 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         logger.info(f"After Rule of 9: {process_df.shape} (kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})")
 
         if process_df.shape[1] == 0:
-            raise ValueError("All columns were dropped by Rule of 9 filter. No columns have 2-9 unique values.")
+            # TASKS.md 2.3: emit a stable error code so the frontend can
+            # special-case this with a specific, actionable message (users
+            # hit this when every column is either constant or
+            # high-cardinality). Stash `stats` so the UI can show the user
+            # which columns were actually dropped.
+            mark_job_error(
+                job_ref,
+                job_id,
+                "No usable columns found. Every column was dropped because "
+                "it had only one unique value or more than 9 unique values. "
+                "Try a dataset with some low-cardinality categorical "
+                "columns (between 2 and 9 distinct values).",
+                error_code=ErrorCode.NO_USABLE_COLUMNS,
+                error_type=ErrorType.PROCESSING,
+            )
+            try:
+                job_ref.update({'stats': stats})
+            except Exception as stats_err:
+                logger.warning(
+                    f"Failed to attach stats to error state for job "
+                    f"{job_id}: {stats_err}"
+                )
+            logger.error(
+                f"Job {job_id} produced no usable columns after Rule of 9"
+            )
+            return
 
         # 6. Vectorization (split before fitting to prevent data leakage)
         from sklearn.model_selection import train_test_split as _tts
@@ -1135,12 +1323,27 @@ def process_upload_local(job_id, bucket_name, file_path, message):
             return
 
         logger.info("Training autoencoder...")
-        keras_model.fit(
-            X_train, X_train,
-            epochs=15, batch_size=32, verbose=2,
-            validation_data=(X_test, X_test),
-            callbacks=[CancellationCallback()]
-        )
+        try:
+            keras_model.fit(
+                X_train, X_train,
+                epochs=15, batch_size=32, verbose=2,
+                validation_data=(X_test, X_test),
+                callbacks=[CancellationCallback()]
+            )
+        except Exception as train_err:
+            # TASKS.md 2.3: classify training failures separately from
+            # validation / loading so the frontend can surface the right
+            # stage in its error UI.
+            mark_job_error(
+                job_ref,
+                job_id,
+                "Model training failed. The uploaded dataset may be too "
+                "small or too uniform to train on.",
+                error_code=ErrorCode.TRAINING_FAILURE,
+                error_type=ErrorType.TRAINING,
+            )
+            logger.error(f"Training failed for job {job_id}: {train_err}")
+            return
 
         # Check cancellation after training
         if is_job_canceled(job_id):
@@ -1151,54 +1354,80 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.SCORING)
 
-        # 8. Calculate reconstruction error
-        reconstruction = keras_model.predict(vectorized_df)
-        if isinstance(reconstruction, list):
-            reconstruction = reconstruction[0]
-        mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
-        df['reconstruction_error'] = mse
+        # TASKS.md 2.3 (Codex P2 r3067501311 follow-up): wrap the whole
+        # scoring stage - prediction, reconstruction error, per-column
+        # contributions, and the final Firestore write - in a dedicated
+        # try/except so failures here are reported as SCORING_FAILURE
+        # instead of falling through to the generic INTERNAL_ERROR
+        # catch-all below. Without this wrapper a numeric instability in
+        # keras_model.predict, a shape mismatch between vectorized_df and
+        # the predictions, or a crash inside compute_per_column_contributions
+        # would lose the stage information and show up on the frontend as
+        # a generic "unexpected error", even though a SCORING_FAILURE code
+        # and copy already exist in both worker.ErrorCode and
+        # frontend/client/utils/jobErrors.ts.
+        try:
+            # 8. Calculate reconstruction error
+            reconstruction = keras_model.predict(vectorized_df)
+            if isinstance(reconstruction, list):
+                reconstruction = reconstruction[0]
+            mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
+            df['reconstruction_error'] = mse
 
-        # 9. Get top outliers and compute per-column contributions.
-        # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
-        top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
-        top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
+            # 9. Get top outliers and compute per-column contributions.
+            # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
+            top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
+            top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
 
-        predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
-        vectorized_np = vectorized_df.to_numpy()
-        MAX_CONTRIBUTIONS_PER_OUTLIER = 10
+            predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
+            vectorized_np = vectorized_df.to_numpy()
+            MAX_CONTRIBUTIONS_PER_OUTLIER = 10
 
-        outliers_data = []
-        for idx, row in top_outliers.iterrows():
-            row_data = vectorized_np[idx:idx+1]
-            row_pred = predictions_np[idx:idx+1]
+            outliers_data = []
+            for idx, row in top_outliers.iterrows():
+                row_data = vectorized_np[idx:idx+1]
+                row_pred = predictions_np[idx:idx+1]
 
-            contributions = compute_per_column_contributions(
-                row_data, row_pred, cardinalities, list(process_df.columns))
+                contributions = compute_per_column_contributions(
+                    row_data, row_pred, cardinalities, list(process_df.columns))
 
-            sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
-            capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
+                sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
+                capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
 
-            # User columns under `data`, system metadata at top level.
-            row_dict = row.to_dict()
-            outlier_record = {
-                'data': row_dict,
-                'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
-                'contributions': [
-                    {'column': col, 'percentage': float(pct)}
-                    for col, pct in capped_contribs
-                ],
-            }
-            outliers_data.append(outlier_record)
+                # User columns under `data`, system metadata at top level.
+                row_dict = row.to_dict()
+                outlier_record = {
+                    'data': row_dict,
+                    'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
+                    'contributions': [
+                        {'column': col, 'percentage': float(pct)}
+                        for col, pct in capped_contribs
+                    ],
+                }
+                outliers_data.append(outlier_record)
 
-        # 10. Save to Firestore with transactional status update (WORK-07)
-        transaction = db.transaction()
-        update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
-            'stats': stats,
-            'outliers': outliers_data,
-            'processedAt': firestore.SERVER_TIMESTAMP
-        })
+            # 10. Save to Firestore with transactional status update (WORK-07)
+            transaction = db.transaction()
+            update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
+                'stats': stats,
+                'outliers': outliers_data,
+                'processedAt': firestore.SERVER_TIMESTAMP
+            })
 
-        logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
+            logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
+        except Exception as score_err:
+            mark_job_error(
+                job_ref,
+                job_id,
+                "Outlier scoring failed after the model finished training. "
+                "Please try again or contact support if the problem persists.",
+                error_code=ErrorCode.SCORING_FAILURE,
+                error_type=ErrorType.SCORING,
+            )
+            logger.exception(
+                f"Scoring failed for job {job_id}: {score_err}"
+            )
+            return
 
     except JobDocumentNotReadyError:
         # Never swallow this: it must reach callback() so the message is
@@ -1212,17 +1441,39 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # is actively running this job and would see its next transition
         # rejected as "ERROR -> TRAINING" / similar.
         raise
+    except UploadValidationError as e:
+        # TASKS.md 2.3: an UploadValidationError that bubbled up past the
+        # targeted handlers above is still a structured, user-facing
+        # failure - route it through mark_job_error so the client sees the
+        # correct error_code and errorType instead of falling through to
+        # the INTERNAL_ERROR branch below.
+        logger.error(
+            f"Unhandled UploadValidationError for job {job_id}: {e}"
+        )
+        mark_job_error(
+            job_ref,
+            job_id,
+            str(e),
+            error_code=e.error_code,
+            error_type=e.error_type,
+        )
     except Exception as e:
-        logger.error(f"Error processing job {job_id}: {e}")
-
-        # Update status to error using transaction (WORK-07)
-        transaction = db.transaction()
-        job_ref = db.collection('jobs').document(job_id)
-        try:
-            update_job_status(transaction, job_ref, JobStatus.ERROR, {'error': str(e)})
-        except ValueError:
-            # Job may be in terminal state already, error logged anyway
-            logger.error(f"Job {job_id} failed but could not update status: {e}")
+        # TASKS.md 2.3: everything that falls through here is an
+        # unclassified internal failure. Log the raw exception for
+        # debugging, but write a generic user-facing message to Firestore
+        # so the frontend does not leak Python stack strings (which can
+        # include file paths and library internals). The stable
+        # INTERNAL_ERROR code lets the UI surface a "contact support"
+        # affordance instead of guessing what went wrong.
+        logger.exception(f"Unhandled error processing job {job_id}: {e}")
+        mark_job_error(
+            job_ref,
+            job_id,
+            "An unexpected error occurred while processing this file. "
+            "Please try again or contact support if the problem persists.",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            error_type=ErrorType.INTERNAL,
+        )
     finally:
         # WORK-05/06: Stop ack extension in finally block
         extender.stop()
@@ -1535,16 +1786,21 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
         # crashed-worker scenario can still retry on redelivery.
         raise
     except Exception as e:
-        logger.error(f"Failed to launch Vertex AI job: {e}")
-
-        # Update status to error using transaction (WORK-07)
-        transaction = db.transaction()
-        job_ref = db.collection('jobs').document(job_id)
-        try:
-            update_job_status(transaction, job_ref, JobStatus.ERROR, {'error': str(e)})
-        except ValueError:
-            # Job may be in terminal state already, error logged anyway
-            logger.error(f"Job {job_id} failed but could not update status: {e}")
+        # TASKS.md 2.3: Vertex dispatch is a thin wrapper around the
+        # aiplatform SDK call, so most failures here are either
+        # authentication / quota issues (internal infrastructure) or
+        # malformed args (internal bugs). We classify as INTERNAL_ERROR
+        # and write a generic user-facing message so the frontend does
+        # not surface raw SDK stack strings.
+        logger.exception(f"Failed to launch Vertex AI job {job_id}: {e}")
+        mark_job_error(
+            job_ref,
+            job_id,
+            "An unexpected error occurred while dispatching this job. "
+            "Please try again or contact support if the problem persists.",
+            error_code=ErrorCode.INTERNAL_ERROR,
+            error_type=ErrorType.INTERNAL,
+        )
     finally:
         # WORK-05/06: Stop ack extension in finally block
         extender.stop()
