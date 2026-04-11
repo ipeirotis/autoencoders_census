@@ -429,6 +429,127 @@ class TestScoringConsistencyAcrossCodePaths:
         corr = np.corrcoef(unified_score, legacy_mse)[0, 1]
         assert corr < 0.9999
 
+    def test_mixed_numeric_categorical_layout_aligns_with_vectorized_matrix(self):
+        """
+        Regression test for Codex P1 #4 on PR #46.
+
+        ``Table2Vector._apply_transforms`` reorders columns during
+        vectorization: numeric / untransformed columns keep their
+        original relative position while **categorical** columns are
+        dropped from their original slot and their one-hot blocks are
+        appended at the end. For input ``[num1, cat1, num2, cat2]`` the
+        vectorized matrix has columns
+        ``[num1, num2, cat1__a, cat1__b, cat2__x, cat2__y]``.
+
+        Before the fix, ``find_outliers`` computed
+        ``attr_cardinalities = get_cardinalities(project_data.columns)``
+        in raw column order ``[1, 2, 1, 2]``. Slicing the vectorized
+        matrix with those cardinalities lined up with the wrong
+        features — the "categorical" slot was half numeric and half
+        one-hot, silently distorting outlier rankings in
+        ``find_outliers`` for mixed datasets with numeric columns.
+
+        The fix (``_compute_attr_layout`` in ``main.py``) rebuilds
+        ``attr_cardinalities`` and ``attr_is_categorical`` in the
+        actual slice order: all non-categorical attributes first, then
+        categorical blocks. This test exercises the helper through a
+        real ``Table2Vector`` to guard against any drift between the
+        helper's ordering assumption and the actual vectorizer
+        behavior.
+        """
+        from main import _compute_attr_layout
+
+        df = pd.DataFrame(
+            {
+                "num1": [1.0, 2.0, 3.0, 4.0, 5.0],
+                "cat1": ["a", "b", "a", "b", "a"],
+                "num2": [0.1, 0.2, 0.3, 0.4, 0.5],
+                "cat2": ["x", "y", "x", "y", "x"],
+            }
+        )
+        variable_types = {
+            "num1": "numeric",
+            "cat1": "categorical",
+            "num2": "numeric",
+            "cat2": "categorical",
+        }
+        vectorizer = Table2Vector(variable_types)
+        vectorizer.fit(df)
+        vectorized = vectorizer.transform(df)
+
+        # The actual vectorized layout puts numerics first, then categoricals
+        # (verified by inspecting vectorized.columns).
+        assert list(vectorized.columns)[:2] == ["num1", "num2"], (
+            f"Table2Vector layout assumption is stale; got "
+            f"{list(vectorized.columns)}"
+        )
+
+        attr_cardinalities, attr_is_categorical = _compute_attr_layout(
+            vectorizer, df.columns
+        )
+
+        # Expected: [num1(1), num2(1), cat1(2), cat2(2)]
+        assert attr_cardinalities == [1, 1, 2, 2], (
+            f"Expected slice-order cardinalities [1, 1, 2, 2], got "
+            f"{attr_cardinalities}"
+        )
+        assert attr_is_categorical == [False, False, True, True], (
+            f"Expected is_categorical [F, F, T, T], got {attr_is_categorical}"
+        )
+
+        # And sanity-check: walking the vectorized matrix with these
+        # cardinalities must actually slice correctly — each categorical
+        # block must sum to 1.0 per row (valid one-hot) and each numeric
+        # block must contain values in [0, 1] (MinMax-scaled).
+        arr = vectorized.to_numpy()
+        start = 0
+        for i, (card, is_cat) in enumerate(
+            zip(attr_cardinalities, attr_is_categorical)
+        ):
+            block = arr[:, start : start + card]
+            if is_cat:
+                row_sums = block.sum(axis=1)
+                assert np.allclose(row_sums, 1.0), (
+                    f"Categorical block {i} does not sum to 1.0 per row: "
+                    f"{row_sums}"
+                )
+            else:
+                assert (block >= 0).all() and (block <= 1).all(), (
+                    f"Numeric block {i} has values outside [0, 1]: {block}"
+                )
+            start += card
+
+        # And the scoring must work end-to-end on this mixed layout.
+        # A perfect-reconstruction prediction should produce near-zero
+        # loss for the categorical blocks, NOT get clamped by the
+        # unseen-category override.
+        #
+        # Caveat: rows where a numeric column equals exactly 0 after
+        # MinMax scaling (i.e. the training-minimum value) trigger a
+        # pre-existing degenerate case in
+        # ``VAE.reconstruction_loss``'s categorical-crossentropy on a
+        # cardinality-1 block (CE normalizes ``[0]`` to ``[eps]`` and
+        # ``0/eps`` yields NaN). That is orthogonal to TASKS 2.8 and
+        # outside the scope of this fix — what this test pins down is
+        # that the non-pathological rows produce a small reconstruction
+        # loss instead of the ~0.5 value they would get if the
+        # categorical/numeric slices were misaligned.
+        perfect_pred = vectorized.to_numpy()
+        err = compute_reconstruction_error(
+            vectorized,
+            perfect_pred,
+            attr_cardinalities,
+            attr_is_categorical=attr_is_categorical,
+        )
+        finite = err[np.isfinite(err)]
+        assert len(finite) >= 4, (
+            f"Expected at least 4 finite per-row losses, got {err}"
+        )
+        assert np.all(finite < 0.3), (
+            f"Perfect reconstruction should yield near-zero loss on a "
+            f"mixed dataset; got {err}"
+        )
+
     def test_get_outliers_list_uses_unified_helper(self):
         """
         End-to-end: a dummy predict model fed through get_outliers_list
