@@ -6,6 +6,17 @@ AutoEncoder Outlier Detection Platform -- a full-stack ML system that detects pr
 
 The core idea: train an autoencoder to reconstruct survey responses; rows with high reconstruction error are likely from inattentive or mischievous respondents.
 
+## Open Tasks and Roadmap
+
+**See [`TASKS.md`](TASKS.md) for the authoritative list of open tasks, priorities, and project direction.** It is the single source of truth for:
+
+- Known bugs and the planned fixes
+- Outstanding work on the core pipeline, upload path, frontend, tests, docs, and cloud deployment
+- Strategic/methodological considerations (Section 9) and the missing-data redesign (Section 8)
+- Completed work (marked with ~~strikethrough~~ and a "DONE" note describing what shipped)
+
+When asked "what should I work on next?", start by reading `TASKS.md` and pick the next non-DONE item in the relevant section. When finishing a task, update `TASKS.md` in the same PR: strike through the heading and append a short DONE summary describing what changed and where.
+
 ## Repository Structure
 
 ```
@@ -129,14 +140,17 @@ python -m pytest tests/ -v
 - Frontend uses TypeScript with Tailwind CSS and shadcn/ui components
 
 ### Architecture Patterns
-- `DataLoader.prepare_original_dataset()` returns `(clean_df, metadata_dict)` where metadata contains `variable_types` and `ignored_columns`
-- The `train` and `find_outliers` CLI commands duplicate data-cleaning logic inline (the `run_training_pipeline()` function in `main.py` provides a reusable version)
+- All `DataLoader` methods return `(clean_df, metadata_dict)` where metadata has `variable_types` and `ignored_columns` keys (see TASKS.md 1.1)
+- Data cleaning and vectorization live in three helpers in `main.py`:
+  - `prepare_for_training()` — splits *before* fitting the vectorizer to prevent data leakage. Used by `train`, `search_hyperparameters`, and `run_training_pipeline` (TASKS.md 3.8).
+  - `prepare_for_model()` — fits and transforms the whole dataset at once. Used for scoring/evaluation: `evaluate`, `find_outliers`, `generate`, `pca_baseline` (TASKS.md 1.2, 1.6).
+  - `prepare_for_categorical()` — cleaning only (no vectorization), for `chow_liu_outliers` (TASKS.md 10.2).
+  All three share a common cleaning core (`fillna("missing")` → `astype(str)` → Rule-of-9 → sync variable_types).
+- Dataset configs live in a single source of truth: `define_necessary_elements()` in `utils.py` (TASKS.md 1.3)
 - Custom Keras losses are registered via `@keras.utils.register_keras_serializable()`
 - Models are saved in TensorFlow SavedModel format (`save_format="tf"`)
 
 ### Common Gotchas
-- `DataLoader.load_data()` return format varies: some loaders return `(df, variable_types_dict)`, others return `(df, metadata_dict)` with nested structure. The `train` and `find_outliers` commands handle both via isinstance checks.
-- The `test_loader.py` tests reference `DataLoader.DATASET_URL_2015` class attributes that no longer exist -- these tests will fail.
 - `*.csv` files are gitignored. The `data/` directory ships with `sadc_2015only_national.csv` and `sadc_2017only_national_full.csv` which are tracked.
 - The frontend requires GCP credentials (`.env` files) to function. Without them, only the CLI pipeline works.
 - TensorFlow 2.15.1 requires AVX instructions; Apple Silicon Macs need `tensorflow-macos` instead.
