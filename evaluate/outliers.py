@@ -21,6 +21,23 @@ def compute_reconstruction_error(
     ``train/task.py`` — so that the web UI and the CLI produce identical
     rankings on the same model and the same data (TASKS.md 2.8).
 
+    **Unseen-category handling.** Since TASKS.md 3.8, ``Table2Vector`` fits on
+    the training split only with ``OneHotEncoder(handle_unknown='ignore')``.
+    When the full dataset is later transformed for scoring, rows whose
+    category values were not in the training split are encoded as an
+    all-zero one-hot block for that attribute. Standard categorical
+    crossentropy ``-sum(target * log(pred))`` returns ~0 on an all-zero
+    target, which would artificially lower the error for exactly the rare
+    rows we want to flag as outliers (Codex P1 on PR #46). To preserve the
+    penalty, every all-zero attribute block is assigned the maximum
+    normalized loss (``1.0``, i.e. ``log(K) / log(K)``) — matching the
+    treatment a uniform wrong-category prediction would receive.
+
+    For the normal case (observed categories, single active one-hot per
+    attribute), this function is numerically equivalent to
+    :meth:`model.base.VAE.reconstruction_loss`, so scoring stays consistent
+    with the training loss the model optimized.
+
     Args:
         data: One-hot encoded inputs, shape ``(N, total_one_hot_dims)``.
             DataFrame or ndarray.
@@ -41,8 +58,41 @@ def compute_reconstruction_error(
         else np.asarray(predictions)
     )
 
-    loss = VAE.reconstruction_loss(attr_cardinalities, data_np, predictions_np)
-    return np.asarray(loss.numpy() if hasattr(loss, "numpy") else loss)
+    data_t = tf.cast(data_np, tf.float32)
+    predictions_t = tf.cast(predictions_np, tf.float32)
+
+    per_attr_losses = []
+    start_idx = 0
+    for categories in attr_cardinalities:
+        x_attr = data_t[:, start_idx : start_idx + categories]
+        y_attr = predictions_t[:, start_idx : start_idx + categories]
+
+        # Per-attribute CE normalized to [0, 1] by log(K). The max(..., 2)
+        # guard matches VAE.reconstruction_loss and avoids log(1) = 0
+        # blowing up on a degenerate single-category attribute.
+        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+        denom = np.log(max(int(categories), 2))
+        ce_normalized = ce / denom
+
+        # Unseen-category penalty: when the target one-hot block for this
+        # attribute is all zeros (the row's original category was not in
+        # the training split and got ignored by OneHotEncoder), standard
+        # CE returns ~0 because -sum(0 * log(pred)) = 0. That would let
+        # rare/unseen rows slip through the outlier ranking. Replace the
+        # zero loss with the maximum normalized value (1.0) so these rows
+        # are penalized at least as strongly as a uniformly wrong
+        # prediction would be.
+        attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
+        ce_final = tf.where(
+            attr_observed, ce_normalized, tf.ones_like(ce_normalized)
+        )
+
+        per_attr_losses.append(ce_final)
+        start_idx += categories
+
+    stacked = tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
+    row_loss = tf.reduce_mean(stacked, axis=0)  # (N,)
+    return np.asarray(row_loss.numpy())
 
 
 def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):

@@ -81,20 +81,6 @@ class TestComputeReconstructionError:
         assert result.dtype.kind == "f"
         assert result.shape == (1,)
 
-    def test_matches_vae_reconstruction_loss_directly(self):
-        """The helper must be a thin wrapper around VAE.reconstruction_loss."""
-        rng = np.random.RandomState(0)
-        data = rng.rand(5, 7).astype(np.float32)
-        predictions = rng.rand(5, 7).astype(np.float32)
-        cardinalities = [3, 4]
-
-        helper_result = compute_reconstruction_error(data, predictions, cardinalities)
-        direct_result = VAE.reconstruction_loss(
-            cardinalities, data, predictions
-        ).numpy()
-
-        assert np.allclose(helper_result, direct_result)
-
     def test_higher_error_for_more_categories_wrong(self):
         """Row with two wrong attributes scores higher than row with one wrong."""
         data = np.array(
@@ -110,6 +96,117 @@ class TestComputeReconstructionError:
         errors = compute_reconstruction_error(data, prediction, cardinalities)
 
         assert errors[0] < errors[1] < errors[2]
+
+    def test_unseen_category_rows_are_penalized(self):
+        """
+        Regression test for Codex P1 on PR #46.
+
+        After TASKS.md 3.8, ``Table2Vector`` fits on the training split only
+        with ``OneHotEncoder(handle_unknown='ignore')``. When the full dataset
+        is transformed for scoring, rows whose category values were not in
+        the training split become all-zero one-hot blocks for that attribute.
+        Standard categorical crossentropy returns ~0 on an all-zero target
+        (``-sum(0 * log(pred)) == 0``), so without the unseen-category
+        penalty these rows — which are exactly the rare/outlier rows we want
+        to flag — would score as "normal". The helper must penalize them at
+        least as strongly as a row with an incorrect prediction on the same
+        attribute.
+        """
+        # Two attributes: cardinalities [3, 2]
+        cardinalities = [3, 2]
+
+        data = np.array(
+            [
+                [1.0, 0.0, 0.0, 1.0, 0.0],  # normal, attr1 observed (cat 0)
+                [0.0, 0.0, 0.0, 1.0, 0.0],  # unseen category in attr1
+            ]
+        )
+        # Model prediction is a reasonable softmax on attr1 and perfect on attr2.
+        prediction = np.array(
+            [
+                [0.7, 0.2, 0.1, 0.9, 0.1],
+                [0.7, 0.2, 0.1, 0.9, 0.1],
+            ]
+        )
+
+        errors = compute_reconstruction_error(data, prediction, cardinalities)
+
+        # The unseen-category row must score strictly higher than the normal row.
+        assert errors[1] > errors[0], (
+            f"Unseen-category row must be penalized more heavily than the "
+            f"observed row, got errors={errors}"
+        )
+
+        # The unseen attribute must contribute the maximum normalized loss
+        # (1.0) to the row, not ~0. With cardinalities [3, 2] and the second
+        # attribute perfectly reconstructed (CE ~= 0), the unseen row's
+        # per-row loss should be approximately 0.5 (mean of 1.0 and 0.0),
+        # which is far higher than the ~0 the buggy path would produce.
+        assert errors[1] > 0.3, (
+            f"Unseen-category row should score at least ~0.5 from the "
+            f"maxed-out attribute alone, got errors[1]={errors[1]}"
+        )
+
+    def test_unseen_category_penalty_equals_uniform_wrong_prediction(self):
+        """
+        A row with an unseen (all-zero) attribute block should score
+        roughly the same as a row where the true category was correctly
+        encoded but the model put all probability mass on the wrong class.
+        Both are maximum-loss scenarios for that attribute.
+        """
+        cardinalities = [3]
+
+        # Row A: unseen category (all-zero block)
+        data_unseen = np.array([[0.0, 0.0, 0.0]])
+        # Row B: observed cat 0, but the model predicted cat 2 with full confidence
+        data_wrong = np.array([[1.0, 0.0, 0.0]])
+        pred_wrong = np.array([[1e-7, 1e-7, 1 - 2e-7]])
+
+        # Both rows share the same "all probability on wrong class" prediction
+        err_unseen = compute_reconstruction_error(
+            data_unseen, pred_wrong, cardinalities
+        )
+        err_wrong = compute_reconstruction_error(data_wrong, pred_wrong, cardinalities)
+
+        # The unseen path hard-caps at 1.0 (log(K)/log(K)); the wrong path
+        # computes log(1/1e-7) / log(K) which is >> 1.0. Both are clearly
+        # penalized — the key assertion is that the unseen path is not ~0.
+        assert err_unseen[0] >= 0.9, (
+            f"Unseen-category row should be assigned ~1.0 normalized loss, "
+            f"got {err_unseen[0]}"
+        )
+        assert err_wrong[0] > 0.9
+
+    def test_normal_case_still_matches_vae_reconstruction_loss(self):
+        """
+        With no unseen-category blocks, the helper must still be numerically
+        equivalent to ``VAE.reconstruction_loss`` so that scoring stays
+        consistent with the training loss the model optimized.
+        """
+        data = np.array(
+            [
+                [1.0, 0.0, 0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0, 0.0],
+            ]
+        )
+        predictions = np.array(
+            [
+                [0.7, 0.2, 0.1, 0.9, 0.1],
+                [0.3, 0.5, 0.2, 0.2, 0.8],
+                [0.1, 0.2, 0.7, 0.6, 0.4],
+            ]
+        )
+        cardinalities = [3, 2]
+
+        helper_result = compute_reconstruction_error(
+            data, predictions, cardinalities
+        )
+        direct_result = VAE.reconstruction_loss(
+            cardinalities, data, predictions
+        ).numpy()
+
+        assert np.allclose(helper_result, direct_result, atol=1e-5)
 
 
 class TestScoringConsistencyAcrossCodePaths:

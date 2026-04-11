@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { useJobPolling } from '@/hooks/useJobPolling';
 import { useJobCancellation } from '@/hooks/useJobCancellation';
+import { resolveJobError } from '@/utils/jobErrors';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -213,17 +214,29 @@ export default function JobProgress() {
               </>
             )}
 
-            {job.status === 'error' && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-                <p className="text-red-800 font-semibold">Job failed</p>
-                <p className="text-red-700 text-sm mt-1">{job.error || 'Unknown error occurred'}</p>
-                {!job.filesExpired && (
-                  <div className="mt-3">
-                    <DeleteJobDialog jobId={id!} />
-                  </div>
-                )}
-              </div>
-            )}
+            {job.status === 'error' && (() => {
+              // TASKS.md 2.3: surface the structured error code + heading
+              // written by worker.mark_job_error. resolveJobError falls
+              // back to a generic heading when the worker did not write a
+              // code (old jobs, legacy error path).
+              const { heading, message } = resolveJobError(job);
+              return (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-md">
+                  <p className="text-red-800 font-semibold">{heading}</p>
+                  <p className="text-red-700 text-sm mt-1">{message}</p>
+                  {job.errorCode && (
+                    <p className="text-red-500 text-xs mt-2 font-mono">
+                      Error code: {job.errorCode}
+                    </p>
+                  )}
+                  {!job.filesExpired && (
+                    <div className="mt-3">
+                      <DeleteJobDialog jobId={id!} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {job.status === 'canceled' && (
               <div className="p-4 bg-gray-50 border border-gray-200 rounded-md">
