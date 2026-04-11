@@ -414,6 +414,39 @@ class TestBuildVertexTrainingArgsWithPreset:
         assert "--max-unique-values=15" in args
         assert "--model-preset=medium" in args
 
+    @pytest.mark.parametrize("value", ["auto", "AUTO", " Auto ", "\tauto\n"])
+    def test_auto_is_omitted_for_rolling_deploy_compat(self, value):
+        """Codex P1 r#50: `model_preset='auto'` MUST NOT be forwarded
+        as `--model-preset=auto` because an older trainer image that
+        pre-dates the flag would exit on the unrecognized CLI arg.
+        The trainer treats an absent flag as auto by default (via
+        `build_model_config(None, ...)` → `normalize_preset_name`
+        → `auto_select_preset`), so omitting the flag is semantically
+        identical to passing 'auto' — but only the "omit" variant
+        survives a mixed-version rolling deploy.
+        """
+        from worker import _build_vertex_training_args
+
+        args = _build_vertex_training_args(
+            "job1", "bucket1", "file.csv", model_preset=value
+        )
+        assert all(not a.startswith("--model-preset") for a in args), (
+            f"auto sentinel {value!r} must not appear as --model-preset "
+            f"(got args={args})"
+        )
+
+    @pytest.mark.parametrize("value", ["small", "medium", "large"])
+    def test_concrete_presets_are_still_forwarded(self, value):
+        # The auto-omit logic must not accidentally drop concrete
+        # preset ids: small/medium/large still need to reach the
+        # trainer.
+        from worker import _build_vertex_training_args
+
+        args = _build_vertex_training_args(
+            "job1", "bucket1", "file.csv", model_preset=value
+        )
+        assert f"--model-preset={value}" in args
+
 
 # ---------------------------------------------------------------------------
 # Drift guard: TypeScript preset list mirrors Python PRESET_INFO

@@ -219,7 +219,19 @@ def _build_vertex_training_args(
     ]
     if max_unique_values is not None:
         args.append(f"--max-unique-values={int(max_unique_values)}")
-    if model_preset is not None:
+    # Codex P1 r#50: treat 'auto' as equivalent to None and omit the
+    # flag. Semantically the trainer resolves both identically via
+    # `build_model_config` → `normalize_preset_name` → `auto_select_preset`,
+    # so sending `--model-preset=auto` vs omitting the flag produces
+    # the same resolved config on a new trainer — but only the
+    # "omit" variant is safe to send to an OLD trainer image (pre-
+    # `--model-preset` support in train/task.py) that would otherwise
+    # exit on the unrecognized CLI arg during a rolling deploy. This
+    # is defense-in-depth on top of the jobs.ts fix that stops
+    # emitting 'auto' in the Pub/Sub message: a stale worker image
+    # paired with a newer API server would otherwise still send
+    # --model-preset=auto here.
+    if model_preset is not None and str(model_preset).strip().lower() != "auto":
         args.append(f"--model-preset={model_preset}")
     return args
 

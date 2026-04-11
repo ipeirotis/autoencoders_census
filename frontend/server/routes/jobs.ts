@@ -127,23 +127,48 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
 
     // TASKS.md 3.2: optional model preset chosen via the dropdown.
     // validateStartJob has already enforced the allowlist when the
-    // field is present, so we trust the value here. Default to 'auto'
-    // when the client omits the field so the worker logs / persists
-    // a deterministic value instead of `undefined`.
-    const resolvedPreset =
+    // field is present.
+    //
+    // Two different "resolved" values here intentionally:
+    //
+    //   - `presetForDoc`: what we persist on the Firestore job doc for
+    //     display. Defaults to 'auto' when the client omits the field
+    //     so the frontend can always render a deterministic value on
+    //     the progress page.
+    //
+    //   - `presetForMessage`: what we forward through Pub/Sub to the
+    //     worker. Deliberately `undefined` when the client didn't pick
+    //     a concrete preset (missing OR 'auto'). The reason is the
+    //     rolling-deploy compat contract for the Vertex trainer
+    //     image: `_build_vertex_training_args` only emits
+    //     `--model-preset=<name>` when the value is non-None, so an
+    //     older `train/task.py` (pre-`--model-preset` support) still
+    //     parses the arg list cleanly during a mixed-version
+    //     deployment. If we eagerly defaulted to 'auto' in the Pub/Sub
+    //     message, the worker would always forward
+    //     `--model-preset=auto` and an old trainer would exit on the
+    //     unknown CLI arg. Semantically this is a no-op for the
+    //     trainer: `build_model_config(None, ...)` and
+    //     `build_model_config('auto', ...)` both resolve the same way
+    //     via `auto_select_preset`, so sending no flag is equivalent
+    //     to sending `--model-preset=auto` on a new trainer — but
+    //     only the "no flag" variant survives a rolling deploy
+    //     (Codex P1 r#50).
+    const clientPreset =
       typeof modelPreset === 'string' && (VALID_MODEL_PRESETS as readonly string[]).includes(modelPreset)
         ? modelPreset
-        : 'auto';
+        : undefined;
+    const presetForDoc = clientPreset ?? 'auto';
+    const presetForMessage = clientPreset && clientPreset !== 'auto' ? clientPreset : undefined;
 
-    const messageJson = {
+    const messageJson: Record<string, unknown> = {
       jobId: jobId,
       bucket: BUCKET_NAME,
       file: gcsFileName,
-      // Forward the preset id through Pub/Sub. The worker tolerates
-      // missing / unknown values (normalized to 'auto'), so older
-      // workers running before this PR still parse the message.
-      modelPreset: resolvedPreset,
     };
+    if (presetForMessage !== undefined) {
+      messageJson.modelPreset = presetForMessage;
+    }
 
     const dataBuffer = Buffer.from(JSON.stringify(messageJson));
 
@@ -161,8 +186,11 @@ router.post("/start-job", requireAuth, uploadLimiter, validateStartJob, async (r
         // Persist the requested preset on the job doc so the frontend
         // can show "model: medium (auto)" while the worker is still
         // running. The worker overwrites this with the resolved preset
-        // (small/medium/large) once it has cleaned the input.
-        modelPresetRequested: resolvedPreset,
+        // (small/medium/large) once it has cleaned the input. Uses
+        // `presetForDoc` (which defaults to 'auto') rather than
+        // `presetForMessage` (which is undefined on auto) — the job
+        // doc is display state, not wire state.
+        modelPresetRequested: presetForDoc,
       });
     } catch (createErr: any) {
       if (createErr?.code !== 6) {
