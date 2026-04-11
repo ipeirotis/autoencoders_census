@@ -160,6 +160,58 @@ def _clean_and_build_vectorizer(project_data, variable_types=None):
     return project_data, variable_types, vectorizer
 
 
+def _compute_attr_layout(vectorizer, cleaned_columns):
+    """Derive ``(attr_cardinalities, attr_is_categorical)`` in the slice
+    order that matches the vectorized matrix produced by ``Table2Vector``.
+
+    ``Table2Vector._apply_transforms`` reorders columns during
+    vectorization: numeric and untransformed columns stay in their
+    original relative positions, while **categorical** columns are
+    dropped from their original slot and their one-hot blocks are
+    appended at the end (in original relative order). For a cleaned
+    input ``[num1, cat1, num2, cat2]`` the vectorized matrix has columns
+    ``[num1, num2, cat1__a, cat1__b, cat2__x, cat2__y]``.
+
+    ``get_cardinalities(cleaned_columns)``, on the other hand, walks the
+    raw (pre-vectorized) column order, so for the same input it returns
+    ``[1, K_cat1, 1, K_cat2]``. Slicing the vectorized matrix with those
+    cardinalities lines up with the wrong features for mixed
+    numeric+categorical datasets — and every call into
+    :meth:`model.base.VAE.reconstruction_loss` or
+    :func:`evaluate.outliers.compute_reconstruction_error` silently
+    operates on mis-aligned slices (Codex P1 #4 on PR #46).
+
+    This helper rebuilds the per-attribute metadata in the actual
+    vectorized-matrix slice order so the scoring path is correct even
+    for mixed datasets:
+
+        ordered_cols = [non_categoricals_in_orig_order]
+                     + [categoricals_in_orig_order]
+
+    The worker and Vertex AI paths (``worker.py``, ``train/task.py``)
+    are all-categorical and don't need this helper — their vectorized
+    layout happens to match ``process_df.columns`` by coincidence since
+    every column is moved to the end in iteration order.
+
+    Args:
+        vectorizer: A fitted :class:`features.transform.Table2Vector`.
+        cleaned_columns: The pre-vectorized (cleaned) column order,
+            typically ``project_data.columns`` at the scoring step.
+
+    Returns:
+        Tuple ``(attr_cardinalities, attr_is_categorical)`` — two
+        parallel lists in vectorized-matrix slice order.
+    """
+    categorical_set = set(vectorizer.var_types.get("categorical", []))
+    non_categorical = [c for c in cleaned_columns if c not in categorical_set]
+    categorical = [c for c in cleaned_columns if c in categorical_set]
+
+    ordered = non_categorical + categorical
+    attr_cardinalities = vectorizer.get_cardinalities(ordered)
+    attr_is_categorical = [c in categorical_set for c in ordered]
+    return attr_cardinalities, attr_is_categorical
+
+
 def prepare_for_model(project_data, variable_types=None):
     """Shared data-cleaning and vectorization pipeline.
 
@@ -627,18 +679,32 @@ def find_outliers(
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    # 4. Clean, vectorize, and compute cardinalities
+    # 4. Clean and vectorize
     logger.info("Transforming the data....")
     saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
         vectorizer = saved_vectorizer
-        attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
     else:
-        project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
+        project_data, vectorized_df, vectorizer, _ = prepare_for_model(
             project_data, variable_types
         )
+
+    # Derive attr_cardinalities and attr_is_categorical in the actual
+    # vectorized-matrix slice order. ``Table2Vector._apply_transforms``
+    # reorders columns (numerics/untransformed keep their original
+    # positions, categoricals move to the end as one-hot blocks), so
+    # calling ``get_cardinalities(project_data.columns)`` directly would
+    # give cardinalities in raw column order and slicing the vectorized
+    # matrix by those cardinalities would line up with the wrong
+    # features on mixed numeric+categorical datasets (Codex P1 #4).
+    # The explicit categorical hint also fixes Codex P1 #2/#3: without it,
+    # numeric MinMax values in [0, 0.5] get clamped as "unseen" and
+    # cardinality-1 categorical columns with unseen values don't.
+    attr_cardinalities, attr_is_categorical = _compute_attr_layout(
+        vectorizer, project_data.columns
+    )
 
     # 5. Load model
     logger.info(f"Loading model from {model_path}")
@@ -651,7 +717,13 @@ def find_outliers(
     # 6. Get Outliers
     logger.info("Calculating outliers...")
     error_df = get_outliers_list(
-        vectorized_df, model, k, attr_cardinalities, vectorizer, prior
+        vectorized_df,
+        model,
+        k,
+        attr_cardinalities,
+        vectorizer,
+        prior,
+        attr_is_categorical=attr_is_categorical,
     )
 
     # 10. Save

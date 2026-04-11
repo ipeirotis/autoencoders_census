@@ -1,12 +1,158 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from typing import List, Tuple
+from typing import List, Optional, Tuple, Union
 
 from model.base import VAE
 
 
-def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
+def compute_reconstruction_error(
+    data: Union[pd.DataFrame, np.ndarray],
+    predictions: Union[pd.DataFrame, np.ndarray],
+    attr_cardinalities: List[int],
+    attr_is_categorical: Optional[List[bool]] = None,
+) -> np.ndarray:
+    """
+    Compute per-row reconstruction error using per-attribute categorical
+    crossentropy normalized by ``log(K)``.
+
+    This is the single source of truth for outlier scoring. It must be used by
+    every code path that produces outlier rankings — the CLI ``find_outliers``
+    command, the local worker in ``worker.py``, and the Vertex AI container in
+    ``train/task.py`` — so that the web UI and the CLI produce identical
+    rankings on the same model and the same data (TASKS.md 2.8).
+
+    **Unseen-category handling.** Since TASKS.md 3.8, ``Table2Vector`` fits on
+    the training split only with ``OneHotEncoder(handle_unknown='ignore')``.
+    When the full dataset is later transformed for scoring, rows whose
+    category values were not in the training split are encoded as an
+    all-zero one-hot block for that attribute. Standard categorical
+    crossentropy ``-sum(target * log(pred))`` returns ~0 on an all-zero
+    target, which would artificially lower the error for exactly the rare
+    rows we want to flag as outliers (Codex P1 on PR #46). To preserve the
+    penalty, every all-zero block of a **categorical** attribute is
+    assigned the maximum normalized loss (``1.0``, i.e. ``log(K) / log(K)``)
+    — matching the treatment a uniform wrong-category prediction would
+    receive.
+
+    The override must *only* apply to categorical attributes. Numeric
+    features produced by ``Table2Vector`` have cardinality 1 (a single
+    MinMax-scaled scalar in ``[0, 1]``), so a valid scaled numeric value in
+    ``[0, 0.5]`` would otherwise trip a naive sum-based heuristic and get
+    forced to loss 1.0 regardless of reconstruction quality (Codex P1 #2).
+    And critically, a **categorical** attribute whose fitted one-hot block
+    happens to be width 1 (because only one category appeared in the
+    training split of a small/imbalanced dataset) still needs the
+    override, because test rows with the unseen minority value will be
+    encoded as ``[0]`` and otherwise contribute zero CE (Codex P1 #3).
+    The data alone cannot disambiguate "numeric value 0" from "unseen
+    categorical" — the caller must supply the type hint via
+    ``attr_is_categorical``.
+
+    For the normal case (observed categories, single active one-hot per
+    attribute), this function is numerically equivalent to
+    :meth:`model.base.VAE.reconstruction_loss`, so scoring stays consistent
+    with the training loss the model optimized.
+
+    Args:
+        data: One-hot encoded inputs, shape ``(N, total_one_hot_dims)``.
+            DataFrame or ndarray.
+        predictions: Model reconstruction outputs with the same shape as
+            ``data``. Expected to contain per-attribute softmax blocks
+            (matching ``attr_cardinalities``).
+        attr_cardinalities: List of category counts per original attribute.
+            ``sum(attr_cardinalities)`` must equal ``data.shape[1]``.
+        attr_is_categorical: Optional list of booleans the same length as
+            ``attr_cardinalities`` indicating whether each attribute is a
+            categorical one-hot block (``True``) or a numeric scaled
+            scalar (``False``). The unseen-category override is applied
+            only to attributes marked ``True``. When ``None`` (the default),
+            every attribute is treated as categorical, which is correct
+            for the worker and Vertex AI paths since both hard-code all
+            uploaded columns to categorical. The CLI ``find_outliers``
+            path must pass an explicit hint derived from the fitted
+            ``Table2Vector.var_types`` when the dataset contains numeric
+            columns.
+
+    Returns:
+        numpy array of shape ``(N,)`` containing per-row reconstruction error.
+        Higher values are more anomalous.
+    """
+    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
+    predictions_np = (
+        predictions.to_numpy()
+        if hasattr(predictions, "to_numpy")
+        else np.asarray(predictions)
+    )
+
+    if attr_is_categorical is None:
+        attr_is_categorical = [True] * len(attr_cardinalities)
+    if len(attr_is_categorical) != len(attr_cardinalities):
+        raise ValueError(
+            f"attr_is_categorical length ({len(attr_is_categorical)}) must "
+            f"match attr_cardinalities length ({len(attr_cardinalities)})"
+        )
+
+    data_t = tf.cast(data_np, tf.float32)
+    predictions_t = tf.cast(predictions_np, tf.float32)
+
+    per_attr_losses = []
+    start_idx = 0
+    for categories, is_categorical in zip(attr_cardinalities, attr_is_categorical):
+        x_attr = data_t[:, start_idx : start_idx + categories]
+        y_attr = predictions_t[:, start_idx : start_idx + categories]
+
+        # Per-attribute CE normalized to [0, 1] by log(K). The max(..., 2)
+        # guard matches VAE.reconstruction_loss and avoids log(1) = 0
+        # blowing up on a degenerate single-category attribute.
+        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+        denom = np.log(max(int(categories), 2))
+        ce_normalized = ce / denom
+
+        if is_categorical:
+            # Unseen-category penalty: when the target one-hot block for
+            # this attribute is all zeros (the row's original category
+            # was not in the training split and got ignored by
+            # OneHotEncoder), standard CE returns ~0 because
+            # ``-sum(0 * log(pred)) = 0``. That would let rare/unseen
+            # rows slip through the outlier ranking. Replace the zero
+            # loss with the maximum normalized value (1.0) so these
+            # rows are penalized at least as strongly as a uniformly
+            # wrong prediction would be.
+            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
+            ce_final = tf.where(
+                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
+            )
+        else:
+            # Numeric attribute: never apply the unseen override, since
+            # a valid MinMax-scaled value in [0, 0.5] would be
+            # misclassified as "unseen" and distort rankings. Note that
+            # CE on a cardinality-1 numeric block is mathematically
+            # degenerate (the softmax normalizes a single value to 1.0,
+            # so ``-target * log(1.0) = 0``). That is a pre-existing
+            # limitation of the underlying per-attribute CE loss and is
+            # out of scope for TASKS.md 2.8 — we preserve it rather
+            # than silently introducing a new numeric penalty that
+            # would conflict with the training loss.
+            ce_final = ce_normalized
+
+        per_attr_losses.append(ce_final)
+        start_idx += categories
+
+    stacked = tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
+    row_loss = tf.reduce_mean(stacked, axis=0)  # (N,)
+    return np.asarray(row_loss.numpy())
+
+
+def get_outliers_list(
+    data,
+    model,
+    k,
+    attr_cardinalities,
+    vectorizer,
+    prior,
+    attr_is_categorical=None,
+):
 
     predictions = model.predict(data)
 
@@ -19,14 +165,15 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
     predictions = pd.DataFrame(predictions, columns=data.columns, index=data.index)
     errors = pd.DataFrame(index=data.index)
 
-    reconstruction_loss = VAE.reconstruction_loss(
+    reconstruction_loss_np = compute_reconstruction_error(
+        data,
+        predictions,
         attr_cardinalities,
-        data.to_numpy(),
-        predictions.to_numpy(),
+        attr_is_categorical=attr_is_categorical,
     )
 
     if z1 is None:
-        errors["error"] = reconstruction_loss.numpy()
+        errors["error"] = reconstruction_loss_np
 
     else:
         if prior == "gaussian":
@@ -37,10 +184,10 @@ def get_outliers_list(data, model, k, attr_cardinalities, vectorizer, prior):
                 z1, model.get_config()["temperature"], len(attr_cardinalities)
             )
 
-        custom_loss = reconstruction_loss + k * kl_loss
-        errors["error"] = custom_loss.numpy()
-        errors["reconstruction_loss"] = reconstruction_loss.numpy()
-        errors["kl_loss"] = kl_loss.numpy()
+        kl_loss_np = kl_loss.numpy() if hasattr(kl_loss, "numpy") else np.asarray(kl_loss)
+        errors["error"] = reconstruction_loss_np + k * kl_loss_np
+        errors["reconstruction_loss"] = reconstruction_loss_np
+        errors["kl_loss"] = kl_loss_np
 
     combined_df = pd.concat(
         [

@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from google.cloud import storage, firestore
 from dataset.loader import DataLoader
+from evaluate.outliers import compute_reconstruction_error
 from features.transform import Table2Vector
 from model.autoencoder import AutoencoderModel
 
@@ -94,12 +95,21 @@ def train_and_predict(job_id, bucket_name, file_path):
         keras_model.fit(X_train, X_train, epochs=15, batch_size=32, verbose=2, validation_data=(X_test, X_test))
         
         # 5. Predict & Score
+        #
+        # TASKS.md 2.8: Use the same per-attribute categorical crossentropy
+        # (normalized by log(K)) as the CLI `find_outliers` command so that
+        # web UI and CLI outlier rankings match on the same data/model.
+        # Previously this path used raw MSE on one-hot vectors, which is a
+        # fundamentally different scoring function and produced different
+        # rankings than the CLI.
         reconstruction = keras_model.predict(vectorized_df)
         if isinstance(reconstruction, list):
             reconstruction = reconstruction[0]
 
-        mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
-        df['reconstruction_error'] = mse
+        reconstruction_error = compute_reconstruction_error(
+            vectorized_df, reconstruction, cardinalities
+        )
+        df['reconstruction_error'] = reconstruction_error
 
         top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
         
