@@ -172,4 +172,81 @@ describe('csvUploadFileFilter', () => {
     expect(err).toBeNull();
     expect(accept).toBe(true);
   });
+
+  // --- MIME type normalization (RFC 7231 §3.1.1.1) -------------------------
+  // MIME types are case-insensitive in both type and subtype, and may
+  // carry optional parameters (charset, boundary, ...) after `;`. The
+  // filter must strip parameters and lowercase before matching, otherwise
+  // legitimate `text/csv; charset=utf-8` or `Text/CSV` uploads get 400'd.
+  // Codex P2 (PR #47 review).
+
+  it('accepts text/csv with charset parameter', async () => {
+    const filter = await getFilter();
+    const { err, accept } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: 'text/csv; charset=utf-8',
+    });
+    expect(err).toBeNull();
+    expect(accept).toBe(true);
+  });
+
+  it('accepts text/csv with whitespace before the parameter separator', async () => {
+    const filter = await getFilter();
+    const { err, accept } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: 'text/csv ; charset=UTF-8',
+    });
+    expect(err).toBeNull();
+    expect(accept).toBe(true);
+  });
+
+  it('accepts Text/CSV with mixed case', async () => {
+    const filter = await getFilter();
+    const { err, accept } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: 'Text/CSV',
+    });
+    expect(err).toBeNull();
+    expect(accept).toBe(true);
+  });
+
+  it('accepts APPLICATION/VND.MS-EXCEL with uppercase', async () => {
+    const filter = await getFilter();
+    const { err, accept } = runFilter(filter, {
+      originalname: 'export.csv',
+      mimetype: 'APPLICATION/VND.MS-EXCEL',
+    });
+    expect(err).toBeNull();
+    expect(accept).toBe(true);
+  });
+
+  it('accepts application/csv with boundary-like parameter', async () => {
+    const filter = await getFilter();
+    const { err, accept } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: 'application/csv;boundary=something',
+    });
+    expect(err).toBeNull();
+    expect(accept).toBe(true);
+  });
+
+  it('still rejects image/png even with charset parameter', async () => {
+    const filter = await getFilter();
+    const { err } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: 'image/png; charset=utf-8',
+    });
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Unsupported content type');
+  });
+
+  it('rejects empty mimetype string', async () => {
+    const filter = await getFilter();
+    const { err } = runFilter(filter, {
+      originalname: 'data.csv',
+      mimetype: '',
+    });
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Unsupported content type');
+  });
 });

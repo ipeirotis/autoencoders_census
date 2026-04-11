@@ -69,6 +69,26 @@ function makeUploadError(message: string): Error & { status: number } {
 }
 
 /**
+ * Normalize a Content-Type header value for allowlist matching.
+ *
+ * MIME types per RFC 7231 §3.1.1.1 are case-insensitive in both the type
+ * and subtype, and may carry optional parameters (charset, boundary, etc.)
+ * after a `;` separator: e.g. `Text/CSV; charset=UTF-8`. A bare
+ * case-sensitive equality check against the allowlist would reject
+ * perfectly legitimate CSV uploads from any client that includes a
+ * charset parameter (curl, Python requests, many non-Chrome browsers).
+ * Strip the parameters and lowercase the essence before matching.
+ */
+function normalizeMimeType(mimetype: string | undefined): string {
+  if (typeof mimetype !== "string") return "";
+  // Split off parameters (everything after the first `;`) and lowercase
+  // the type/subtype. Trim whitespace so `text/csv ; charset=utf-8` and
+  // ` text/csv` both normalize cleanly.
+  const [essence] = mimetype.split(";");
+  return (essence || "").trim().toLowerCase();
+}
+
+/**
  * Multer fileFilter exported so it can be unit-tested in isolation (see
  * tests/utils/uploadFileFilter.test.ts). Exposes a pure function shape:
  * given a file descriptor, invoke the multer callback with either
@@ -84,7 +104,8 @@ export function csvUploadFileFilter(
     cb(makeUploadError("Only .csv files are accepted"));
     return;
   }
-  if (!ALLOWED_CSV_MIME_TYPES.has(file.mimetype)) {
+  const normalized = normalizeMimeType(file.mimetype);
+  if (!ALLOWED_CSV_MIME_TYPES.has(normalized)) {
     cb(makeUploadError("Unsupported content type for CSV upload"));
     return;
   }
