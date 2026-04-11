@@ -2,24 +2,60 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import io
-import warnings 
+import warnings
 from pandas.errors import PerformanceWarning
 
 # Silence the gramentation warning so the terminal stays clean
 warnings.simplefilter(action='ignore', category=PerformanceWarning)
+
+# Default upper bound on the number of unique values a column may have to
+# survive the "Rule of 9" cardinality filter. Columns with more than this
+# many unique values are treated as too high-cardinality for the
+# autoencoder and dropped; columns with <= 1 unique values are also
+# dropped because they carry no signal. This threshold is configurable
+# per-DataLoader via the ``max_unique_values`` constructor argument and
+# via the CLI / YAML config (TASKS.md 3.1); the constant is re-exported
+# so downstream modules can reference the same default.
+DEFAULT_MAX_UNIQUE_VALUES = 9
+
 
 class DataLoader:
     """
     Class to handle data loading and preprocessing for the project.
     """
 
-    def __init__(self, drop_columns, rename_columns, columns_of_interest, additional_drop_columns=None, additional_rename_columns=None, additional_columns_of_interest=None):
+    def __init__(
+        self,
+        drop_columns,
+        rename_columns,
+        columns_of_interest,
+        additional_drop_columns=None,
+        additional_rename_columns=None,
+        additional_columns_of_interest=None,
+        max_unique_values=None,
+    ):
         self.DROP_COLUMNS = drop_columns
         self.RENAME_COLUMNS = rename_columns
         self.COLUMNS_OF_INTEREST = columns_of_interest
         self.ADDITIONAL_DROP_COLUMNS = additional_drop_columns
         self.ADDITIONAL_RENAME_COLUMNS = additional_rename_columns
         self.ADDITIONAL_COLUMNS_OF_INTEREST = additional_columns_of_interest
+        # Rule-of-N threshold: ``None`` means use the module default.
+        # Stored as an attribute so every loader method that ultimately
+        # calls ``prepare_original_dataset`` (e.g. ``load_2017``,
+        # ``load_uploaded_csv``) inherits the caller's configured
+        # threshold without needing to thread the value through each
+        # dataset-specific entry point (TASKS.md 3.1).
+        if max_unique_values is None:
+            max_unique_values = DEFAULT_MAX_UNIQUE_VALUES
+        if max_unique_values < 2:
+            raise ValueError(
+                f"max_unique_values must be >= 2 (got {max_unique_values}); "
+                "a threshold below 2 would drop every column since the "
+                "Rule-of-N filter also rejects columns with <= 1 unique "
+                "values."
+            )
+        self.max_unique_values = int(max_unique_values)
 
     def load_2015(self):
         url = "data/sadc_2015only_national.csv"
@@ -467,12 +503,15 @@ class DataLoader:
 
         return continuous_columns
 
-    def prepare_original_dataset(self, project_data, replacements):
+    def prepare_original_dataset(self, project_data, replacements, max_unique_values=None):
         """
         1. Bins numeric data (making it categorical)
         2. Fills remaining NaN values in categorical columns with "missing"
-        3. Applies the Rule of 9: keep columns with 2-9 unique values,
-           drop anything with <= 1 or > 9 unique values
+        3. Applies the Rule of N: keep columns with 2..N unique values,
+           drop anything with <= 1 or > N unique values. ``N`` defaults to
+           ``self.max_unique_values`` (historically 9) but can be
+           overridden per-call via ``max_unique_values`` — CLI callers
+           usually set it on the DataLoader instead.
         4. Returns cleaned dataframe and metadata (ignored_columns +
            variable_types)
 
@@ -480,6 +519,13 @@ class DataLoader:
         ``main.prepare_for_categorical`` helper so that the upload path
         produces the same clean frame as the CLI / worker paths.
         """
+        if max_unique_values is None:
+            max_unique_values = self.max_unique_values
+        if max_unique_values < 2:
+            raise ValueError(
+                f"max_unique_values must be >= 2 (got {max_unique_values})"
+            )
+
         # Apply replacements
         for k, v in replacements.items():
             if k in project_data.columns: # ensure code doesn't crash if col doesn't exist in current dataset
@@ -495,26 +541,24 @@ class DataLoader:
         project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
 
         # 2. Fill NaN in non-numeric columns with the literal string
-        # "missing" so that (a) the Rule-of-9 count below treats missing as
+        # "missing" so that (a) the Rule-of-N count below treats missing as
         # a real category and (b) downstream ``astype(str)`` does not turn
         # NaN into the string "nan". ``convert_to_categorical`` already
         # handles NaN for numeric columns via its "missing" bin, so this
         # is a no-op on the newly-created ``*_cat`` columns.
         project_data = project_data.fillna("missing")
 
-        # 3. Rule of 9: keep columns with 2-9 unique values.
-        # Both extremes are dropped — > 9 values is too high-cardinality for
+        # 3. Rule of N: keep columns with 2..N unique values.
+        # Both extremes are dropped — > N values is too high-cardinality for
         # the autoencoder to learn a meaningful one-hot, and a single
         # unique value provides no signal at all.
         kept_columns = []
         ignored_columns = []
 
-        MAX_UNIQUE = 9
-
         for col in project_data.columns:
             n_unique = project_data[col].nunique(dropna=True)
 
-            if 1 < n_unique <= MAX_UNIQUE:
+            if 1 < n_unique <= max_unique_values:
                 kept_columns.append(col)
                 # kept as string for the Autoencoder
                 project_data[col] = project_data[col].astype(str)
@@ -522,7 +566,7 @@ class DataLoader:
                 if n_unique <= 1:
                     reason = "Low cardinality (<= 1 unique value)"
                 else:
-                    reason = f"High cardinality (> {MAX_UNIQUE} unique values)"
+                    reason = f"High cardinality (> {max_unique_values} unique values)"
                 ignored_columns.append({
                     "name": col,
                     "unique_values": int(n_unique),

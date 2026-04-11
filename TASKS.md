@@ -102,8 +102,15 @@ Added `tests/test_reconstruction_error.py` with 9 tests: unit tests for the help
 
 ## 3. Improve Model Quality and Configurability
 
-### 3.1 Make the "Rule of 9" threshold configurable
-The max-unique-values threshold of 9 is hardcoded in `DataLoader.prepare_original_dataset()` (line 439) and duplicated in `main.py` `train`/`find_outliers` commands. Make this a CLI parameter and config option so users can adjust it for their specific datasets.
+### ~~3.1 Make the "Rule of 9" threshold configurable~~ DONE
+Renamed the "Rule of 9" to the "Rule of N" across the codebase and made the max-unique-values threshold configurable end-to-end. `DEFAULT_MAX_UNIQUE_VALUES = 9` is now exported from `dataset/loader.py` as the single source of truth; every call site honours an override.
+
+- **`DataLoader`**: constructor accepts `max_unique_values` (default `None` → module default). Every loader entry point (`load_2015`, `load_2017`, `load_pennycook_*`, `load_uploaded_csv`, etc.) inherits it via `self.max_unique_values`. `prepare_original_dataset()` also accepts a per-call override. Thresholds below 2 raise `ValueError` because the filter also drops `n_unique <= 1`, so `N < 2` would drop every column.
+- **`main.py` helpers**: `prepare_for_categorical`, `_clean_and_build_vectorizer`, `prepare_for_model`, `prepare_for_training`, and `run_training_pipeline` all accept `max_unique_values` and thread it through consistently. `run_training_pipeline` also reads a `max_unique_values` key from the YAML config.
+- **CLI options**: added `--max_unique_values` to `train`, `search_hyperparameters`, `evaluate`, `find_outliers`, `chow_liu_outliers`, `generate`, and `pca_baseline`. CLI flag > YAML config key > built-in default precedence. `evaluate_on_condition` does not vectorize (reads pre-computed errors.csv), so no flag was added there.
+- **`worker.py` / `train/task.py`**: inline Rule-of-N loops read from the `MAX_UNIQUE_VALUES` environment variable via a `_resolve_max_unique_values()` helper (with warning + fallback for invalid values and thresholds below 2). Setting `MAX_UNIQUE_VALUES` propagates from worker to Vertex AI containers through normal env-var inheritance.
+- **Error messages / logs** now cite the configured threshold (`"Rule of N (N=15)"`, `"more than 15 unique values"`) so operators can see which threshold was in effect for any given run. The `NO_USABLE_COLUMNS` payload the frontend receives also reflects the active threshold.
+- **Tests**: new `tests/test_rule_of_n.py` (22 tests) covering the default-unchanged behaviour, DataLoader with high / low / per-call overrides, constant-column independence from N, `ValueError` on `N < 2`, `main.py` helpers threading the threshold through to vectorized-matrix widths, and env-var parsing for both `worker._resolve_max_unique_values` and `train.task._resolve_max_unique_values` (valid ints, empty/missing, non-integer, below-2 fallback). Full test suite: 216 passed, 12 skipped.
 
 ### 3.2 Support custom model configs for uploaded data
 When a user uploads a CSV through the web UI, the system should either auto-select reasonable hyperparameters based on the data shape or allow the user to choose a config preset. Currently, the uploaded data path does not specify which config to use.

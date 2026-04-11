@@ -19,7 +19,7 @@ import os
 import numpy as np
 import pandas as pd
 from google.cloud import storage, firestore
-from dataset.loader import DataLoader
+from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from evaluate.outliers import compute_reconstruction_error
 from features.transform import Table2Vector
 from model.autoencoder import AutoencoderModel
@@ -30,37 +30,72 @@ logger = logging.getLogger(__name__)
 # Force the client to use YOUR specific project, not the internal Google one
 db = firestore.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "autoencoders-census"))
 
+
+def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
+    """Read the Rule-of-N threshold from the ``MAX_UNIQUE_VALUES`` env
+    var, falling back to the built-in default (TASKS.md 3.1).
+
+    Vertex AI containers inherit environment variables from the
+    submitting worker, so setting ``MAX_UNIQUE_VALUES`` on the job
+    environment propagates to the training container without code
+    changes.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"using default ({default})"
+        )
+        return default
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"using default ({default})"
+        )
+        return default
+    return value
+
+
 def train_and_predict(job_id, bucket_name, file_path):
     try:
         logger.info(f"Starting Vertex AI Job for {job_id}")
-        
+
         # 1. Download Data
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_path) 
+        blob = bucket.blob(file_path)
         csv_bytes = blob.download_as_bytes()
-        
+
         # 2. Load and Clean
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
         df = loader.load_original_data(csv_bytes)
-        
-        # Rule of 9 Filter
+
+        # Rule of N Filter (TASKS.md 3.1: threshold is configurable via
+        # the MAX_UNIQUE_VALUES env var; defaults to 9).
+        max_unique_values = _resolve_max_unique_values()
         stats = {"total_rows": len(df), "kept_columns": [], "ignored_columns": []}
         process_df = df.fillna("missing").astype(str)
-        
+
         cols_to_keep = []
         for col in process_df.columns:
             unique_count = process_df[col].nunique()
-            if 1 < unique_count <= 9:
+            if 1 < unique_count <= max_unique_values:
                 cols_to_keep.append(col)
                 stats["kept_columns"].append({"name": col, "unique_values": unique_count})
             else:
                 stats["ignored_columns"].append({"name": col, "unique_values": unique_count})
-                
+
         process_df = process_df[cols_to_keep]
-        
+
         if process_df.shape[1] == 0:
-            raise ValueError("All columns were dropped! No columns fit the Rule of 9.")
+            raise ValueError(
+                f"All columns were dropped! No columns fit the Rule of N "
+                f"(N={max_unique_values})."
+            )
 
         # 3. Vectorization & model setup (split before fitting to prevent data leakage)
         from sklearn.model_selection import train_test_split as _tts

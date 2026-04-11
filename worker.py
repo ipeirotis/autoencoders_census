@@ -42,7 +42,7 @@ from google.cloud import pubsub_v1, firestore, storage
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
-from dataset.loader import DataLoader
+from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from features.transform import Table2Vector
 
 load_dotenv()
@@ -98,6 +98,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 db = firestore.Client(project=PROJECT_ID)
+
+
+def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
+    """Read the Rule-of-N threshold from the ``MAX_UNIQUE_VALUES`` env
+    var, falling back to the built-in default (TASKS.md 3.1).
+
+    Called per-job (instead of captured at module import) so an operator
+    can override the value via ``os.environ[...]`` without restarting the
+    worker process — useful for tests and short-lived deployments.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"using default ({default})"
+        )
+        return default
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"using default ({default})"
+        )
+        return default
+    return value
 
 
 class PubSubMessage(BaseModel):
@@ -1224,11 +1252,14 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # 4. Data Cleaning
         process_df = df.fillna("missing").astype(str)
 
-        # 5. Rule of 9 Filter
+        # 5. Rule of N Filter (TASKS.md 3.1: threshold is configurable via
+        # the ``MAX_UNIQUE_VALUES`` env var; defaults to 9 to match the
+        # CLI pipeline's built-in default).
+        max_unique_values = _resolve_max_unique_values()
         cols_to_keep = []
         for col in process_df.columns:
             unique_count = process_df[col].nunique()
-            if unique_count > 1 and unique_count <= 9:
+            if 1 < unique_count <= max_unique_values:
                 cols_to_keep.append(col)
                 stats["kept_columns"].append({
                     "name": col,
@@ -1244,7 +1275,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 })
 
         process_df = process_df[cols_to_keep]
-        logger.info(f"After Rule of 9: {process_df.shape} (kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})")
+        logger.info(
+            f"After Rule of N (N={max_unique_values}): {process_df.shape} "
+            f"(kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})"
+        )
 
         if process_df.shape[1] == 0:
             # TASKS.md 2.3: emit a stable error code so the frontend can
@@ -1256,9 +1290,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 job_ref,
                 job_id,
                 "No usable columns found. Every column was dropped because "
-                "it had only one unique value or more than 9 unique values. "
-                "Try a dataset with some low-cardinality categorical "
-                "columns (between 2 and 9 distinct values).",
+                "it had only one unique value or more than "
+                f"{max_unique_values} unique values. Try a dataset with "
+                "some low-cardinality categorical columns (between 2 and "
+                f"{max_unique_values} distinct values).",
                 error_code=ErrorCode.NO_USABLE_COLUMNS,
                 error_type=ErrorType.PROCESSING,
             )
