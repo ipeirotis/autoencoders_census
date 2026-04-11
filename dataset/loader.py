@@ -520,7 +520,7 @@ class DataLoader:
                 project_data[col] = project_data[col].astype(str)
             else:
                 if n_unique <= 1:
-                    reason = f"Low cardinality (<= 1 unique value)"
+                    reason = "Low cardinality (<= 1 unique value)"
                 else:
                     reason = f"High cardinality (> {MAX_UNIQUE} unique values)"
                 ignored_columns.append({
