@@ -650,8 +650,22 @@ def find_outliers(
 
     # 6. Get Outliers
     logger.info("Calculating outliers...")
+    # Derive an explicit categorical/numeric hint from the fitted
+    # vectorizer so that compute_reconstruction_error applies the
+    # unseen-category penalty only to true categorical attributes
+    # (Codex P1 #2 and #3 on PR #46). Without the hint, a numeric column
+    # with a MinMax-scaled value in [0, 0.5] would be misclassified as
+    # "unseen" and clamped to the max loss.
+    categorical_cols = set(vectorizer.var_types.get("categorical", []))
+    attr_is_categorical = [col in categorical_cols for col in project_data.columns]
     error_df = get_outliers_list(
-        vectorized_df, model, k, attr_cardinalities, vectorizer, prior
+        vectorized_df,
+        model,
+        k,
+        attr_cardinalities,
+        vectorizer,
+        prior,
+        attr_is_categorical=attr_is_categorical,
     )
 
     # 10. Save

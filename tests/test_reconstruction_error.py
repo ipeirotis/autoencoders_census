@@ -182,13 +182,12 @@ class TestComputeReconstructionError:
         Regression test for Codex P1 #2 on PR #46.
 
         ``Table2Vector`` produces ``cardinality == 1`` blocks for numeric
-        (MinMax-scaled) columns — a single scalar in [0, 1] per row. An
-        earlier version of the unseen-category override triggered the
-        max-loss penalty whenever any attribute block summed to ≤ 0.5,
-        which would incorrectly flag every numeric value in [0, 0.5] as
-        "unseen" and force its loss to 1.0 regardless of reconstruction
-        quality. The override must therefore apply only to one-hot
-        blocks with ``categories > 1``.
+        (MinMax-scaled) columns — a single scalar in [0, 1] per row.
+        The unseen-category override must not fire on numeric attributes,
+        because a valid scaled numeric value in ``[0, 0.5]`` would be
+        misclassified as "unseen" and clamped to loss 1.0 regardless of
+        reconstruction quality. Callers distinguish categorical from
+        numeric via the ``attr_is_categorical`` hint.
 
         Note: this test does not assert that the numeric per-attribute
         loss responds to the numeric value itself — categorical
@@ -197,28 +196,114 @@ class TestComputeReconstructionError:
         ``-target * log(1.0) = 0``). That is a pre-existing limitation
         of ``VAE.reconstruction_loss`` on numeric features, outside the
         scope of TASKS 2.8. What this test pins down is that the
-        cardinality-1 path does **not** receive the Codex-flagged
+        numeric path does **not** receive the Codex-flagged
         "constant max penalty of 1.0" from the unseen-category override.
         """
         # One numeric (card=1) attribute + one categorical (card=3) attribute.
-        # With the buggy override, any numeric value <= 0.5 would push its
-        # attribute loss to 1.0, so a row with numeric=0.3 would score
-        # approximately mean(1.0, cat_loss), which is at least 0.5 even
-        # when the categorical attribute is perfectly reconstructed.
         cardinalities = [1, 3]
+        attr_is_categorical = [False, True]
         data = np.array([[0.3, 1.0, 0.0, 0.0]])
         pred = np.array([[0.3, 0.99, 0.005, 0.005]])
 
-        err = compute_reconstruction_error(data, pred, cardinalities)
+        err = compute_reconstruction_error(
+            data, pred, cardinalities, attr_is_categorical=attr_is_categorical
+        )
 
-        # Without the fix: err[0] would be ~= mean(1.0, small) ~ 0.5+.
-        # With the fix: err[0] should be close to the small categorical
+        # Without the hint: err[0] would be ~= mean(1.0, small) ~ 0.5+
+        # because the numeric block would be mis-flagged as unseen.
+        # With the hint: err[0] should be close to the small categorical
         # loss alone (numeric contributes ~0 because CE on a single-value
         # softmax block collapses to 0).
         assert err[0] < 0.1, (
             f"Numeric attribute with value 0.3 was incorrectly clamped to "
             f"the max unseen-category penalty; got row loss {err[0]}"
         )
+
+    def test_cardinality_1_categorical_unseen_row_is_still_penalized(self):
+        """
+        Regression test for Codex P1 #3 on PR #46.
+
+        With an imbalanced binary categorical column, the train/test split
+        can leave only one value in the training split, so
+        ``OneHotEncoder.fit(train)`` fits cardinality 1 and unseen test
+        rows are encoded as the all-zero scalar ``[0]``. Previously the
+        override was gated on ``categories > 1``, which meant those
+        unseen categorical rows fell through to standard CE (which is 0
+        for ``[0]``) and got no penalty. The caller must now pass
+        ``attr_is_categorical=[True]`` so the override still fires on
+        cardinality-1 categorical blocks.
+        """
+        # A single cardinality-1 attribute that the caller knows is
+        # categorical (fitted on a training split that only saw one value).
+        cardinalities = [1]
+        attr_is_categorical = [True]
+
+        data = np.array(
+            [
+                [1.0],  # observed (fitted) category
+                [0.0],  # unseen category - all-zero block
+            ]
+        )
+        pred = np.array(
+            [
+                [0.99],
+                [0.99],
+            ]
+        )
+
+        err = compute_reconstruction_error(
+            data, pred, cardinalities, attr_is_categorical=attr_is_categorical
+        )
+
+        # The unseen row must score strictly higher than the observed row.
+        assert err[1] > err[0], (
+            f"Cardinality-1 categorical unseen row must be penalized more "
+            f"than the observed row, got errors={err}"
+        )
+        # The unseen row should receive ~1.0 (max normalized loss) since
+        # it's the only attribute on the row.
+        assert err[1] >= 0.9, (
+            f"Cardinality-1 unseen categorical should be assigned ~1.0 "
+            f"normalized loss, got {err[1]}"
+        )
+
+    def test_default_without_hint_treats_all_attrs_as_categorical(self):
+        """
+        When ``attr_is_categorical`` is omitted, the helper must default
+        to treating every attribute as categorical — this matches the
+        worker and Vertex AI code paths where every uploaded column is
+        hard-coded to ``'categorical'``. Without this default, a
+        cardinality-1 categorical with an unseen value (Codex P1 #3)
+        would fall through to CE=0 and receive no penalty.
+        """
+        cardinalities = [1]
+        data = np.array([[1.0], [0.0]])  # observed, then unseen
+        pred = np.array([[0.99], [0.99]])
+
+        err = compute_reconstruction_error(data, pred, cardinalities)
+
+        assert err[1] > err[0]
+        assert err[1] >= 0.9
+
+    def test_attr_is_categorical_length_mismatch_raises(self):
+        """Guard against silent plumbing bugs in the type-hint parameter."""
+        cardinalities = [3, 2]
+        data = np.array([[1.0, 0.0, 0.0, 1.0, 0.0]])
+        pred = np.array([[0.9, 0.05, 0.05, 0.9, 0.1]])
+
+        try:
+            compute_reconstruction_error(
+                data,
+                pred,
+                cardinalities,
+                attr_is_categorical=[True],  # wrong length
+            )
+        except ValueError as exc:
+            assert "attr_is_categorical length" in str(exc)
+        else:
+            raise AssertionError(
+                "Expected ValueError for mismatched attr_is_categorical length"
+            )
 
     def test_normal_case_still_matches_vae_reconstruction_loss(self):
         """
