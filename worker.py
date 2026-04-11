@@ -45,8 +45,6 @@ from pydantic import BaseModel, Field, ValidationError
 from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from features.transform import Table2Vector
 from model.presets import (
-    DEFAULT_PRESET,
-    VALID_PRESETS,
     build_model_config,
     normalize_preset_name,
 )
