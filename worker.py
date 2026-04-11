@@ -42,7 +42,7 @@ from google.cloud import pubsub_v1, firestore, storage
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
-from dataset.loader import DataLoader
+from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from features.transform import Table2Vector
 
 load_dotenv()
@@ -98,6 +98,115 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 db = firestore.Client(project=PROJECT_ID)
+
+
+def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
+    """Read the Rule-of-N threshold from the ``MAX_UNIQUE_VALUES`` env
+    var, falling back to the built-in default (TASKS.md 3.1).
+
+    Called per-job (instead of captured at module import) so an operator
+    can override the value via ``os.environ[...]`` without restarting the
+    worker process — useful for tests and short-lived deployments.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"using default ({default})"
+        )
+        return default
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"using default ({default})"
+        )
+        return default
+    return value
+
+
+def _resolve_explicit_max_unique_values():
+    """Like :func:`_resolve_max_unique_values` but returns ``None``
+    when the operator has not explicitly set ``MAX_UNIQUE_VALUES``
+    (or set it to an invalid value).
+
+    Used by the Vertex dispatcher to decide whether to forward the
+    ``--max-unique-values`` CLI flag to the training container. The
+    dispatcher-vs-container compatibility contract is:
+
+    - If the env var is **unset or invalid**, we do not know that the
+      operator opted in to an override, so we omit the flag. An older
+      ``train/task.py`` (which does not yet recognise the flag) then
+      parses the arg list cleanly during a rolling deploy where the
+      worker is newer than the ``trainer:v1`` image (Codex P1 PR#49).
+    - If the env var is **explicitly set** to a valid value, the
+      operator wants that value in every code path, so we forward it.
+      A mismatched-image rolling deploy in this configuration is
+      operator error — they chose to set an override before the
+      container image supported it.
+
+    The plain :func:`_resolve_max_unique_values` cannot answer this
+    question because its contract is to always return a valid int
+    (falling back to the default), which would always append the flag
+    and defeat the backwards-compat path.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"omitting --max-unique-values from Vertex args"
+        )
+        return None
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"omitting --max-unique-values from Vertex args"
+        )
+        return None
+    return value
+
+
+def _build_vertex_training_args(job_id, bucket_name, file_path, max_unique_values=None):
+    """Build the CLI arg list for the Vertex training container.
+
+    ``CustomContainerTrainingJob.run()`` does NOT forward the
+    dispatcher process's environment variables to the training
+    container, so any ``MAX_UNIQUE_VALUES`` override set on the
+    worker would be silently ignored by ``train/task.py``. We
+    therefore propagate the Rule-of-N threshold explicitly via the
+    ``--max-unique-values`` CLI arg (Codex P1 PR#49).
+
+    The arg is only appended when a non-``None`` value is supplied so
+    that a Vertex container running an older ``train/task.py`` (which
+    doesn't yet recognise the flag) still accepts the arg list from
+    the current dispatcher during a rolling deploy.
+
+    Args:
+        job_id: Firestore job document ID.
+        bucket_name: GCS bucket containing the uploaded CSV.
+        file_path: GCS object path to the uploaded CSV.
+        max_unique_values: Rule-of-N threshold to forward, or
+            ``None`` to leave it out entirely (so the container
+            falls back to its own default).
+
+    Returns:
+        list[str]: the ``args`` parameter to pass to ``job.run()``.
+    """
+    args = [
+        f"--job-id={job_id}",
+        f"--bucket-name={bucket_name}",
+        f"--file-path={file_path}",
+    ]
+    if max_unique_values is not None:
+        args.append(f"--max-unique-values={int(max_unique_values)}")
+    return args
 
 
 class PubSubMessage(BaseModel):
@@ -1224,11 +1333,14 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         # 4. Data Cleaning
         process_df = df.fillna("missing").astype(str)
 
-        # 5. Rule of 9 Filter
+        # 5. Rule of N Filter (TASKS.md 3.1: threshold is configurable via
+        # the ``MAX_UNIQUE_VALUES`` env var; defaults to 9 to match the
+        # CLI pipeline's built-in default).
+        max_unique_values = _resolve_max_unique_values()
         cols_to_keep = []
         for col in process_df.columns:
             unique_count = process_df[col].nunique()
-            if unique_count > 1 and unique_count <= 9:
+            if 1 < unique_count <= max_unique_values:
                 cols_to_keep.append(col)
                 stats["kept_columns"].append({
                     "name": col,
@@ -1244,7 +1356,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 })
 
         process_df = process_df[cols_to_keep]
-        logger.info(f"After Rule of 9: {process_df.shape} (kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})")
+        logger.info(
+            f"After Rule of N (N={max_unique_values}): {process_df.shape} "
+            f"(kept {len(cols_to_keep)}, ignored {len(stats['ignored_columns'])})"
+        )
 
         if process_df.shape[1] == 0:
             # TASKS.md 2.3: emit a stable error code so the frontend can
@@ -1256,9 +1371,10 @@ def process_upload_local(job_id, bucket_name, file_path, message):
                 job_ref,
                 job_id,
                 "No usable columns found. Every column was dropped because "
-                "it had only one unique value or more than 9 unique values. "
-                "Try a dataset with some low-cardinality categorical "
-                "columns (between 2 and 9 distinct values).",
+                "it had only one unique value or more than "
+                f"{max_unique_values} unique values. Try a dataset with "
+                "some low-cardinality categorical columns (between 2 and "
+                f"{max_unique_values} distinct values).",
                 error_code=ErrorCode.NO_USABLE_COLUMNS,
                 error_type=ErrorType.PROCESSING,
             )
@@ -1673,12 +1789,30 @@ def process_upload_vertex(job_id, bucket_name, file_path, message):
             container_uri=container_uri
         )
 
+        # Forward the Rule-of-N threshold explicitly as a CLI arg —
+        # Vertex AI does NOT propagate the dispatcher's env vars to
+        # the training container, so MAX_UNIQUE_VALUES on the worker
+        # would otherwise be silently ignored by train/task.py.
+        #
+        # We intentionally use ``_resolve_explicit_max_unique_values``
+        # here (not ``_resolve_max_unique_values``): when the operator
+        # has NOT set the env var we want to pass ``None`` so that
+        # ``_build_vertex_training_args`` omits the flag entirely and
+        # an older ``train/task.py`` in the current ``trainer:v1``
+        # image can still parse the arg list during a rolling deploy
+        # where the worker is updated before the container (Codex P1
+        # PR#49). ``_resolve_max_unique_values`` always returns an int
+        # (falling back to the default 9), which would defeat that
+        # compatibility path.
+        vertex_args = _build_vertex_training_args(
+            job_id,
+            bucket_name,
+            file_path,
+            max_unique_values=_resolve_explicit_max_unique_values(),
+        )
+
         job.run(
-            args=[
-                f"--job-id={job_id}",
-                f"--bucket-name={bucket_name}",
-                f"--file-path={file_path}"
-            ],
+            args=vertex_args,
             replica_count=1,
             service_account=os.getenv("VERTEX_SERVICE_ACCOUNT", "203111407489-compute@developer.gserviceaccount.com"),
             machine_type="n1-standard-4",

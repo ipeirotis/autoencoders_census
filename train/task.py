@@ -19,7 +19,7 @@ import os
 import numpy as np
 import pandas as pd
 from google.cloud import storage, firestore
-from dataset.loader import DataLoader
+from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from evaluate.outliers import compute_reconstruction_error
 from features.transform import Table2Vector
 from model.autoencoder import AutoencoderModel
@@ -30,37 +30,93 @@ logger = logging.getLogger(__name__)
 # Force the client to use YOUR specific project, not the internal Google one
 db = firestore.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "autoencoders-census"))
 
-def train_and_predict(job_id, bucket_name, file_path):
+
+def _resolve_max_unique_values(default=DEFAULT_MAX_UNIQUE_VALUES):
+    """Read the Rule-of-N threshold from the ``MAX_UNIQUE_VALUES`` env
+    var, falling back to the built-in default (TASKS.md 3.1).
+
+    Vertex AI containers inherit environment variables from the
+    submitting worker, so setting ``MAX_UNIQUE_VALUES`` on the job
+    environment propagates to the training container without code
+    changes.
+    """
+    raw = os.getenv("MAX_UNIQUE_VALUES")
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring non-integer MAX_UNIQUE_VALUES={raw!r}; "
+            f"using default ({default})"
+        )
+        return default
+    if value < 2:
+        logger.warning(
+            f"Ignoring MAX_UNIQUE_VALUES={value} (must be >= 2); "
+            f"using default ({default})"
+        )
+        return default
+    return value
+
+
+def train_and_predict(job_id, bucket_name, file_path, max_unique_values=None):
+    """Run the end-to-end Vertex training pipeline.
+
+    Args:
+        job_id: Firestore job document ID.
+        bucket_name: GCS bucket containing the uploaded CSV.
+        file_path: GCS object path to the uploaded CSV.
+        max_unique_values: Optional explicit Rule-of-N threshold. When
+            ``None`` we fall back to the ``MAX_UNIQUE_VALUES``
+            environment variable (via ``_resolve_max_unique_values``).
+            The dispatcher in ``worker.process_upload_vertex`` passes
+            this in as a CLI argument (``--max-unique-values=N``)
+            because the Vertex training container does NOT inherit the
+            dispatcher process's env vars — without explicit
+            propagation the container silently defaulted to 9 even
+            when the worker had ``MAX_UNIQUE_VALUES=15`` set,
+            producing inconsistent feature filtering between local
+            and Vertex modes (Codex P1 PR#49).
+    """
     try:
         logger.info(f"Starting Vertex AI Job for {job_id}")
-        
+
         # 1. Download Data
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_path) 
+        blob = bucket.blob(file_path)
         csv_bytes = blob.download_as_bytes()
-        
+
         # 2. Load and Clean
         loader = DataLoader(drop_columns=[], rename_columns={}, columns_of_interest=[])
         df = loader.load_original_data(csv_bytes)
-        
-        # Rule of 9 Filter
+
+        # Rule of N Filter (TASKS.md 3.1: threshold is configurable via
+        # the --max-unique-values CLI arg or MAX_UNIQUE_VALUES env var;
+        # defaults to 9).
+        if max_unique_values is None:
+            max_unique_values = _resolve_max_unique_values()
+        logger.info(f"Using Rule-of-N threshold: {max_unique_values}")
         stats = {"total_rows": len(df), "kept_columns": [], "ignored_columns": []}
         process_df = df.fillna("missing").astype(str)
-        
+
         cols_to_keep = []
         for col in process_df.columns:
             unique_count = process_df[col].nunique()
-            if 1 < unique_count <= 9:
+            if 1 < unique_count <= max_unique_values:
                 cols_to_keep.append(col)
                 stats["kept_columns"].append({"name": col, "unique_values": unique_count})
             else:
                 stats["ignored_columns"].append({"name": col, "unique_values": unique_count})
-                
+
         process_df = process_df[cols_to_keep]
-        
+
         if process_df.shape[1] == 0:
-            raise ValueError("All columns were dropped! No columns fit the Rule of 9.")
+            raise ValueError(
+                f"All columns were dropped! No columns fit the Rule of N "
+                f"(N={max_unique_values})."
+            )
 
         # 3. Vectorization & model setup (split before fitting to prevent data leakage)
         from sklearn.model_selection import train_test_split as _tts
@@ -175,6 +231,24 @@ if __name__ == "__main__":
     parser.add_argument('--job-id', type=str, required=True)
     parser.add_argument('--bucket-name', type=str, required=True)
     parser.add_argument('--file-path', type=str, required=True)
+    # Rule-of-N threshold forwarded from worker.process_upload_vertex.
+    # Optional: when absent we fall back to the MAX_UNIQUE_VALUES env
+    # var, which in turn falls back to the module default (9). Vertex
+    # AI CustomContainerTrainingJob.run() does not propagate the
+    # dispatcher's env vars to the training container, so this CLI
+    # arg is the only reliable channel for the override (Codex P1
+    # PR#49).
+    parser.add_argument(
+        '--max-unique-values',
+        type=int,
+        default=None,
+        dest='max_unique_values',
+    )
     args = parser.parse_args()
-    
-    train_and_predict(args.job_id, args.bucket_name, args.file_path)
+
+    train_and_predict(
+        args.job_id,
+        args.bucket_name,
+        args.file_path,
+        max_unique_values=args.max_unique_values,
+    )

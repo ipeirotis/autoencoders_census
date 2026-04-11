@@ -32,7 +32,7 @@ import pandas as pd
 import yaml
 from sklearn.model_selection import train_test_split
 
-from dataset.loader import DataLoader
+from dataset.loader import DataLoader, DEFAULT_MAX_UNIQUE_VALUES
 from evaluate.evaluator import Evaluator
 from evaluate.generator import Generator
 from evaluate.outliers import get_outliers_list
@@ -59,25 +59,76 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
-def prepare_for_categorical(project_data):
+def _coerce_max_unique_values(value):
+    """Normalize a user-supplied ``max_unique_values`` at config-ingestion
+    boundaries (YAML files, CLI flags).
+
+    - ``None`` (unset CLI flag, or ``max_unique_values: null`` in the
+      YAML — common in templated configs) coerces to the built-in
+      default instead of propagating downstream. Without this, a
+      ``None`` would reach ``prepare_for_categorical`` and crash on
+      ``None < 2`` with a confusing ``TypeError`` before data
+      processing even starts (Codex P2 PR#49).
+    - Non-integer values (e.g. a string "9" from an env-var leak into
+      the YAML loader, or a float like ``9.0``) are cast to ``int``.
+      Anything that can't be cast raises ``ValueError``.
+    - Integers below 2 raise ``ValueError`` — a threshold below 2 would
+      drop every column because the Rule-of-N filter also rejects
+      ``n_unique <= 1``.
+
+    Args:
+        value: The raw value from a CLI flag or YAML config.
+
+    Returns:
+        int: A validated ``max_unique_values`` suitable for passing
+        into ``DataLoader`` / ``prepare_for_*`` helpers.
+
+    Raises:
+        ValueError: If ``value`` is non-None but not a valid threshold.
+    """
+    if value is None:
+        return DEFAULT_MAX_UNIQUE_VALUES
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"max_unique_values must be an integer (got {value!r})"
+        ) from e
+    if coerced < 2:
+        raise ValueError(
+            f"max_unique_values must be >= 2 (got {coerced})"
+        )
+    return coerced
+
+
+def prepare_for_categorical(project_data, max_unique_values=DEFAULT_MAX_UNIQUE_VALUES):
     """Clean data for categorical-only models (Chow-Liu tree, etc.).
 
     Steps:
         1. Fill NaN with "missing" and cast to string
-        2. Apply Rule-of-9 filter (keep columns with 2-9 unique values)
+        2. Apply Rule-of-N filter (keep columns with 2..max_unique_values
+           unique values).
 
     Args:
         project_data: Raw DataFrame from DataLoader.
+        max_unique_values: Upper bound on the number of unique values a
+            column may have and still be kept. Defaults to
+            ``DEFAULT_MAX_UNIQUE_VALUES`` (9). Must be >= 2.
 
     Returns:
         cleaned_df: DataFrame with only low-cardinality categorical columns.
     """
+    if max_unique_values < 2:
+        raise ValueError(
+            f"max_unique_values must be >= 2 (got {max_unique_values})"
+        )
+
     project_data = project_data.fillna("missing")
     project_data = project_data.astype(str)
 
     cols_to_keep = [
         col for col in project_data.columns
-        if 1 < project_data[col].nunique() <= 9
+        if 1 < project_data[col].nunique() <= max_unique_values
     ]
     return project_data[cols_to_keep]
 
@@ -136,11 +187,21 @@ def _clean_for_saved_vectorizer(project_data, vectorizer):
     return project_data[trained_cols]
 
 
-def _clean_and_build_vectorizer(project_data, variable_types=None):
+def _clean_and_build_vectorizer(
+    project_data,
+    variable_types=None,
+    max_unique_values=DEFAULT_MAX_UNIQUE_VALUES,
+):
     """Clean data and create a (not-yet-fitted) Table2Vector.
 
     Shared first step for both ``prepare_for_model`` and
     ``prepare_for_training``.
+
+    Args:
+        project_data: Raw DataFrame from DataLoader.
+        variable_types: Optional dict mapping column names to types.
+        max_unique_values: Upper bound on the number of unique values a
+            column may have and still be kept (Rule-of-N threshold).
 
     Returns:
         (cleaned_df, variable_types_dict, vectorizer)
@@ -148,8 +209,10 @@ def _clean_and_build_vectorizer(project_data, variable_types=None):
     if variable_types is None:
         variable_types = {}
 
-    # 1-2. Clean data (fillna, Rule-of-9)
-    project_data = prepare_for_categorical(project_data)
+    # 1-2. Clean data (fillna, Rule-of-N)
+    project_data = prepare_for_categorical(
+        project_data, max_unique_values=max_unique_values
+    )
 
     # 3. Sync variable_types to surviving columns
     variable_types = {c: variable_types.get(c, "categorical") for c in project_data.columns}
@@ -212,7 +275,11 @@ def _compute_attr_layout(vectorizer, cleaned_columns):
     return attr_cardinalities, attr_is_categorical
 
 
-def prepare_for_model(project_data, variable_types=None):
+def prepare_for_model(
+    project_data,
+    variable_types=None,
+    max_unique_values=DEFAULT_MAX_UNIQUE_VALUES,
+):
     """Shared data-cleaning and vectorization pipeline.
 
     Use this for **scoring / evaluation** where the entire dataset is
@@ -223,7 +290,7 @@ def prepare_for_model(project_data, variable_types=None):
 
     Steps:
         1. Fill NaN with "missing" and cast to string
-        2. Apply Rule-of-9 filter (keep columns with 2-9 unique values)
+        2. Apply Rule-of-N filter (keep columns with 2..N unique values)
         3. Sync variable_types to surviving columns
         4. Vectorize via Table2Vector (one-hot encoding)
         5. Convert to float32
@@ -233,12 +300,14 @@ def prepare_for_model(project_data, variable_types=None):
         project_data: Raw DataFrame from DataLoader.
         variable_types: Optional dict mapping column names to types.
             If None or empty, all columns are treated as categorical.
+        max_unique_values: Upper bound on the number of unique values a
+            column may have and still be kept (Rule-of-N threshold).
 
     Returns:
         (cleaned_df, vectorized_df, vectorizer, cardinalities)
     """
     project_data, _, vectorizer = _clean_and_build_vectorizer(
-        project_data, variable_types
+        project_data, variable_types, max_unique_values=max_unique_values
     )
 
     # 4. Vectorize (fit + transform on the full data — acceptable for
@@ -254,7 +323,12 @@ def prepare_for_model(project_data, variable_types=None):
     return project_data, vectorized_df, vectorizer, cardinalities
 
 
-def prepare_for_training(project_data, variable_types=None, test_size=0.2):
+def prepare_for_training(
+    project_data,
+    variable_types=None,
+    test_size=0.2,
+    max_unique_values=DEFAULT_MAX_UNIQUE_VALUES,
+):
     """Clean, split, then vectorize — preventing data leakage.
 
     Unlike :func:`prepare_for_model`, the vectorizer is fitted on the
@@ -273,12 +347,14 @@ def prepare_for_training(project_data, variable_types=None, test_size=0.2):
         project_data: Raw DataFrame from DataLoader.
         variable_types: Optional dict mapping column names to types.
         test_size: Fraction of data for the test set (default 0.2).
+        max_unique_values: Upper bound on the number of unique values a
+            column may have and still be kept (Rule-of-N threshold).
 
     Returns:
         (cleaned_df, X_train, X_test, vectorizer, cardinalities)
     """
     project_data, _, vectorizer = _clean_and_build_vectorizer(
-        project_data, variable_types
+        project_data, variable_types, max_unique_values=max_unique_values
     )
 
     # 4. Split *before* vectorization
@@ -302,14 +378,23 @@ def prepare_for_training(project_data, variable_types=None, test_size=0.2):
 def run_training_pipeline(df, config_path, output_path, model_name="AE", prior="gaussian"):
     """
     Reusable training logic that accepts a DataFrame directly.
-    Used by both the CLI and the Cloud Worker
+    Used by both the CLI and the Cloud Worker.
+
+    The optional ``max_unique_values`` YAML key in the config file
+    overrides the default Rule-of-N threshold for data cleaning
+    (TASKS.md 3.1). An explicit ``null`` in the YAML is coerced to
+    the default via ``_coerce_max_unique_values``.
     """
     logger.info(f"loading config from {config_path}...")
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
 
     _, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
-        df, test_size=config.get("test_size", 0.2)
+        df,
+        test_size=config.get("test_size", 0.2),
+        max_unique_values=_coerce_max_unique_values(
+            config.get("max_unique_values")
+        ),
     )
 
     model = get_model(model_name, cardinalities)
@@ -360,6 +445,16 @@ def cli():
     type=str,
     default="cache/simple_model/",
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9). Columns with <= 1 or > this many unique values are "
+        "dropped. Overrides any ``max_unique_values`` key in the YAML config."
+    ),
+    type=int,
+    default=None,
+)
 def train(
     seed,
     model_name,
@@ -370,13 +465,14 @@ def train(
     interest_columns,
     config,
     output,
+    max_unique_values,
 ):
     logger.debug("Starting train function")
-    
+
     # 1. Set Seed
     set_seed(seed)
 
-    
+
 
     # 2. Parse Column Arguments (Safe Split)
     (
@@ -388,6 +484,19 @@ def train(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    # 5. Clean, split, vectorize (leak-free)
+    logger.info("Transforming the data....")
+    with open(config, "r") as file:
+        config_dict = yaml.safe_load(file)
+
+    # CLI flag takes precedence over the YAML key, which takes precedence
+    # over the built-in default. Both routes go through
+    # ``_coerce_max_unique_values`` so ``null`` in a templated YAML
+    # config doesn't crash downstream with ``None < 2`` (Codex P2 PR#49).
+    if max_unique_values is None:
+        max_unique_values = config_dict.get("max_unique_values")
+    max_unique_values = _coerce_max_unique_values(max_unique_values)
+
     # 3. Initialize Loader
     logger.info("Loading data....")
     data_loader = DataLoader(
@@ -397,20 +506,17 @@ def train(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=max_unique_values,
     )
-    
+
     # 4. Load data -- all loaders return (DataFrame, metadata_dict)
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
-    # 5. Clean, split, vectorize (leak-free)
-    logger.info("Transforming the data....")
-    with open(config, "r") as file:
-        config_dict = yaml.safe_load(file)
-
     project_data, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
         project_data, variable_types,
         test_size=config_dict.get("test_size", 0.2),
+        max_unique_values=max_unique_values,
     )
 
     # 6. Build and Train model
@@ -464,6 +570,15 @@ def train(
     type=str,
     default="cache/simple_model/",
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9). Overrides any ``max_unique_values`` key in the YAML config."
+    ),
+    type=int,
+    default=None,
+)
 def search_hyperparameters(
     seed,
     model_name,
@@ -474,6 +589,7 @@ def search_hyperparameters(
     interest_columns,
     config,
     output,
+    max_unique_values,
 ):
 
     set_seed(seed)
@@ -487,6 +603,17 @@ def search_hyperparameters(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    logger.info("Loading config from config file....")
+    with open(config, "r") as file:
+        config = yaml.safe_load(file)
+
+    # CLI flag > YAML key > built-in default, coerced through
+    # ``_coerce_max_unique_values`` so ``null`` in a templated YAML
+    # doesn't crash downstream (Codex P2 PR#49).
+    if max_unique_values is None:
+        max_unique_values = config.get("max_unique_values")
+    max_unique_values = _coerce_max_unique_values(max_unique_values)
+
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -494,18 +621,16 @@ def search_hyperparameters(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=max_unique_values,
     )
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
-
-    logger.info("Loading config from config file....")
-    with open(config, "r") as file:
-        config = yaml.safe_load(file)
 
     logger.info("Transforming the data....")
     project_data, X_train, X_test, vectorizer, cardinalities = prepare_for_training(
         project_data, variable_types,
         test_size=config.get("test_size", 0.2),
+        max_unique_values=max_unique_values,
     )
 
     logger.info("Loading model....")
@@ -549,8 +674,21 @@ def search_hyperparameters(
     type=str,
     default="cache/predictions/",
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9). Only applies when no saved vectorizer is present; "
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
+    ),
+    type=int,
+    default=None,
+)
 def evaluate(
-    seed, model_path, data, drop_columns, rename_columns, interest_columns, output
+    seed, model_path, data, drop_columns, rename_columns, interest_columns, output,
+    max_unique_values,
 ):
 
     (
@@ -562,6 +700,23 @@ def evaluate(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
+
+    set_seed(seed)
+
+    logger.info("Loading model....")
+    model = load_model(model_path)
+
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present. Otherwise columns whose training-time
+    # cardinality exceeded the current loader threshold would be
+    # silently dropped here and backfilled as constant ``"missing"``
+    # values by ``_clean_for_saved_vectorizer`` below, corrupting model
+    # inputs (Codex P1 PR#49).
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
+
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -569,19 +724,15 @@ def evaluate(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
-
-    set_seed(seed)
-
-    logger.info("Loading model....")
-    model = load_model(model_path)
 
     logger.info("Loading data....")
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
     logger.info("Transforming the data....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         # Use the training-fitted vectorizer so one-hot width matches the model
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
@@ -589,7 +740,8 @@ def evaluate(
         vectorizer = saved_vectorizer
     else:
         project_data, vectorized_df, vectorizer, _ = prepare_for_model(
-            project_data, variable_types
+            project_data, variable_types,
+            max_unique_values=effective_max_unique,
         )
     variable_types = {c: "categorical" for c in project_data.columns}
 
@@ -640,6 +792,18 @@ def evaluate(
     type=str,
     default="cache/predictions/",
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9). Only applies when no saved vectorizer is present; "
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
+    ),
+    type=int,
+    default=None,
+)
 def find_outliers(
     seed,
     model_path,
@@ -650,11 +814,12 @@ def find_outliers(
     interest_columns,
     k,
     output,
+    max_unique_values,
 ):
     logger.debug("Starting find_outliers")
     set_seed(seed)
 
-    # 1. Parse Column Arguments 
+    # 1. Parse Column Arguments
     (
         drop_columns,
         rename_columns,
@@ -663,6 +828,15 @@ def find_outliers(
         additional_rename_columns,
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
+
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
+
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present (Codex P1 PR#49). See ``evaluate`` for
+    # the full rationale.
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
 
     # 2. Initialize Loader
     logger.info("Loading data...")
@@ -673,6 +847,8 @@ def find_outliers(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
 
     # 3. Load data -- all loaders return (DataFrame, metadata_dict)
@@ -681,14 +857,14 @@ def find_outliers(
 
     # 4. Clean and vectorize
     logger.info("Transforming the data....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
         vectorizer = saved_vectorizer
     else:
         project_data, vectorized_df, vectorizer, _ = prepare_for_model(
-            project_data, variable_types
+            project_data, variable_types,
+            max_unique_values=effective_max_unique,
         )
 
     # Derive attr_cardinalities and attr_is_categorical in the actual
@@ -754,6 +930,15 @@ def find_outliers(
     type=str,
     default="cache/predictions/",
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9)."
+    ),
+    type=int,
+    default=None,
+)
 def chow_liu_outliers(
     seed,
     data,
@@ -763,6 +948,7 @@ def chow_liu_outliers(
     alpha,
     mi_subsample,
     output,
+    max_unique_values,
 ):
     """Detect outliers using Chow-Liu tree log-likelihood scoring.
 
@@ -783,6 +969,8 @@ def chow_liu_outliers(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
+
     # 2. Initialize Loader
     logger.info("Loading data...")
     data_loader = DataLoader(
@@ -792,19 +980,24 @@ def chow_liu_outliers(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=effective_max_unique,
     )
 
     # 3. Load data
     project_data, metadata = data_loader.load_data(data)
 
-    # 4. Clean data (fillna + Rule-of-9, no vectorization needed)
+    # 4. Clean data (fillna + Rule-of-N, no vectorization needed)
     logger.info("Cleaning the data...")
-    cleaned_df = prepare_for_categorical(project_data)
+    cleaned_df = prepare_for_categorical(
+        project_data, max_unique_values=effective_max_unique
+    )
     logger.info(f"Cleaned data: {cleaned_df.shape[0]} rows, {cleaned_df.shape[1]} columns")
 
     if cleaned_df.shape[1] == 0:
         logger.error(
-            "No columns survived cleaning (Rule-of-9). Cannot fit Chow-Liu tree."
+            "No columns survived cleaning (Rule-of-N, N=%d). Cannot fit "
+            "Chow-Liu tree.",
+            effective_max_unique,
         )
         return
 
@@ -864,6 +1057,18 @@ def chow_liu_outliers(
     type=str,
     default=None,
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9). Only applies when no saved vectorizer is present; "
+        "when a saved vectorizer exists the Rule-of-N filter is bypassed "
+        "entirely so the training-fitted vectorizer is the authoritative "
+        "source of truth on kept columns."
+    ),
+    type=int,
+    default=None,
+)
 def generate(
     seed,
     prior,
@@ -875,6 +1080,7 @@ def generate(
     rename_columns,
     interest_columns,
     target_features,
+    max_unique_values,
 ):
 
     set_seed(seed)
@@ -895,6 +1101,15 @@ def generate(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
+
+    # Load the training-fitted vectorizer *before* constructing the
+    # DataLoader so that we can disable the Rule-of-N filter when a
+    # saved vectorizer is present (Codex P1 PR#49). See ``evaluate`` for
+    # the full rationale.
+    saved_vectorizer = load_vectorizer(model_path)
+    apply_rule_of_n = saved_vectorizer is None
+
     logger.info("Loading data....")
     data_loader = DataLoader(
         drop_columns,
@@ -903,12 +1118,13 @@ def generate(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=effective_max_unique,
+        apply_rule_of_n=apply_rule_of_n,
     )
     project_data, metadata = data_loader.load_data(data)
     variable_types = metadata.get("variable_types", {})
 
     logger.info("Creating the vectorizer....")
-    saved_vectorizer = load_vectorizer(model_path)
     if saved_vectorizer is not None:
         project_data = _clean_for_saved_vectorizer(project_data, saved_vectorizer)
         vectorized_df = saved_vectorizer.transform(project_data).astype("float32")
@@ -916,7 +1132,8 @@ def generate(
         attr_cardinalities = saved_vectorizer.get_cardinalities(project_data.columns)
     else:
         project_data, vectorized_df, vectorizer, attr_cardinalities = prepare_for_model(
-            project_data, variable_types
+            project_data, variable_types,
+            max_unique_values=effective_max_unique,
         )
 
     if target_features is not None:
@@ -1061,6 +1278,15 @@ def evaluate_on_condition(
 @click.option(
     "--outlier_value", help="outlier_value of the column", type=str, default=None
 )
+@click.option(
+    "--max_unique_values",
+    help=(
+        "Upper bound on unique values per column for the Rule-of-N filter "
+        "(default 9)."
+    ),
+    type=int,
+    default=None,
+)
 def pca_baseline(
     seed,
     data,
@@ -1069,6 +1295,7 @@ def pca_baseline(
     interest_columns,
     column_to_condition,
     outlier_value,
+    max_unique_values,
 ):
 
     set_seed(seed)
@@ -1082,6 +1309,8 @@ def pca_baseline(
         additional_interest_columns,
     ) = define_necessary_elements(data, drop_columns, rename_columns, interest_columns)
 
+    effective_max_unique = _coerce_max_unique_values(max_unique_values)
+
     data_loader = DataLoader(
         drop_columns,
         rename_columns,
@@ -1089,6 +1318,7 @@ def pca_baseline(
         additional_drop_columns=additional_drop_columns,
         additional_rename_columns=additional_rename_columns,
         additional_columns_of_interest=additional_interest_columns,
+        max_unique_values=effective_max_unique,
     )
 
     if column_to_condition is None or outlier_value is None:
@@ -1115,7 +1345,8 @@ def pca_baseline(
 
     logger.info("Transforming the data....")
     project_data, vectorized_df, vectorizer, _ = prepare_for_model(
-        project_data, variable_types
+        project_data, variable_types,
+        max_unique_values=effective_max_unique,
     )
     variable_types = {c: "categorical" for c in project_data.columns}
 
