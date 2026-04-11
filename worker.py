@@ -1354,54 +1354,80 @@ def process_upload_local(job_id, bucket_name, file_path, message):
         transaction = db.transaction()
         update_job_status(transaction, job_ref, JobStatus.SCORING)
 
-        # 8. Calculate reconstruction error
-        reconstruction = keras_model.predict(vectorized_df)
-        if isinstance(reconstruction, list):
-            reconstruction = reconstruction[0]
-        mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
-        df['reconstruction_error'] = mse
+        # TASKS.md 2.3 (Codex P2 r3067501311 follow-up): wrap the whole
+        # scoring stage - prediction, reconstruction error, per-column
+        # contributions, and the final Firestore write - in a dedicated
+        # try/except so failures here are reported as SCORING_FAILURE
+        # instead of falling through to the generic INTERNAL_ERROR
+        # catch-all below. Without this wrapper a numeric instability in
+        # keras_model.predict, a shape mismatch between vectorized_df and
+        # the predictions, or a crash inside compute_per_column_contributions
+        # would lose the stage information and show up on the frontend as
+        # a generic "unexpected error", even though a SCORING_FAILURE code
+        # and copy already exist in both worker.ErrorCode and
+        # frontend/client/utils/jobErrors.ts.
+        try:
+            # 8. Calculate reconstruction error
+            reconstruction = keras_model.predict(vectorized_df)
+            if isinstance(reconstruction, list):
+                reconstruction = reconstruction[0]
+            mse = np.mean(np.power(vectorized_df - reconstruction, 2), axis=1)
+            df['reconstruction_error'] = mse
 
-        # 9. Get top outliers and compute per-column contributions.
-        # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
-        top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
-        top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
+            # 9. Get top outliers and compute per-column contributions.
+            # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
+            top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
+            top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
 
-        predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
-        vectorized_np = vectorized_df.to_numpy()
-        MAX_CONTRIBUTIONS_PER_OUTLIER = 10
+            predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
+            vectorized_np = vectorized_df.to_numpy()
+            MAX_CONTRIBUTIONS_PER_OUTLIER = 10
 
-        outliers_data = []
-        for idx, row in top_outliers.iterrows():
-            row_data = vectorized_np[idx:idx+1]
-            row_pred = predictions_np[idx:idx+1]
+            outliers_data = []
+            for idx, row in top_outliers.iterrows():
+                row_data = vectorized_np[idx:idx+1]
+                row_pred = predictions_np[idx:idx+1]
 
-            contributions = compute_per_column_contributions(
-                row_data, row_pred, cardinalities, list(process_df.columns))
+                contributions = compute_per_column_contributions(
+                    row_data, row_pred, cardinalities, list(process_df.columns))
 
-            sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
-            capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
+                sorted_contribs = sorted(contributions, key=lambda x: x[1], reverse=True)
+                capped_contribs = sorted_contribs[:MAX_CONTRIBUTIONS_PER_OUTLIER]
 
-            # User columns under `data`, system metadata at top level.
-            row_dict = row.to_dict()
-            outlier_record = {
-                'data': row_dict,
-                'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
-                'contributions': [
-                    {'column': col, 'percentage': float(pct)}
-                    for col, pct in capped_contribs
-                ],
-            }
-            outliers_data.append(outlier_record)
+                # User columns under `data`, system metadata at top level.
+                row_dict = row.to_dict()
+                outlier_record = {
+                    'data': row_dict,
+                    'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
+                    'contributions': [
+                        {'column': col, 'percentage': float(pct)}
+                        for col, pct in capped_contribs
+                    ],
+                }
+                outliers_data.append(outlier_record)
 
-        # 10. Save to Firestore with transactional status update (WORK-07)
-        transaction = db.transaction()
-        update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
-            'stats': stats,
-            'outliers': outliers_data,
-            'processedAt': firestore.SERVER_TIMESTAMP
-        })
+            # 10. Save to Firestore with transactional status update (WORK-07)
+            transaction = db.transaction()
+            update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
+                'stats': stats,
+                'outliers': outliers_data,
+                'processedAt': firestore.SERVER_TIMESTAMP
+            })
 
-        logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
+            logger.info(f"Job {job_id} complete. Saved {len(outliers_data)} outliers to Firestore.")
+        except Exception as score_err:
+            mark_job_error(
+                job_ref,
+                job_id,
+                "Outlier scoring failed after the model finished training. "
+                "Please try again or contact support if the problem persists.",
+                error_code=ErrorCode.SCORING_FAILURE,
+                error_type=ErrorType.SCORING,
+            )
+            logger.exception(
+                f"Scoring failed for job {job_id}: {score_err}"
+            )
+            return
 
     except JobDocumentNotReadyError:
         # Never swallow this: it must reach callback() so the message is

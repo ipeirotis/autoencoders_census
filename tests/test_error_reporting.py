@@ -227,6 +227,173 @@ class TestMarkJobError:
         mock_transaction.update.assert_not_called()
 
 
+class TestProcessUploadLocalStageClassification:
+    """process_upload_local reports stage-specific error codes.
+
+    Regression for Codex P2 review r3067501311: scoring-stage failures
+    (keras_model.predict, compute_per_column_contributions, the final
+    Firestore COMPLETE write) used to fall through to the
+    ``except Exception`` catch-all and get written as INTERNAL_ERROR,
+    losing the stage information even though SCORING_FAILURE already
+    existed in both the worker ErrorCode enum and the frontend's
+    resolveJobError mapping.
+
+    These tests drive process_upload_local with just enough mocking to
+    reach the specific stage boundary we care about and assert that the
+    Firestore payload carries the expected {errorCode, errorType}.
+    """
+
+    def _run_with_scoring_failure(self, predict_side_effect):
+        """Drive process_upload_local end-to-end up to the scoring stage
+        and raise ``predict_side_effect`` inside keras_model.predict.
+        Returns the final update_job_status call payload (the one where
+        the ERROR transition is written via mark_job_error)."""
+        import io
+        from unittest.mock import ANY
+        import pandas as pd
+        import worker
+
+        # A tiny synthetic dataset with 2 low-cardinality categorical
+        # columns and 15 rows. validate_csv accepts ≥10 rows and ≥2 cols.
+        df = pd.DataFrame({
+            "cat_a": (["x", "y", "z"] * 5),
+            "cat_b": (["p", "q", "p", "q", "p"] * 3),
+        })
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+        captured_error_updates = []
+
+        # A mock transaction that records every transaction.update() call
+        # so we can inspect what mark_job_error wrote.
+        def make_transaction():
+            txn = MagicMock()
+            txn._read_only = False
+            txn._id = b"test-txn"
+            txn._max_attempts = 5
+            txn.in_progress = True
+            txn._write_pbs = []
+            txn._clean_up = Mock()
+
+            def _update(ref, payload):
+                if payload.get("status") == worker.JobStatus.ERROR:
+                    captured_error_updates.append(payload)
+                # Mirror the state transition so subsequent reads see the
+                # new status.
+                ref._current_status = payload.get("status")
+
+            txn.update.side_effect = _update
+            return txn
+
+        # Build a job_ref whose .get(...) snapshot always reflects the
+        # last status written by any transaction.
+        class _FakeJobRef:
+            id = "scoring-failure-job"
+            _current_status = "queued"
+
+            def get(self, transaction=None):
+                snap = Mock()
+                snap.exists = True
+                snap.get = Mock(return_value=self._current_status)
+                return snap
+
+            def update(self, payload):
+                self._current_status = payload.get(
+                    "status", self._current_status
+                )
+
+        job_ref = _FakeJobRef()
+
+        mock_db = MagicMock()
+        mock_db.collection.return_value.document.return_value = job_ref
+        mock_db.transaction.side_effect = make_transaction
+
+        # Mock GCS download so the CSV bytes come from our in-memory df.
+        mock_blob = MagicMock()
+        mock_blob.download_as_bytes.return_value = csv_bytes
+        mock_bucket = MagicMock()
+        mock_bucket.blob.return_value = mock_blob
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.return_value = mock_bucket
+
+        # Mock keras model: .fit() succeeds, .predict() raises the
+        # caller-supplied exception to simulate a scoring-stage failure.
+        mock_keras_model = MagicMock()
+        mock_keras_model.fit = MagicMock()
+        mock_keras_model.predict.side_effect = predict_side_effect
+        mock_ae_wrapper = MagicMock()
+        mock_ae_wrapper.build_autoencoder.return_value = mock_keras_model
+
+        mock_autoencoder_module = MagicMock()
+        mock_autoencoder_module.AutoencoderModel = MagicMock(
+            return_value=mock_ae_wrapper
+        )
+
+        mock_outliers_module = MagicMock()
+        mock_outliers_module.compute_per_column_contributions = MagicMock(
+            return_value=[]
+        )
+
+        mock_tf = MagicMock()
+        # CancellationCallback inherits from this class; provide a no-op
+        # base so the subclass can be instantiated.
+        mock_tf.keras.callbacks.Callback = type("Callback", (), {})
+
+        import sys
+        saved_modules = {}
+        for modname in (
+            "model.autoencoder",
+            "evaluate.outliers",
+            "tensorflow",
+        ):
+            if modname in sys.modules:
+                saved_modules[modname] = sys.modules[modname]
+        sys.modules["model.autoencoder"] = mock_autoencoder_module
+        sys.modules["evaluate.outliers"] = mock_outliers_module
+        sys.modules["tensorflow"] = mock_tf
+
+        try:
+            with patch.object(worker, "db", mock_db), \
+                 patch.object(worker.storage, "Client", return_value=mock_storage_client), \
+                 patch.object(worker, "is_job_canceled", return_value=False):
+                message = MagicMock()
+                message.message_id = "msg-1"
+                worker.process_upload_local(
+                    "scoring-failure-job", "test-bucket", "test.csv", message
+                )
+        finally:
+            for modname in ("model.autoencoder", "evaluate.outliers", "tensorflow"):
+                if modname in saved_modules:
+                    sys.modules[modname] = saved_modules[modname]
+                else:
+                    sys.modules.pop(modname, None)
+
+        return captured_error_updates
+
+    def test_scoring_exception_reported_as_scoring_failure(self):
+        """A runtime error inside keras_model.predict should be written
+        as SCORING_FAILURE / scoring, not INTERNAL_ERROR / internal."""
+        captured = self._run_with_scoring_failure(
+            predict_side_effect=RuntimeError("numeric instability")
+        )
+
+        assert len(captured) >= 1, (
+            "expected at least one ERROR transition to be written to "
+            "Firestore, got none"
+        )
+        last_error = captured[-1]
+        assert last_error["errorCode"] == "scoring_failure", (
+            f"expected errorCode='scoring_failure', got "
+            f"{last_error.get('errorCode')!r}"
+        )
+        assert last_error["errorType"] == "scoring", (
+            f"expected errorType='scoring', got "
+            f"{last_error.get('errorType')!r}"
+        )
+        # The user-facing message should reference scoring, not "an
+        # unexpected error occurred" (which is the INTERNAL_ERROR copy).
+        assert "scoring" in last_error["error"].lower()
+
+
 class TestErrorCodesCoverAllPaths:
     """Every pipeline-stage error code has both a worker enum value and a
     matching ErrorCode. Guard against typos drifting the two apart."""
