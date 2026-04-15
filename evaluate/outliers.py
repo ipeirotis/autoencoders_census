@@ -6,6 +6,84 @@ from typing import List, Optional, Tuple, Union
 from model.base import VAE
 
 
+def _compute_per_attr_losses_tf(
+    data_t: "tf.Tensor",
+    predictions_t: "tf.Tensor",
+    attr_cardinalities: List[int],
+    attr_is_categorical: List[bool],
+) -> "tf.Tensor":
+    """
+    Internal helper: compute per-attribute CE losses entirely in TensorFlow.
+
+    Returns a tensor of shape ``(num_attrs, N)`` where entry ``[j, i]`` is
+    the normalized categorical crossentropy for row ``i`` on attribute ``j``.
+    Keeping the tensor in TF allows callers that only need the row-level
+    mean to call ``tf.reduce_mean(result, axis=0)`` and convert a small
+    ``(N,)`` array to NumPy, rather than materializing the full
+    ``(N, num_attrs)`` matrix unnecessarily.
+
+    Args:
+        data_t: Float32 TF tensor, shape ``(N, total_one_hot_dims)``.
+        predictions_t: Float32 TF tensor, same shape as ``data_t``.
+        attr_cardinalities: Per-attribute category counts.
+        attr_is_categorical: Per-attribute categorical flag (must be the
+            same length as ``attr_cardinalities``; no default here).
+
+    Returns:
+        TF tensor of shape ``(num_attrs, N)``.
+    """
+    per_attr_losses = []
+    start_idx = 0
+    for categories, is_categorical in zip(attr_cardinalities, attr_is_categorical):
+        x_attr = data_t[:, start_idx : start_idx + categories]
+        y_attr = predictions_t[:, start_idx : start_idx + categories]
+
+        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+        denom = np.log(max(int(categories), 2))
+        ce_normalized = ce / denom
+
+        if is_categorical:
+            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
+            ce_final = tf.where(
+                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
+            )
+        else:
+            ce_final = ce_normalized
+
+        per_attr_losses.append(ce_final)
+        start_idx += categories
+
+    return tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
+
+
+def _prepare_inputs(
+    data: Union[pd.DataFrame, np.ndarray],
+    predictions: Union[pd.DataFrame, np.ndarray],
+    attr_cardinalities: List[int],
+    attr_is_categorical: Optional[List[bool]],
+) -> tuple:
+    """Validate inputs and cast to float32 TF tensors. Returns
+    ``(data_t, predictions_t, attr_is_categorical)``."""
+    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
+    predictions_np = (
+        predictions.to_numpy()
+        if hasattr(predictions, "to_numpy")
+        else np.asarray(predictions)
+    )
+    if attr_is_categorical is None:
+        attr_is_categorical = [True] * len(attr_cardinalities)
+    if len(attr_is_categorical) != len(attr_cardinalities):
+        raise ValueError(
+            f"attr_is_categorical length ({len(attr_is_categorical)}) must "
+            f"match attr_cardinalities length ({len(attr_cardinalities)})"
+        )
+    return (
+        tf.cast(data_np, tf.float32),
+        tf.cast(predictions_np, tf.float32),
+        attr_is_categorical,
+    )
+
+
 def compute_per_column_errors(
     data: Union[pd.DataFrame, np.ndarray],
     predictions: Union[pd.DataFrame, np.ndarray],
@@ -36,46 +114,12 @@ def compute_per_column_errors(
         numpy array of shape ``(N, num_attrs)``. Higher values mean the
         model reconstructed that attribute more poorly for that row.
     """
-    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
-    predictions_np = (
-        predictions.to_numpy()
-        if hasattr(predictions, "to_numpy")
-        else np.asarray(predictions)
+    data_t, predictions_t, attr_is_categorical = _prepare_inputs(
+        data, predictions, attr_cardinalities, attr_is_categorical
     )
-
-    if attr_is_categorical is None:
-        attr_is_categorical = [True] * len(attr_cardinalities)
-    if len(attr_is_categorical) != len(attr_cardinalities):
-        raise ValueError(
-            f"attr_is_categorical length ({len(attr_is_categorical)}) must "
-            f"match attr_cardinalities length ({len(attr_cardinalities)})"
-        )
-
-    data_t = tf.cast(data_np, tf.float32)
-    predictions_t = tf.cast(predictions_np, tf.float32)
-
-    per_attr_losses = []
-    start_idx = 0
-    for categories, is_categorical in zip(attr_cardinalities, attr_is_categorical):
-        x_attr = data_t[:, start_idx : start_idx + categories]
-        y_attr = predictions_t[:, start_idx : start_idx + categories]
-
-        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-        denom = np.log(max(int(categories), 2))
-        ce_normalized = ce / denom
-
-        if is_categorical:
-            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
-            ce_final = tf.where(
-                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
-            )
-        else:
-            ce_final = ce_normalized
-
-        per_attr_losses.append(ce_final)
-        start_idx += categories
-
-    stacked = tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
+    stacked = _compute_per_attr_losses_tf(
+        data_t, predictions_t, attr_cardinalities, attr_is_categorical
+    )  # (num_attrs, N)
     return np.asarray(stacked.numpy()).T  # (N, num_attrs)
 
 
@@ -151,10 +195,18 @@ def compute_reconstruction_error(
         numpy array of shape ``(N,)`` containing per-row reconstruction error.
         Higher values are more anomalous.
     """
-    per_col = compute_per_column_errors(
+    # Reduce to (N,) inside TensorFlow before converting to NumPy so that
+    # the full (N, num_attrs) matrix is never materialized — important for
+    # large scoring runs where allocating that intermediate array would
+    # waste memory and CPU time (Codex P2 review on PR #51).
+    data_t, predictions_t, attr_is_categorical = _prepare_inputs(
         data, predictions, attr_cardinalities, attr_is_categorical
     )
-    return per_col.mean(axis=1)
+    stacked = _compute_per_attr_losses_tf(
+        data_t, predictions_t, attr_cardinalities, attr_is_categorical
+    )  # (num_attrs, N)
+    row_loss = tf.reduce_mean(stacked, axis=0)  # (N,) — stays in TF
+    return np.asarray(row_loss.numpy())
 
 
 def get_outliers_list(
