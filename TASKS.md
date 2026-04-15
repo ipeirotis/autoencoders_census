@@ -675,3 +675,116 @@ Ran comparisons on SADC 2015 and SADC 2017 using the composite outlier indicator
 5. **Both methods struggle with low-prevalence detection** — with only 1.6-1.9% outlier prevalence, even the best method achieves only ~6% average precision. This highlights the challenge noted in 9.5 (training on contaminated data) and 9.3 (proxy ground truth).
 6. **Chow-Liu is dramatically faster** — fits in <1 second vs. ~50 seconds for AE training. For quick screening, Chow-Liu is a practical choice.
 7. **Ensemble potential** — since AE excels at top-of-list and Chow-Liu at consistency, combining both scores (task 9.2's recommendation) could yield the best of both worlds.
+
+## 11. Public Launch Plan (Cloud Run consolidation)
+
+Authoritative phased plan for taking the app public on GCP project `autoencoders-census`. All work lands on branch `claude/prepare-public-deployment-wzg92`; each phase ships as its own PR so Codex can review independently. Mark each phase `DONE` with a short summary as it ships, in the same style as the rest of this file.
+
+### Decisions locked in
+
+| # | Decision | Value |
+|---|----------|-------|
+| 1 | Hosting | **Consolidate on Cloud Run.** Delete Netlify. One Cloud Run service serves Express API + built React static assets; a second Cloud Run service runs the worker. |
+| 2 | Worker delivery | **Pub/Sub push subscription** → Cloud Run worker HTTPS endpoint, OIDC-authenticated. Scale to zero. Dead-letter topic for poison messages. |
+| 3 | Training modes | **Keep both `--mode=local` and `--mode=vertex`.** Users can pick; Vertex stays available for larger datasets. Artifact Registry + training container stay. |
+| 4 | Auth policy | **Open signup.** Email + password, no email verification, no CAPTCHA. Existing `authLimiter` (10 / 15 min / IP) is the only spam guard. Revisit if abused. |
+| 5 | Domain | **Cloud Run `*.run.app` default URL for launch.** Custom domain is a later follow-up. |
+| 6 | Cloud Run sizing | API: `--cpu=1 --memory=512Mi --max-instances=3 --concurrency=40`. Worker: `--cpu=2 --memory=4Gi --max-instances=2 --concurrency=1 --timeout=3600`. |
+| 7 | Region | `us-central1` (matches existing GCS + Firestore). |
+| 8 | Repo visibility | Repo is **public**. Audit confirms no service-account key was ever committed; only public-ish infra identifiers + a placeholder `SESSION_SECRET` have been in history. No history rewrite needed. Stop tracking `frontend/.env` and tighten gitignores. |
+| 9 | Secret storage | **Secret Manager** is the sole source of truth for production secrets. Cloud Run mounts them via `--set-secrets`. Workload Identity via attached SA — no JSON keys. |
+| 10 | Netlify artifacts | **Delete** `frontend/netlify/` and `frontend/netlify.toml`. |
+
+### Follow-ups explicitly deferred (do not bundle into these phases)
+
+- TS strict mode migration (4.7) — separate follow-up after launch.
+- Spam mitigation on signup (CAPTCHA, email verification) — only if we observe abuse post-launch.
+- Custom domain + DNS.
+- Evaluate per-column outlier contributions (3.3 / 4.1).
+
+### Phase A — Repo and deploy hygiene
+
+- Delete `frontend/netlify/` and `frontend/netlify.toml`.
+- Remove `serverless-http` references; update `TASKS.md` 4.5 and 7.8 to reflect Netlify removal.
+- Stop tracking `frontend/.env` (`git rm --cached`); remove the `!.env` override from `frontend/.gitignore`.
+- Tighten root `.gitignore`: replace the blanket `*.json` rule with targeted patterns (service-account keys, credentials) so `components.json` / `package-lock.json` / model configs are safe.
+- Add `.dockerignore` at repo root excluding: `.env*`, `.git/`, `node_modules/`, `cache/`, `data/*.csv` (except the two tracked SADC files), `venv/`, `*.enc`, `frontend/dist/`, `frontend/node_modules/`.
+- Strengthen `frontend/server/config/env.ts` envalid validator: when `NODE_ENV=production`, reject `SESSION_SECRET` values containing `dev-secret`, `change-in-production`, or shorter than 32 chars (already enforced; extend to value-content check).
+- Add a launch checklist to `README.md` that points back at this section.
+
+### Phase B — Containerization
+
+- **`Dockerfile.api`** (multi-stage): Node 20 builder runs `npm ci` + `npm run build:client`; slim runtime stage runs Express and serves built SPA from `dist/spa`. Non-root user. Health check at `/healthz`.
+- **`Dockerfile.worker`** (Python 3.10-slim): `pip install -r requirements.txt` (no ad-hoc package list). Entry point is a new `worker_http.py` that exposes `POST /pubsub/push` and `GET /healthz`. Keep `worker.py` pull-mode CLI working for local dev.
+- **Rename existing `Dockerfile` → `Dockerfile.vertex-trainer`**; fix 6.5 issues (use `requirements.txt`, add `.dockerignore` effect). Update `worker.py` Vertex dispatch to reference the new image path in Artifact Registry.
+- **`cloudbuild.yaml`**: builds all three images to `us-central1-docker.pkg.dev/autoencoders-census/autoencoder-repo/{api,worker,vertex-trainer}:{tag}` on push.
+- Local sanity: `docker build` all three images; document `docker run` invocations in `README.md`.
+
+### Phase C — Pub/Sub push refactor
+
+- Extract the pure message-processing body from `worker.py:callback()` into `process_message(pubsub_message: PubSubMessage, ack_extender)` — no Pub/Sub SDK coupling. Existing tests in `tests/test_ack_extension.py`, `tests/test_message_validation.py`, `tests/test_error_reporting.py` should continue to pass against the extracted function.
+- New `worker_http.py` (FastAPI): `POST /pubsub/push` parses the Pub/Sub envelope, verifies the OIDC token (issuer = the Pub/Sub push SA, audience = the worker URL), calls `process_message`, returns 204 on success. Non-retryable errors (poison messages, `UploadValidationError` already persisted) return 2xx so Pub/Sub acks. Transient errors return 5xx so Pub/Sub retries. Ack deadline is handled by Pub/Sub push redelivery — remove `AckExtender` for push path (keep it for the pull CLI path).
+- Switch the subscription in the bootstrap script (Phase D) to push with OIDC auth.
+- Add a dead-letter topic `job-upload-topic-dlq` + subscription; Pub/Sub subscription gets `--dead-letter-topic` with `max-delivery-attempts=5`.
+- Tests: `tests/test_worker_http.py` — unit tests on the FastAPI endpoint covering OIDC verification (accept / reject / missing), valid/invalid envelopes, and that `process_message` is called with the right args.
+
+### Phase D — GCP infra bootstrap script
+
+- `scripts/deploy/bootstrap.sh` — idempotent `gcloud` script. Safe to re-run. Steps:
+  - Enable APIs: `run`, `cloudbuild`, `artifactregistry`, `secretmanager`, `pubsub`, `firestore`, `storage`, `aiplatform`.
+  - Create GCS buckets + CORS with the deployed API origin (read from Cloud Run service URL or an env arg).
+  - Create Firestore DB if missing.
+  - Create Pub/Sub topic, main subscription (push config filled in by Phase E after Cloud Run URL exists), and dead-letter topic + subscription.
+  - Create Artifact Registry repo `autoencoder-repo` in `us-central1`.
+  - Create three service accounts: `ae-api@`, `ae-worker@`, `ae-pubsub-pusher@`. Grant least-privilege roles:
+    - `ae-api`: `roles/datastore.user`, `roles/storage.objectAdmin` (on the upload bucket only, via IAM condition), `roles/pubsub.publisher` (on `job-upload-topic` only), `roles/secretmanager.secretAccessor` (on API secrets only).
+    - `ae-worker`: `roles/datastore.user`, `roles/storage.objectAdmin` (on upload + staging buckets), `roles/aiplatform.user`, `roles/iam.serviceAccountUser` (to act as Vertex training SA), `roles/secretmanager.secretAccessor` (on worker secrets only).
+    - `ae-pubsub-pusher`: `roles/run.invoker` on the worker Cloud Run service.
+  - Create Secret Manager secrets: `SESSION_SECRET` (auto-generated via `openssl rand -base64 48`), plus any others we add. Grant accessor roles above.
+- `scripts/deploy/README.md` documents prerequisites (gcloud auth, permissions needed by the operator running bootstrap).
+
+### Phase E — Cloud Run deploy script
+
+- `scripts/deploy/deploy.sh` — driven by env vars (`IMAGE_TAG`, `REGION`, `PROJECT_ID`). Steps:
+  - Trigger Cloud Build (`gcloud builds submit --config=cloudbuild.yaml --substitutions=_TAG=...`).
+  - `gcloud run deploy ae-api` with the sizing in the table above, `--service-account=ae-api@...`, `--set-secrets=SESSION_SECRET=SESSION_SECRET:latest`, plain env vars (`GOOGLE_CLOUD_PROJECT`, `GCS_BUCKET_NAME`, `PUBSUB_TOPIC_ID`, `FRONTEND_URL=<own URL>`, `NODE_ENV=production`).
+  - `gcloud run deploy ae-worker` with worker sizing, `--no-allow-unauthenticated`, `--service-account=ae-worker@...`, worker env vars (`MAX_UNIQUE_VALUES`, `VERTEX_STAGING_BUCKET`, `VERTEX_SERVICE_ACCOUNT`).
+  - Update the Pub/Sub subscription push config to the freshly-deployed worker URL with OIDC token audience = worker URL, push SA = `ae-pubsub-pusher`.
+  - `FRONTEND_URL` for the API service is filled in from the API's own Cloud Run URL (`$(gcloud run services describe ae-api --format='value(status.url)')`), and a second Cloud Run revision update re-injects it so CORS + CSRF allowlist the production origin.
+  - Apply GCS bucket CORS with the real API origin.
+- Document rollback: `gcloud run services update-traffic ae-api --to-revisions=<prev>=100`.
+
+### Phase F — App-code fixes that block a clean launch
+
+Each item keeps its original TASKS.md number; completing it updates the corresponding subtask there with a DONE note.
+
+- **4.6 React error boundary** — wrap `App.tsx` root in `<ErrorBoundary fallback={...}>` from the already-installed `react-error-boundary` package.
+- **4.6 Polling reset bug** — remove `toast` from the `useEffect` deps in `Index.tsx:26-48`; use a ref or pull `toast` out of the dep closure.
+- **4.6 Dropzone click-upload CSV validation** — `Dropzone.tsx:55-59` click handler must apply the same extension/MIME check as the drag path.
+- **4.6 CSV preview memory** — stream preview via PapaParse's `step` callback; stop after 20 rows instead of loading the full file (`csv-parser.ts:77`).
+- **4.7 Dedupe GCP clients** — one shared `{ storage, firestore, pubsub }` module imported by `index.ts` and `routes/jobs.ts`.
+- **4.7 Port mismatch** — `server/start.ts` to 5001; or update docs, pick one.
+- **4.7 Duplicate job-status route** — keep `routes/jobs.ts` version, delete the `index.ts:122` duplicate.
+- **6.6 `plt.show()` in headless** — set `matplotlib.use("Agg")` at import time in `utils.py`, replace `plt.show()` with `plt.savefig()` where a path is available, `plt.close(fig)` after every plot.
+- **6.6 `logging.Logger()` → `logging.getLogger()`** — `main.py:53`, `train/trainer.py:9`.
+- **6.6 Lazy imports** — `google.cloud.storage` in `main.py:32`, `ranx` in `utils.py:9`.
+
+### Phase G — Docs + TASKS.md cleanup
+
+- Rewrite the `README.md` deployment section: remove the 3-terminal dev flow as the "production" path, document Cloud Run deploy via `scripts/deploy/deploy.sh`, add a "Cost expectations" blurb (Cloud Run free tier + Pub/Sub + Firestore ≈ near-zero idle).
+- In this file: strike through Section 7 subtasks replaced by Phases A–E and add DONE summaries pointing to the new scripts. Section 7.9 becomes "see Section 11".
+- Update `CLAUDE.md` Build & Run section: local dev stays the same; production is "see `scripts/deploy/README.md`".
+
+### Phase status tracker
+
+| Phase | Title | Status | PR | DONE summary |
+|-------|-------|--------|----|-|
+| A | Repo & deploy hygiene | Not started | — | — |
+| B | Containerization | Not started | — | — |
+| C | Pub/Sub push refactor | Not started | — | — |
+| D | GCP infra bootstrap script | Not started | — | — |
+| E | Cloud Run deploy script | Not started | — | — |
+| F | App-code launch blockers | Not started | — | — |
+| G | Docs + TASKS.md cleanup | Not started | — | — |
+
+When picking up this plan in a new session: read this section top-to-bottom, find the first phase whose status is not `DONE`, and continue from there.
