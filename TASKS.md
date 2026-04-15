@@ -132,8 +132,12 @@ Added a model preset system that gives upload-pipeline users both a manual choic
   - `frontend/server/__tests__/middleware/validation.test.ts` (6 new cases) — accepts each valid preset id, accepts an omitted preset (back-compat), rejects an unknown preset value with the expected `'must be one of'` error message, and rejects a non-string preset.
   - All 168 worker-level Python tests still pass (157 passed + 11 skipped, same as before this PR). The 24 frontend validation tests pass.
 
-### 3.3 Add per-column outlier contribution scores
-The `get_outliers_list()` function returns an aggregate reconstruction error per row. For interpretability, also compute and return per-column reconstruction error so users can see *which* survey questions a flagged respondent answered anomalously.
+### ~~3.3 Add per-column outlier contribution scores~~ DONE
+Added per-row, per-column reconstruction error scores so users can see which survey questions a flagged respondent answered anomalously.
+
+- **`evaluate/outliers.py`**: Added `compute_per_column_errors(data, predictions, attr_cardinalities, attr_is_categorical=None) → np.ndarray` returning shape `(N, num_attrs)` — per-row, per-attribute normalized CE losses with the same unseen-category handling as `compute_reconstruction_error`. Refactored `compute_reconstruction_error` to call it and take the mean (no behavior change). Updated `compute_per_column_contributions` to use it internally (fixes normalization to `log(max(K,2))` and adds optional `attr_is_categorical` param). Extended `get_outliers_list` with an optional `attr_names` parameter; when provided, adds `col_error__{name}` columns to the output DataFrame for each attribute.
+- **`main.py`**: Extended `_compute_attr_layout` to return a third element `attr_names` (original column names in vectorized-matrix slice order). Updated `find_outliers` to unpack the new return value and pass `attr_names` to `get_outliers_list`, so the CLI's output CSV now includes per-column error columns.
+- **`tests/test_per_column_errors.py`**: 18 new tests covering `compute_per_column_errors` shape/dtype/values, unseen-category and numeric-attribute handling, `get_outliers_list` col_error__ column presence/absence, aggregate==mean(per_col) invariant, non-negativity, and `_compute_attr_layout` attr_names return value for mixed and all-categorical datasets.
 
 ### ~~3.4 Benchmark model variants~~ DONE (initial results)
 Initial AE vs Chow-Liu comparison completed on SADC 2015 and 2017 — see task 10.5 for full results. Summary: comparable ROC AUC (~0.71-0.76), AE better at top-of-list precision on 2017, Chow-Liu more robust on 2015 and dramatically faster. Remaining work: extend to non-SADC datasets (Pennycook, bot_bot_mturk, etc.) once those datasets are available locally, and benchmark the VAE variant.

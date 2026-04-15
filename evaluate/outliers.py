@@ -6,6 +6,79 @@ from typing import List, Optional, Tuple, Union
 from model.base import VAE
 
 
+def compute_per_column_errors(
+    data: Union[pd.DataFrame, np.ndarray],
+    predictions: Union[pd.DataFrame, np.ndarray],
+    attr_cardinalities: List[int],
+    attr_is_categorical: Optional[List[bool]] = None,
+) -> np.ndarray:
+    """
+    Compute per-row, per-attribute reconstruction error.
+
+    Returns an array of shape ``(N, num_attrs)`` where entry ``[i, j]`` is
+    the normalized categorical crossentropy for row ``i`` on attribute ``j``.
+    Taking ``result.mean(axis=1)`` recovers the aggregate per-row score
+    returned by :func:`compute_reconstruction_error`.
+
+    This function applies the same unseen-category handling and normalization
+    as :func:`compute_reconstruction_error` — see that function's docstring
+    for a full description of the algorithm.
+
+    Args:
+        data: One-hot encoded inputs, shape ``(N, total_one_hot_dims)``.
+        predictions: Model reconstruction outputs, same shape as ``data``.
+        attr_cardinalities: List of category counts per original attribute.
+        attr_is_categorical: Optional list of booleans, same length as
+            ``attr_cardinalities``. When ``None`` (the default), every
+            attribute is treated as categorical.
+
+    Returns:
+        numpy array of shape ``(N, num_attrs)``. Higher values mean the
+        model reconstructed that attribute more poorly for that row.
+    """
+    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
+    predictions_np = (
+        predictions.to_numpy()
+        if hasattr(predictions, "to_numpy")
+        else np.asarray(predictions)
+    )
+
+    if attr_is_categorical is None:
+        attr_is_categorical = [True] * len(attr_cardinalities)
+    if len(attr_is_categorical) != len(attr_cardinalities):
+        raise ValueError(
+            f"attr_is_categorical length ({len(attr_is_categorical)}) must "
+            f"match attr_cardinalities length ({len(attr_cardinalities)})"
+        )
+
+    data_t = tf.cast(data_np, tf.float32)
+    predictions_t = tf.cast(predictions_np, tf.float32)
+
+    per_attr_losses = []
+    start_idx = 0
+    for categories, is_categorical in zip(attr_cardinalities, attr_is_categorical):
+        x_attr = data_t[:, start_idx : start_idx + categories]
+        y_attr = predictions_t[:, start_idx : start_idx + categories]
+
+        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
+        denom = np.log(max(int(categories), 2))
+        ce_normalized = ce / denom
+
+        if is_categorical:
+            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
+            ce_final = tf.where(
+                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
+            )
+        else:
+            ce_final = ce_normalized
+
+        per_attr_losses.append(ce_final)
+        start_idx += categories
+
+    stacked = tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
+    return np.asarray(stacked.numpy()).T  # (N, num_attrs)
+
+
 def compute_reconstruction_error(
     data: Union[pd.DataFrame, np.ndarray],
     predictions: Union[pd.DataFrame, np.ndarray],
@@ -78,70 +151,10 @@ def compute_reconstruction_error(
         numpy array of shape ``(N,)`` containing per-row reconstruction error.
         Higher values are more anomalous.
     """
-    data_np = data.to_numpy() if hasattr(data, "to_numpy") else np.asarray(data)
-    predictions_np = (
-        predictions.to_numpy()
-        if hasattr(predictions, "to_numpy")
-        else np.asarray(predictions)
+    per_col = compute_per_column_errors(
+        data, predictions, attr_cardinalities, attr_is_categorical
     )
-
-    if attr_is_categorical is None:
-        attr_is_categorical = [True] * len(attr_cardinalities)
-    if len(attr_is_categorical) != len(attr_cardinalities):
-        raise ValueError(
-            f"attr_is_categorical length ({len(attr_is_categorical)}) must "
-            f"match attr_cardinalities length ({len(attr_cardinalities)})"
-        )
-
-    data_t = tf.cast(data_np, tf.float32)
-    predictions_t = tf.cast(predictions_np, tf.float32)
-
-    per_attr_losses = []
-    start_idx = 0
-    for categories, is_categorical in zip(attr_cardinalities, attr_is_categorical):
-        x_attr = data_t[:, start_idx : start_idx + categories]
-        y_attr = predictions_t[:, start_idx : start_idx + categories]
-
-        # Per-attribute CE normalized to [0, 1] by log(K). The max(..., 2)
-        # guard matches VAE.reconstruction_loss and avoids log(1) = 0
-        # blowing up on a degenerate single-category attribute.
-        ce = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-        denom = np.log(max(int(categories), 2))
-        ce_normalized = ce / denom
-
-        if is_categorical:
-            # Unseen-category penalty: when the target one-hot block for
-            # this attribute is all zeros (the row's original category
-            # was not in the training split and got ignored by
-            # OneHotEncoder), standard CE returns ~0 because
-            # ``-sum(0 * log(pred)) = 0``. That would let rare/unseen
-            # rows slip through the outlier ranking. Replace the zero
-            # loss with the maximum normalized value (1.0) so these
-            # rows are penalized at least as strongly as a uniformly
-            # wrong prediction would be.
-            attr_observed = tf.reduce_sum(x_attr, axis=1) > 0.5
-            ce_final = tf.where(
-                attr_observed, ce_normalized, tf.ones_like(ce_normalized)
-            )
-        else:
-            # Numeric attribute: never apply the unseen override, since
-            # a valid MinMax-scaled value in [0, 0.5] would be
-            # misclassified as "unseen" and distort rankings. Note that
-            # CE on a cardinality-1 numeric block is mathematically
-            # degenerate (the softmax normalizes a single value to 1.0,
-            # so ``-target * log(1.0) = 0``). That is a pre-existing
-            # limitation of the underlying per-attribute CE loss and is
-            # out of scope for TASKS.md 2.8 — we preserve it rather
-            # than silently introducing a new numeric penalty that
-            # would conflict with the training loss.
-            ce_final = ce_normalized
-
-        per_attr_losses.append(ce_final)
-        start_idx += categories
-
-    stacked = tf.stack(per_attr_losses, axis=0)  # (num_attrs, N)
-    row_loss = tf.reduce_mean(stacked, axis=0)  # (N,)
-    return np.asarray(row_loss.numpy())
+    return per_col.mean(axis=1)
 
 
 def get_outliers_list(
@@ -152,8 +165,41 @@ def get_outliers_list(
     vectorizer,
     prior,
     attr_is_categorical=None,
+    attr_names=None,
 ):
+    """
+    Score every row in ``data`` and return a DataFrame combining the
+    decoded original values, decoded reconstruction, and error columns.
 
+    Args:
+        data: One-hot encoded inputs (DataFrame or ndarray), shape
+            ``(N, total_one_hot_dims)``.
+        model: Trained Keras model. ``model.predict(data)`` must return
+            either an ndarray of shape ``(N, total_one_hot_dims)`` (AE)
+            or a tuple ``(reconstruction, z_mean, z_log_var)`` (VAE).
+        k: KL-loss weight for VAE models. Unused for AE.
+        attr_cardinalities: Per-attribute category counts in vectorized
+            matrix slice order.
+        vectorizer: Fitted :class:`features.transform.Table2Vector` used to
+            decode one-hot vectors back to human-readable column values.
+        prior: ``"gaussian"`` or ``"gumbel"`` for VAE models; ``None`` for AE.
+        attr_is_categorical: Optional list of booleans (same length as
+            ``attr_cardinalities``) for the unseen-category override.
+            Defaults to all-True when ``None``.
+        attr_names: Optional list of original column names in the same order
+            as ``attr_cardinalities`` (i.e. the vectorized-matrix slice
+            order). When provided, the returned DataFrame includes one
+            ``col_error__{name}`` column per attribute showing the
+            per-row reconstruction error for that specific attribute.
+            These per-column scores enable users to see *which* survey
+            questions a flagged respondent answered anomalously
+            (TASKS.md 3.3).
+
+    Returns:
+        DataFrame with decoded original values, decoded reconstructions,
+        and error columns (including ``col_error__{name}`` columns when
+        ``attr_names`` is supplied).
+    """
     predictions = model.predict(data)
 
     z1 = None
@@ -165,12 +211,15 @@ def get_outliers_list(
     predictions = pd.DataFrame(predictions, columns=data.columns, index=data.index)
     errors = pd.DataFrame(index=data.index)
 
-    reconstruction_loss_np = compute_reconstruction_error(
+    # Compute per-column errors once; derive the aggregate from them to
+    # avoid a second pass through the data (TASKS.md 3.3).
+    per_col_errors = compute_per_column_errors(
         data,
         predictions,
         attr_cardinalities,
         attr_is_categorical=attr_is_categorical,
     )
+    reconstruction_loss_np = per_col_errors.mean(axis=1)
 
     if z1 is None:
         errors["error"] = reconstruction_loss_np
@@ -189,6 +238,11 @@ def get_outliers_list(
         errors["reconstruction_loss"] = reconstruction_loss_np
         errors["kl_loss"] = kl_loss_np
 
+    # Add per-column error columns for interpretability (TASKS.md 3.3).
+    if attr_names is not None:
+        for j, name in enumerate(attr_names):
+            errors[f"col_error__{name}"] = per_col_errors[:, j]
+
     combined_df = pd.concat(
         [
             vectorizer.tabularize_vector(data),
@@ -205,74 +259,65 @@ def compute_per_column_contributions(
     data: np.ndarray,
     predictions: np.ndarray,
     attr_cardinalities: List[int],
-    column_names: List[str]
+    column_names: List[str],
+    attr_is_categorical: Optional[List[bool]] = None,
 ) -> List[Tuple[str, float]]:
     """
     Decompose reconstruction loss into per-column contribution percentages.
 
-    This function helps researchers understand which survey questions (columns)
-    contributed most to a row being flagged as an outlier. It decomposes the
-    total reconstruction loss into per-attribute components and expresses them
-    as percentages.
+    Averages the per-row, per-attribute errors across the batch and expresses
+    each attribute's share of the total loss as a percentage. This is used by
+    the web worker to show which survey questions contributed most to a
+    respondent being flagged as an outlier.
 
     Args:
-        data: True values (one-hot encoded), shape [N, total_features]
-        predictions: Model predictions (softmax outputs), shape [N, total_features]
-        attr_cardinalities: List of category counts per attribute
-        column_names: List of original column names (length = len(attr_cardinalities))
+        data: True values (one-hot encoded), shape ``(N, total_features)``.
+        predictions: Model predictions (softmax outputs), same shape.
+        attr_cardinalities: List of category counts per attribute.
+        column_names: Original column names, length ``len(attr_cardinalities)``.
+        attr_is_categorical: Optional list of booleans for the unseen-category
+            override (see :func:`compute_reconstruction_error`). Defaults to
+            all-True when ``None``.
 
     Returns:
-        List of (column_name, contribution_percentage) tuples, sorted descending by percentage
+        List of ``(column_name, contribution_percentage)`` tuples, sorted
+        descending by percentage. Percentages sum to 100.
 
     Example:
-        >>> data = np.array([[1, 0, 0, 0, 1, 0]])  # 2 columns with 3 categories each
+        >>> data = np.array([[1, 0, 0, 0, 1, 0]])  # 2 columns, 3 categories each
         >>> predictions = np.array([[0.7, 0.2, 0.1, 0.1, 0.7, 0.2]])
         >>> attr_cardinalities = [3, 3]
         >>> column_names = ['Q1', 'Q2']
-        >>> contributions = compute_per_column_contributions(data, predictions, attr_cardinalities, column_names)
-        >>> # Returns: [('Q2', 60.5), ('Q1', 39.5)]  # Q2 contributed more to reconstruction error
+        >>> contributions = compute_per_column_contributions(
+        ...     data, predictions, attr_cardinalities, column_names)
+        >>> # Returns: [('Q1', 55.2), ('Q2', 44.8)]  (approximate)
     """
-    per_attr_losses = []
-    start_idx = 0
+    per_col = compute_per_column_errors(
+        data, predictions, attr_cardinalities, attr_is_categorical
+    )
+    # Average across rows to get a single loss value per attribute.
+    per_attr_mean = per_col.mean(axis=0)  # (num_attrs,)
 
-    for categories in attr_cardinalities:
-        x_attr = data[:, start_idx : start_idx + categories]
-        y_attr = predictions[:, start_idx : start_idx + categories]
+    total_loss = float(per_attr_mean.sum())
 
-        x_attr = tf.cast(x_attr, tf.float32)
-        y_attr = tf.cast(y_attr, tf.float32)
-
-        # Categorical crossentropy per attribute (same as VAE.reconstruction_loss)
-        attr_loss = tf.keras.backend.categorical_crossentropy(x_attr, y_attr)
-        attr_loss_normalized = attr_loss / max(np.log(categories), 1e-10)  # Normalize by cardinality
-
-        # Mean loss for this attribute across batch (or single row)
-        per_attr_losses.append(tf.reduce_mean(attr_loss_normalized).numpy())
-        start_idx += categories
-
-    # Convert to contribution percentages
-    total_loss = sum(per_attr_losses)
-
-    if total_loss == 0:
-        # Fallback: equal contribution if no loss (avoid division by zero)
+    if total_loss < 1e-10:
+        # Perfect reconstruction: assign equal contribution to every attribute.
         contributions = [
-            (column_names[i], 100.0 / len(per_attr_losses))
-            for i in range(len(per_attr_losses))
+            (column_names[i], 100.0 / len(per_attr_mean))
+            for i in range(len(per_attr_mean))
         ]
     else:
         contributions = [
-            (column_names[i], float((per_attr_losses[i] / total_loss) * 100.0))
-            for i in range(len(per_attr_losses))
+            (column_names[i], float(per_attr_mean[i] / total_loss * 100.0))
+            for i in range(len(per_attr_mean))
         ]
 
-    # Normalize to exactly 100% (address potential floating-point rounding issues)
+    # Renormalize to exactly 100% (guard against floating-point drift).
     total_pct = sum(pct for _, pct in contributions)
     contributions = [
-        (col, float((pct / total_pct) * 100.0))
+        (col, float(pct / total_pct * 100.0))
         for col, pct in contributions
     ]
 
-    # Sort descending by contribution (highest contributors first)
     contributions.sort(key=lambda x: x[1], reverse=True)
-
     return contributions
