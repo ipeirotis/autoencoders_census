@@ -262,8 +262,12 @@ def _compute_attr_layout(vectorizer, cleaned_columns):
             typically ``project_data.columns`` at the scoring step.
 
     Returns:
-        Tuple ``(attr_cardinalities, attr_is_categorical)`` — two
-        parallel lists in vectorized-matrix slice order.
+        Tuple ``(attr_cardinalities, attr_is_categorical, attr_names)`` —
+        three parallel lists in vectorized-matrix slice order.
+        ``attr_names`` contains the original column names and can be
+        passed as the ``attr_names`` argument to
+        :func:`evaluate.outliers.get_outliers_list` to enable per-column
+        error scores in the output (TASKS.md 3.3).
     """
     categorical_set = set(vectorizer.var_types.get("categorical", []))
     non_categorical = [c for c in cleaned_columns if c not in categorical_set]
@@ -272,7 +276,7 @@ def _compute_attr_layout(vectorizer, cleaned_columns):
     ordered = non_categorical + categorical
     attr_cardinalities = vectorizer.get_cardinalities(ordered)
     attr_is_categorical = [c in categorical_set for c in ordered]
-    return attr_cardinalities, attr_is_categorical
+    return attr_cardinalities, attr_is_categorical, list(ordered)
 
 
 def prepare_for_model(
@@ -878,7 +882,7 @@ def find_outliers(
     # The explicit categorical hint also fixes Codex P1 #2/#3: without it,
     # numeric MinMax values in [0, 0.5] get clamped as "unseen" and
     # cardinality-1 categorical columns with unseen values don't.
-    attr_cardinalities, attr_is_categorical = _compute_attr_layout(
+    attr_cardinalities, attr_is_categorical, attr_names = _compute_attr_layout(
         vectorizer, project_data.columns
     )
 
@@ -900,6 +904,7 @@ def find_outliers(
         vectorizer,
         prior,
         attr_is_categorical=attr_is_categorical,
+        attr_names=attr_names,
     )
 
     # 10. Save

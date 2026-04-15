@@ -484,7 +484,7 @@ class TestScoringConsistencyAcrossCodePaths:
             f"{list(vectorized.columns)}"
         )
 
-        attr_cardinalities, attr_is_categorical = _compute_attr_layout(
+        attr_cardinalities, attr_is_categorical, _ = _compute_attr_layout(
             vectorizer, df.columns
         )
 
