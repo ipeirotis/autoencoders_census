@@ -117,9 +117,11 @@ export const helmetConfig = helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'"], // 'unsafe-inline' needed for Vite dev HMR
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", env.FRONTEND_URL].filter(Boolean),
+      connectSrc: ["'self'", env.FRONTEND_URL, 'https://storage.googleapis.com'].filter(Boolean),
+      workerSrc: ["'self'", 'blob:'], // papaparse spawns a blob: Web Worker for CSV parsing
     },
   },
 });
