@@ -1,0 +1,49 @@
+# Controls what `gcloud builds submit` uploads as the build context.
+# (gcloud uses THIS file, not .dockerignore, to pick the upload set.)
+# Keep it tight: ship Python source + config only.
+
+.git/
+.github/
+.claude/
+
+# Python virtualenvs (multi-GB) and caches
+venv/
+venv_ae/
+venv_ae311/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend (deployed separately as the `api` service)
+frontend/
+node_modules/
+
+# Notebooks and experiment tracking
+notebooks/
+wandb/
+
+# Secrets / local env
+.env
+.env.*
+*.enc
+
+# Large local data and generated artifacts the worker doesn't need
+cache/
+data/*.csv
+data/*.dta
+data/*.sav
+data/*.dat
+*.png
+*.pdf
+vae/
+vae_artifacts/
+gans/
+sadc_synthetic_bn/
+sadc_synthetic_gan/
+yrbs_synthetic_pipeline/
+group_barplots/
+attention_check/
+attention_check_v2/
+attention_check_v3/
+*_80perc/
