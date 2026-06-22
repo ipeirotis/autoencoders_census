@@ -33,6 +33,15 @@ export interface JobStatus {
     | "canceled";
   stats?: any;
   outliers?: any[];
+  // Histogram of every row's reconstruction error (binned server-side by the
+  // worker). Powers the distribution chart on the results page. `binEdges`
+  // has one more entry than `counts` (numpy histogram convention).
+  errorHistogram?: {
+    binEdges: number[];
+    counts: number[];
+    totalRows: number;
+    outlierThreshold?: number;
+  } | null;
   // TASKS.md 2.3: structured error fields written by worker.mark_job_error.
   // `error` is the human-readable message; `errorCode` is a stable
   // machine-readable identifier (see utils/jobErrors.ts); `errorType`

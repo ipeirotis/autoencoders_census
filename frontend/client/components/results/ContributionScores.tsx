@@ -3,10 +3,21 @@ import { Progress } from "@/components/ui/progress";
 interface Contribution {
   column: string;
   percentage: number;
+  // The respondent's actual answer for this column, and what the model
+  // reconstructed instead. A gap between the two is what pushed this row's
+  // reconstruction error up. Optional for backward compatibility with jobs
+  // scored before these fields were added.
+  actual?: string | number | null;
+  predicted?: string | number | null;
 }
 
 interface ContributionScoresProps {
   contributions: Contribution[];
+}
+
+function formatValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
 }
 
 /**
@@ -26,24 +37,48 @@ interface ContributionScoresProps {
 export function ContributionScores({ contributions }: ContributionScoresProps) {
   return (
     <div className="space-y-2 py-2">
-      <h4 className="text-sm font-semibold mb-3">Per-Column Contributions</h4>
-      <div className="space-y-2">
-        {contributions.map(({ column, percentage }) => (
-          <div key={column} className="space-y-1">
-            <div className="flex justify-between text-sm">
-              <span className="font-medium">{column}</span>
-              <span className="text-muted-foreground">{percentage.toFixed(1)}%</span>
+      <h4 className="text-sm font-semibold mb-1">Per-Column Contributions</h4>
+      <p className="text-xs text-muted-foreground mb-3">
+        Each column's share of this row's reconstruction error, with the actual
+        answer vs. what the model expected.
+      </p>
+      <div className="space-y-3">
+        {contributions.map(({ column, percentage, actual, predicted }) => {
+          const hasComparison = actual !== undefined || predicted !== undefined;
+          const mismatch =
+            hasComparison && formatValue(actual) !== formatValue(predicted);
+          return (
+            <div key={column} className="space-y-1">
+              <div className="flex justify-between text-sm">
+                <span className="font-medium">{column}</span>
+                <span className="text-muted-foreground">{percentage.toFixed(1)}%</span>
+              </div>
+              <Progress
+                value={percentage}
+                // Color the *filled* indicator rather than the track; the
+                // Progress root's className only styles the background track,
+                // which left every bar looking the same regardless of
+                // contribution level.
+                indicatorClassName={getContributionColorClass(percentage)}
+              />
+              {hasComparison && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                  <span className="text-muted-foreground">actual</span>
+                  <span
+                    className={`font-mono ${mismatch ? "text-red-600 font-medium" : "text-foreground"}`}
+                  >
+                    {formatValue(actual)}
+                  </span>
+                  <span className="text-muted-foreground" aria-hidden>
+                    →
+                  </span>
+                  <span className="text-muted-foreground">predicted</span>
+                  <span className="font-mono text-foreground">{formatValue(predicted)}</span>
+                </div>
+              )}
             </div>
-            <Progress
-              value={percentage}
-              // Color the *filled* indicator rather than the track; the
-              // Progress root's className only styles the background track,
-              // which left every bar looking the same regardless of
-              // contribution level.
-              indicatorClassName={getContributionColorClass(percentage)}
-            />
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

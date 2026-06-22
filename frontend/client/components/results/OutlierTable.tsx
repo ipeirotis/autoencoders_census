@@ -17,6 +17,8 @@ interface Outlier {
   contributions?: Array<{
     column: string;
     percentage: number;
+    actual?: string | number | null;
+    predicted?: string | number | null;
   }>;
 }
 

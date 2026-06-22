@@ -1065,6 +1065,22 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _display_value(value, default="missing"):
+    """Convert a cell value to a display string for the results UI.
+
+    Maps None / NaN to ``default`` so the frontend never renders "nan" or
+    "None" when showing a row's actual-vs-predicted reconstruction.
+    """
+    if value is None:
+        return default
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
 def process_upload_local(
     job_id,
     bucket_name,
@@ -1594,14 +1610,52 @@ def process_upload_local(
             )
             df['reconstruction_error'] = reconstruction_error
 
+            # 8b. Histogram of ALL rows' reconstruction errors so the results
+            # page can show the full distribution (not just the top-100). We
+            # bin server-side (instead of shipping ~N raw floats to Firestore)
+            # to keep the job document small.
+            finite_errors = reconstruction_error[np.isfinite(reconstruction_error)]
+            if finite_errors.size > 0:
+                hist_counts, hist_edges = np.histogram(finite_errors, bins=40)
+                error_histogram = {
+                    'binEdges': [float(e) for e in hist_edges],
+                    'counts': [int(c) for c in hist_counts],
+                    'totalRows': int(finite_errors.size),
+                }
+            else:
+                error_histogram = None
+
             # 9. Get top outliers and compute per-column contributions.
             # Phase 4: reuse batch predictions, cap contributions, separate data/metadata.
             top_outliers = df.sort_values(by='reconstruction_error', ascending=False).head(100)
+
+            # The cutoff (smallest error among the flagged rows) lets the UI draw
+            # an "outlier threshold" marker on the histogram. Captured before the
+            # inf/NaN scrub below so it reflects the real ranking boundary.
+            if error_histogram is not None and len(top_outliers) > 0:
+                error_histogram['outlierThreshold'] = _safe_float(
+                    top_outliers['reconstruction_error'].min()
+                )
+
             top_outliers = top_outliers.replace([np.inf, -np.inf], 0).fillna("missing")
 
             predictions_np = reconstruction if isinstance(reconstruction, np.ndarray) else np.array(reconstruction)
             vectorized_np = vectorized_df.to_numpy()
             MAX_CONTRIBUTIONS_PER_OUTLIER = 10
+
+            # Decode the model's reconstruction for the flagged rows back to
+            # human-readable category labels, so each contribution can show
+            # "actual value -> what the model predicted instead" (the mismatch
+            # that drove the error). tabularize_vector argmaxes each softmax
+            # block and inverse-transforms it.
+            top_index = list(top_outliers.index)
+            decoded_predictions = vectorizer.tabularize_vector(
+                pd.DataFrame(
+                    predictions_np[top_index],
+                    columns=vectorized_df.columns,
+                    index=top_index,
+                )
+            )
 
             outliers_data = []
             for idx, row in top_outliers.iterrows():
@@ -1620,7 +1674,15 @@ def process_upload_local(
                     'data': row_dict,
                     'reconstruction_error': _safe_float(row_dict.get('reconstruction_error', 0)),
                     'contributions': [
-                        {'column': col, 'percentage': float(pct)}
+                        {
+                            'column': col,
+                            'percentage': float(pct),
+                            'actual': _display_value(row_dict.get(col)),
+                            'predicted': _display_value(
+                                decoded_predictions.at[idx, col]
+                                if col in decoded_predictions.columns else None
+                            ),
+                        }
                         for col, pct in capped_contribs
                     ],
                 }
@@ -1631,6 +1693,7 @@ def process_upload_local(
             update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
                 'stats': stats,
                 'outliers': outliers_data,
+                'errorHistogram': error_histogram,
                 'processedAt': firestore.SERVER_TIMESTAMP
             })
 
