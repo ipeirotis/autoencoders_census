@@ -9,6 +9,7 @@ import { StageIndicator } from '@/components/progress/StageIndicator';
 import { DualProgressBar } from '@/components/progress/DualProgressBar';
 import { JobMetadata } from '@/components/progress/JobMetadata';
 import { OutlierTable } from '@/components/results/OutlierTable';
+import { ReconstructionErrorHistogram } from '@/components/results/ReconstructionErrorHistogram';
 import { DeleteJobDialog } from '@/components/results/DeleteJobDialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
@@ -267,6 +268,12 @@ export default function JobProgress() {
                     <DeleteJobDialog jobId={id!} />
                   </div>
                 )}
+              </div>
+            )}
+
+            {job.status === 'complete' && job.errorHistogram && (
+              <div className="mt-6">
+                <ReconstructionErrorHistogram histogram={job.errorHistogram} />
               </div>
             )}
 

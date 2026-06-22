@@ -83,9 +83,9 @@ export default function AuthScreen() {
         <CardHeader className="text-center">
           <div className="flex justify-center mb-3">
             <img
-              src="/AutoEncoder_logo_black.png"
-              alt="Logo"
-              className="w-14 h-14 object-contain"
+              src="/aletheia_logo.png"
+              alt="Aletheia logo"
+              className="w-44 h-44 object-contain"
             />
           </div>
           <CardTitle>
