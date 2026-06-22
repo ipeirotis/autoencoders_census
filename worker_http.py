@@ -17,6 +17,16 @@ Endpoints
   and **503** to NACK (transient failure -> Pub/Sub redelivers later).
 - ``GET /healthz`` -- liveness/readiness probe -> ``200 ok``.
 
+Job duration limit
+------------------
+A push job runs synchronously inside the HTTP request, so it must finish within
+the subscription's ack deadline (set to the 600s max) or Pub/Sub redelivers it.
+Redelivery is made safe by the idempotency check + Firestore state machine in
+``worker.callback()`` but wastes invocations, so in-container ``local`` mode is
+meant for sub-600s jobs. For longer jobs use ``WORKER_MODE=vertex``, which makes
+the request only *dispatch* a Vertex AI job and return in seconds. See the
+``PushMessage.modify_ack_deadline`` comment for details.
+
 Security
 --------
 The Cloud Run service is deployed with ``--no-allow-unauthenticated``, so Cloud
@@ -74,8 +84,24 @@ class PushMessage:
         self.result = "nack"
 
     def modify_ack_deadline(self, seconds: int) -> None:
-        # Pull-mode lease extension. In push mode the deadline is governed by the
-        # subscription config + HTTP response, so this is intentionally a no-op.
+        # No-op on purpose. In pull mode worker.AckExtender calls this to keep a
+        # long job's lease alive, but Pub/Sub *push* has no API to extend an
+        # individual message's deadline -- the deadline is fixed by the
+        # subscription's ackDeadlineSeconds (10s default, 600s max) and Pub/Sub
+        # decides redelivery purely from the HTTP status we return. See
+        # https://cloud.google.com/pubsub/docs/push.
+        #
+        # Consequence: a job MUST finish within the subscription ack deadline
+        # (we set it to the 600s max) or Pub/Sub will redeliver it. Redelivery
+        # is *safe* -- the idempotency check + Firestore state machine in
+        # worker.callback() drop the duplicate (JobInProgressError -> nack, then
+        # a later delivery sees the terminal state and acks) -- but it is
+        # wasteful (extra Cloud Run invocations + push backoff). Local in-
+        # container training is therefore intended for datasets that train
+        # within ~600s (the demo-scale case; a 28k-row job runs in ~110s). For
+        # larger/longer jobs set WORKER_MODE=vertex: the push request then only
+        # *dispatches* a Vertex AI custom job and returns in seconds, so the
+        # ack deadline is never at risk.
         return None
 
 
