@@ -29,6 +29,13 @@ export function ReconstructionErrorHistogram({
   if (!counts?.length || !binEdges || binEdges.length < 2) return null;
 
   const maxCount = Math.max(...counts, 1);
+  // Reconstruction-error distributions are heavily right-skewed: the vast
+  // majority of rows reconstruct well (one huge bar) and the outliers are a
+  // sparse tail. On a linear y-axis the tail is invisible, so we scale bar
+  // heights by log(count) to compress the bulk and lift the tail — letting you
+  // see the whole shape at once. (X stays linear; the error values are already
+  // ~0–1, so log-x wouldn't help.)
+  const logMax = Math.log1p(maxCount);
   const fmt = (n: number) => n.toFixed(3);
 
   return (
@@ -42,18 +49,19 @@ export function ReconstructionErrorHistogram({
       <p className="text-xs text-muted-foreground mb-3">
         Most rows reconstruct with low error; flagged outliers are the high-error tail
         {outlierThreshold !== undefined ? ` (error ≥ ${fmt(outlierThreshold)})` : ""}.
+        Bar heights use a log scale so the sparse outlier tail stays visible.
       </p>
 
-      {/* Bars. Each bar's height is its share of the busiest bin; non-empty
-          bins get a small floor so the sparse outlier tail stays visible. */}
-      <div className="flex items-end gap-px h-40" role="img" aria-label="Histogram of reconstruction errors">
+      {/* Bars. Height ∝ log(count) (see logMax above) so a few-thousand-row
+          "normal" bin and a handful-of-rows outlier bin are both legible. */}
+      <div className="flex items-end gap-px h-40" role="img" aria-label="Histogram of reconstruction errors (log-scaled counts)">
         {counts.map((count, i) => {
           const left = binEdges[i];
           const right = binEdges[i + 1];
           const isOutlierBin =
             outlierThreshold !== undefined && right > outlierThreshold;
-          const pct = (count / maxCount) * 100;
-          const heightPct = count > 0 ? Math.max(pct, 2) : 0;
+          const heightPct =
+            count > 0 ? Math.max((Math.log1p(count) / logMax) * 100, 3) : 0;
           return (
             <div
               key={i}

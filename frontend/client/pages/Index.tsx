@@ -192,7 +192,7 @@ export default function Index() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4 mb-8">
           <div className="flex items-center gap-4">
-            <img src="/aletheia_logo.png" alt="Aletheia logo" className="w-16 h-16 object-contain" />
+            <img src="/aletheia_logo.png" alt="Aletheia logo" className="w-20 h-20 object-contain" />
             <div>
               <h1 className="text-4xl font-bold text-gray-900">Aletheia</h1>
               <p className="text-sm text-gray-500">Outlier Detection</p>
