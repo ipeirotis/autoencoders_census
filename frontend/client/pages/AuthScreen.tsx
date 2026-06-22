@@ -85,7 +85,7 @@ export default function AuthScreen() {
             <img
               src="/aletheia_logo.png"
               alt="Aletheia logo"
-              className="w-20 h-20 object-contain"
+              className="w-44 h-44 object-contain"
             />
           </div>
           <CardTitle>

@@ -308,6 +308,31 @@ router.get("/:id/export", requireAuth, downloadLimiter, validateJobId, async (re
       return res.status(410).json({ error: 'Job files have expired and are no longer available for download' });
     }
 
+    // Preferred path: stream the FULL per-row results CSV the worker wrote to
+    // GCS (every row, with each column's actual value, what the model predicted
+    // for it, and the reconstruction error). The worker already escaped formula
+    // injection in that file, so it is streamed verbatim. Jobs scored before
+    // this existed have no resultsCsvPath and fall back to the top-100 export.
+    if (job.resultsCsvPath) {
+      res.attachment(`results-${id}.csv`);
+      res.type('text/csv');
+      const gcsStream = storage.bucket(BUCKET_NAME).file(job.resultsCsvPath).createReadStream();
+      gcsStream.on('error', (err) => {
+        logger.error("Error streaming results CSV", {
+          error: err instanceof Error ? err.message : String(err),
+          jobId: id,
+          userId: (req as any).user?.id,
+        });
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Failed to export CSV" });
+        } else {
+          res.destroy();
+        }
+      });
+      gcsStream.pipe(res);
+      return;
+    }
+
     const outliers = job.outliers || [];
     res.attachment(`outliers-${id}.csv`);
 
@@ -447,20 +472,24 @@ router.delete("/:id/files", requireAuth, validateJobId, async (req, res) => {
       }
     }
 
-    const resultFileName = `results/${id}.json`;
+    // results/{id}.json (legacy) and results/{id}.csv (full per-row export the
+    // worker now writes) are both cleaned up here.
+    const resultFileNames = [`results/${id}.json`, `results/${id}.csv`];
     let resultDeleteFailed = false;
-    try {
-      await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
-      filesDeleted++;
-    } catch (error) {
-      if (isGcsNotFoundError(error)) {
-        logger.info('GCS result file already absent', { jobId: id, file: resultFileName });
-      } else {
-        resultDeleteFailed = true;
-        logger.warn('Failed to delete GCS result file', {
-          jobId: id, file: resultFileName,
-          error: error instanceof Error ? error.message : String(error)
-        });
+    for (const resultFileName of resultFileNames) {
+      try {
+        await storage.bucket(BUCKET_NAME).file(resultFileName).delete();
+        filesDeleted++;
+      } catch (error) {
+        if (isGcsNotFoundError(error)) {
+          logger.info('GCS result file already absent', { jobId: id, file: resultFileName });
+        } else {
+          resultDeleteFailed = true;
+          logger.warn('Failed to delete GCS result file', {
+            jobId: id, file: resultFileName,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
     }
 

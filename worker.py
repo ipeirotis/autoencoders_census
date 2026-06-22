@@ -1081,6 +1081,22 @@ def _display_value(value, default="missing"):
     return str(value)
 
 
+def _csv_safe(value):
+    """Escape values a spreadsheet could execute as a formula.
+
+    Mirrors the Node sanitizer (frontend/server/utils/csvSanitization.ts):
+    prefix a single quote when a cell/header starts with a character that
+    triggers formula evaluation. Used for the downloadable results CSV the
+    worker writes to GCS so the export route can stream it as-is.
+    """
+    if value is None:
+        return value
+    text = str(value)
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r", "\n"):
+        return "'" + text
+    return text
+
+
 def process_upload_local(
     job_id,
     bucket_name,
@@ -1688,12 +1704,53 @@ def process_upload_local(
                 }
                 outliers_data.append(outlier_record)
 
+            # 9b. Write a FULL per-row results CSV to GCS (every row, not just
+            # the top-100): each column's actual value plus what the model
+            # predicted for it, and the reconstruction error, sorted most-
+            # anomalous first. The "Download results CSV" button streams this
+            # file. Best-effort: a failure here must not fail the job, since the
+            # UI results (top-100 + histogram) are already computed.
+            results_csv_path = None
+            try:
+                decoded_all = vectorizer.tabularize_vector(
+                    pd.DataFrame(
+                        predictions_np,
+                        columns=vectorized_df.columns,
+                        index=vectorized_df.index,
+                    )
+                )
+                results_export = pd.DataFrame(index=df.index)
+                for col in process_df.columns:
+                    results_export[col] = df[col]
+                    if col in decoded_all.columns:
+                        results_export[f"{col} (predicted)"] = decoded_all[col]
+                results_export['reconstruction_error'] = df['reconstruction_error']
+                results_export = results_export.sort_values(
+                    'reconstruction_error', ascending=False
+                )
+                # Escape spreadsheet formula-injection in headers + cells to
+                # match the Node sanitizer, since the export route streams this
+                # file verbatim.
+                results_export = results_export.rename(columns=_csv_safe).map(_csv_safe)
+
+                results_csv_path = f"results/{job_id}.csv"
+                bucket.blob(results_csv_path).upload_from_string(
+                    results_export.to_csv(index=False),
+                    content_type='text/csv',
+                )
+            except Exception as csv_err:
+                results_csv_path = None
+                logger.warning(
+                    f"Could not write full results CSV for job {job_id}: {csv_err}"
+                )
+
             # 10. Save to Firestore with transactional status update (WORK-07)
             transaction = db.transaction()
             update_job_status(transaction, job_ref, JobStatus.COMPLETE, {
                 'stats': stats,
                 'outliers': outliers_data,
                 'errorHistogram': error_histogram,
+                'resultsCsvPath': results_csv_path,
                 'processedAt': firestore.SERVER_TIMESTAMP
             })
 
