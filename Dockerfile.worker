@@ -1,0 +1,32 @@
+# Worker container for Cloud Run (Pub/Sub *push* target).
+#
+# Runs worker_http.py, which wraps the existing worker.callback() job logic
+# behind an HTTP endpoint so Pub/Sub can push jobs to a scale-to-zero service.
+# Local development keeps using `python worker.py` (pull mode) unchanged.
+
+FROM python:3.11-slim
+
+# libgomp1 is the OpenMP runtime several wheels (TensorFlow, numba/llvmlite,
+# scikit-learn) load at import time on slim images.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install dependencies first so this layer is cached across code-only changes.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code (heavy/irrelevant paths are excluded via .dockerignore).
+COPY . .
+
+# Cloud Run routes traffic to $PORT (defaults to 8080).
+ENV PORT=8080
+EXPOSE 8080
+
+# Drop root for the running process.
+RUN useradd --create-home appuser
+USER appuser
+
+CMD ["python", "worker_http.py"]

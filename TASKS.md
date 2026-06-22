@@ -1,3 +1,4 @@
+
 # TASKS.md -- Product Launch for Survey Outlier Detection
 
 ## 1. Stabilize the Core Pipeline
@@ -784,11 +785,13 @@ Each item keeps its original TASKS.md number; completing it updates the correspo
 | Phase | Title | Status | PR | DONE summary |
 |-------|-------|--------|----|-|
 | A | Repo & deploy hygiene | Not started | — | — |
-| B | Containerization | Not started | — | — |
-| C | Pub/Sub push refactor | Not started | — | — |
-| D | GCP infra bootstrap script | Not started | — | — |
-| E | Cloud Run deploy script | Not started | — | — |
+| B | Containerization | Partial (worker only) | `claude/cloud-run-worker` | `Dockerfile.worker` + `cloudbuild.worker.yaml` shipped (worker image). `Dockerfile.api` / vertex-trainer rename / unified `cloudbuild.yaml` still TODO. |
+| C | Pub/Sub push refactor | Partial (MVP) | `claude/cloud-run-worker` | `worker_http.py` exposes `POST /pubsub/push` + `GET /healthz` and reuses `worker.callback()` via a `PushMessage` adapter (no refactor of `callback()` itself). Auth is via Cloud Run `--no-allow-unauthenticated` + invoker IAM (platform-level OIDC), NOT in-app token verification. Dead-letter topic + `tests/test_worker_http.py` still TODO. |
+| D | GCP infra bootstrap script | Partial (manual) | `claude/cloud-run-worker` | Resources created by hand (not yet scripted): SAs `ae-worker` + `ae-pubsub-pusher` with roles; push sub `job-upload-topic-push` (OIDC) + pull sub `job-upload-topic-sub` (local dev); Pub/Sub agent tokenCreator on pusher. `scripts/deploy/bootstrap.sh`, IAM conditions, DLQ still TODO. |
+| E | Cloud Run deploy script | Partial (manual) | `claude/cloud-run-worker` | `worker` service deployed manually (sizing per table, private, scale-to-zero, SA `ae-worker`). `scripts/deploy/deploy.sh` automation still TODO. |
 | F | App-code launch blockers | Not started | — | — |
 | G | Docs + TASKS.md cleanup | Not started | — | — |
+
+**Worker automation MVP (branch `claude/cloud-run-worker`, 2026-06-21):** The worker now runs on Cloud Run, triggered by a Pub/Sub *push* subscription, scale-to-zero — no idle VM. Verified end-to-end over `aletheia.stern.nyu.edu` (28k-row job processed in the cloud, Mac off). This is a focused MVP that cuts across Phases B–E; the per-phase rows above list what is shipped vs. still TODO. Set the worker service env `WORKER_MODE=vertex` to dispatch heavy jobs to Vertex AI instead of running them in-container.
 
 When picking up this plan in a new session: read this section top-to-bottom, find the first phase whose status is not `DONE`, and continue from there.
