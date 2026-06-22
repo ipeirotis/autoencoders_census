@@ -134,11 +134,21 @@ class Handler(BaseHTTPRequestHandler):
             envelope = json.loads(raw.decode("utf-8"))
             msg = envelope["message"]
             data = base64.b64decode(msg.get("data", "") or "")
-            message_id = msg.get("messageId") or msg.get("message_id") or "?"
+            message_id = msg.get("messageId") or msg.get("message_id")
         except Exception as e:
             # A malformed envelope is not a real Pub/Sub delivery and will never
             # become valid on retry -> ACK so Pub/Sub stops resending it.
             logger.error("Bad push envelope, dropping: %s", e)
+            self._send(204)
+            return
+
+        if not message_id:
+            # Real Pub/Sub push always sets messageId. Without it,
+            # worker.callback()'s idempotency marker (keyed on message_id) would
+            # collide across deliveries -- distinct messages sharing a blank id
+            # would be wrongly de-duplicated. Treat as a malformed envelope and
+            # drop it (ACK) rather than processing under a bogus id.
+            logger.error("Push envelope missing messageId, dropping")
             self._send(204)
             return
 
@@ -169,7 +179,27 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+def _validate_config() -> None:
+    """Fail fast on startup if required runtime config is missing.
+
+    Without this the service would start fine and then NACK (503) every
+    delivery forever, triggering a Pub/Sub redelivery storm that is hard to
+    diagnose. SUBSCRIPTION_ID is intentionally NOT required here -- in push
+    mode the worker never subscribes; Pub/Sub pushes to it.
+    """
+    required = {
+        "GOOGLE_CLOUD_PROJECT": os.getenv("GOOGLE_CLOUD_PROJECT"),
+        "GCS_BUCKET_NAME": os.getenv("GCS_BUCKET_NAME"),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise SystemExit(
+            f"worker_http: missing required env vars: {', '.join(missing)}"
+        )
+
+
 def main() -> None:
+    _validate_config()
     port = int(os.getenv("PORT", "8080"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     logger.info(
