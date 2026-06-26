@@ -18,6 +18,12 @@ warnings.simplefilter(action='ignore', category=PerformanceWarning)
 # so downstream modules can reference the same default.
 DEFAULT_MAX_UNIQUE_VALUES = 9
 
+# Numeric variables with at least this many distinct values are z-score
+# discretized into the six bins of the paper's Table tab:dicretization; numeric
+# variables with fewer distinct values are kept as categorical AS-IS so the
+# ordinal Likert levels are preserved (paper methods.tex, Data Preprocessing).
+DISCRETIZE_MIN_DISTINCT = 20
+
 
 class DataLoader:
     """
@@ -576,14 +582,36 @@ class DataLoader:
             if k in project_data.columns: # ensure code doesn't crash if col doesn't exist in current dataset
                 project_data[k] = project_data[k].replace(v)
 
-        # 1. Identify and Bin Numeric Columns
-        # Only treat as numeric if the col is truly numeric
+        # 1. Identify and Bin ONLY high-cardinality numeric columns.
+        # Per the paper's preprocessing (methods.tex, Table tab:dicretization):
+        # a numeric variable with FEWER THAN 20 distinct values is treated as
+        # categorical AS-IS (each response level becomes its own category,
+        # preserving the ordinal Likert structure); only variables with >= 20
+        # distinct values are z-score discretized into the six bins. The old
+        # behavior binned EVERY numeric column, collapsing 5-7 level Likert
+        # items into coarse, non-ordinal z-score bins ("normal"/"zero"/...),
+        # which discarded the within-battery signal and crippled
+        # reconstruction-based detection on coherent instruments.
         numeric_vars = []
         for col in project_data.columns:
             if pd.api.types.is_numeric_dtype(project_data[col]):
-                numeric_vars.append(col)
+                if project_data[col].nunique(dropna=True) >= DISCRETIZE_MIN_DISTINCT:
+                    numeric_vars.append(col)
 
-        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
+        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Discretize only continuous columns
+
+        # 1b. Numeric columns NOT discretized above (fewer than
+        # DISCRETIZE_MIN_DISTINCT distinct values) are Likert-style items kept
+        # as-is. Cast them to clean string category labels now (integer levels
+        # -> "1".."k", NaN -> "missing") so each response level becomes its own
+        # one-hot category. Without this they remain Int64/float and the
+        # ``fillna("missing")`` below raises on nullable-integer dtypes.
+        for col in project_data.columns:
+            if pd.api.types.is_numeric_dtype(project_data[col]):
+                project_data[col] = project_data[col].apply(
+                    lambda v: "missing" if pd.isna(v)
+                    else (str(int(v)) if float(v).is_integer() else str(v))
+                )
 
         # 2. Fill NaN in non-numeric columns with the literal string
         # "missing" so that (a) the Rule-of-N count below treats missing as
