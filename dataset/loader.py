@@ -135,7 +135,23 @@ class DataLoader:
             0
         )
 
+        # Optional reaction-time engineered features. These ``Fake1_RT_*`` /
+        # ``Real1_RT_*`` reaction-time columns are NOT part of the battery the
+        # paper actually used (the cached errors.csv battery contains the
+        # ``Fake1_1..15`` / ``Real1_1..12`` *rating* items, never any
+        # ``*_time_diff`` / ``*_clicks`` features). When ``COLUMNS_OF_INTEREST``
+        # selects only the rating/demographic columns the RT columns are absent,
+        # so this block must be skipped rather than ``KeyError`` (that crash is
+        # what broke the whole pennycook train/score path). Only run it when the
+        # source RT columns are present.
         for i in range(1, 16):
+            rt_cols = (
+                [f"Fake1_RT_{j}_{i}" for j in range(1, 5)]
+                + [f"Real1_RT_{j}_{i}" for j in range(1, 5)]
+            )
+            if not all(c in df.columns for c in rt_cols):
+                continue
+
             df[f"Fake1_time_diff_{i}"] = df[f"Fake1_RT_2_{i}"] - df[f"Fake1_RT_1_{i}"]
             df[f"Fake1_submit_diff_{i}"] = df[f"Fake1_RT_3_{i}"] - df[f"Fake1_RT_2_{i}"]
             df[f"Fake1_clicks_{i}"] = df[f"Fake1_RT_4_{i}"]
@@ -144,7 +160,7 @@ class DataLoader:
             df[f"Real1_submit_diff_{i}"] = df[f"Real1_RT_3_{i}"] - df[f"Real1_RT_2_{i}"]
             df[f"Real1_clicks_{i}"] = df[f"Real1_RT_4_{i}"]
 
-            df.drop(columns=[f"Fake1_RT_{j}_{i}" for j in range(1, 5)] + [f"Real1_RT_{j}_{i}" for j in range(1, 5)], inplace=True)
+            df.drop(columns=rt_cols, inplace=True)
 
 
         # convert to integer columns
@@ -626,12 +642,33 @@ class DataLoader:
 
     def find_outlier_data(self, data, outlier_column):
         """
-        Load dataset and extract gold-label columns for evaluation.
+        Load dataset and extract gold-label (attention-check) columns for
+        evaluation, aligned to the same rows the scoring path produces.
 
-        Temporarily disables COLUMNS_OF_INTEREST filtering so that
-        attention-check / screening columns are available even though
-        they are intentionally excluded from the training config.
+        Preferred path: ``evaluate.detection.aligned_labels`` reads the
+        attention-check columns **raw** (never routed through the numeric
+        z-score binning in ``convert_to_categorical``) and reproduces the
+        scoring path's exact row set. This fixes two regressions:
+          * numeric attention-check columns (``moral_data``/``attention``,
+            ``public_opinion``/``attention_1``, ...) were binned to
+            ``<col>_cat`` and disappeared -> ``KeyError`` here;
+          * loaders with ``dropna(inplace=True)`` after column selection
+            (``moral_data``, ``racial_data``) dropped different rows in the
+            label path than in the scoring path, silently misaligning the
+            positional ``concat`` in ``evaluate_on_condition``.
+
+        Datasets not covered by the centralized spec (e.g. the SADC composite
+        path, pennycook) fall back to the legacy reload-without-COLUMNS_OF_
+        INTEREST behaviour.
         """
+        try:
+            # Lazy import to avoid a module-load cycle (detection imports DataLoader).
+            from evaluate.detection import aligned_labels, RAW_CSV
+            if data in RAW_CSV:
+                return aligned_labels(data)[outlier_column]
+        except ImportError:
+            pass
+
         saved = self.COLUMNS_OF_INTEREST
         self.COLUMNS_OF_INTEREST = []
         try:
