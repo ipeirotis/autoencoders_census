@@ -159,6 +159,72 @@ def aligned_labels(dataset: str, validate: bool = True) -> pd.DataFrame:
     return labels
 
 
+# Common ordinal-word response sets -> numeric codes, for items stored as text
+# (e.g. public_opinion "Agree"/"Disagree"). Leading-number codes ("2. Support")
+# are handled separately by regex extraction.
+_LIKERT_WORDS = {
+    "strongly disagree": 1, "disagree": 2, "neither agree nor disagree": 3,
+    "neutral": 3, "neither": 3, "agree": 4, "strongly agree": 5,
+    "strongly oppose": 1, "oppose": 2, "neither support nor oppose": 3,
+    "support": 4, "strongly support": 5,
+    "never": 1, "rarely": 2, "sometimes": 3, "often": 4, "always": 5,
+}
+
+
+def _to_ordinal(s: pd.Series) -> "pd.Series | None":
+    """Best-effort ordinal encoding of a survey item to numeric codes. Returns
+    None if the column doesn't look like an ordinal/numeric item. The 0.8
+    coverage threshold is taken over NON-missing values, so an otherwise-clean
+    Likert item with high item-missingness (common for historical/branched
+    questions) is still encoded rather than discarded."""
+    nn = int(s.notna().sum())
+    if nn == 0:
+        return None
+    num = pd.to_numeric(s, errors="coerce")
+    if int(num.notna().sum()) >= 0.8 * nn:
+        return num
+    # leading integer code, e.g. "2. Support" -> 2
+    ext = pd.to_numeric(s.astype(str).str.extract(r"^\s*(\d+)")[0], errors="coerce")
+    if int(ext.notna().sum()) >= 0.8 * nn:
+        return ext
+    # ordinal words
+    mapped = s.astype(str).str.strip().str.lower().map(_LIKERT_WORDS)
+    if int(mapped.notna().sum()) >= 0.8 * nn:
+        return mapped
+    return None
+
+
+def aligned_battery(dataset: str, max_levels: int = 9) -> pd.DataFrame:
+    """Numeric battery (Likert-style item responses) for every scored row, in
+    scoring-row order, with a fresh 0..N-1 index that lines up positionally
+    with ``errors.csv`` and :func:`aligned_labels`.
+
+    Selects the dataset's interest/battery columns that encode as ordinal items
+    with ``2..max_levels`` distinct values — the same low-cardinality items the
+    autoencoder is fed (after the Rule-of-N filter), kept as raw numeric
+    responses so practitioner indices (longstring, IRV, person-total,
+    Mahalanobis, even-odd, l_z) can be computed on them. Items stored as text
+    ("2. Support", "Agree") are ordinal-encoded; continuous columns (sliders,
+    timings, year-of-birth) have too many levels and are dropped. This keeps the
+    baseline-vs-autoencoder comparison on the same items.
+    """
+    idx = _survivor_index(dataset)
+    raw = _read_raw(dataset)
+    interest = _interest_columns(dataset)
+    sub = raw.loc[idx, interest].reset_index(drop=True)
+
+    cols = {}
+    for c in sub.columns:
+        enc = _to_ordinal(sub[c])
+        if enc is None:
+            continue
+        if 2 <= int(enc.dropna().nunique()) <= max_levels:
+            cols[c] = enc
+    # index=sub.index keeps N rows even when no item survives (0-column frame),
+    # so downstream baselines return one NaN per scored row rather than empty.
+    return pd.DataFrame(cols, index=sub.index)
+
+
 # ---------------------------------------------------------------------------
 # Attention-check definitions.
 #
@@ -282,20 +348,19 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
     return relevant
 
 
-def evaluate_detection(dataset: str, errors_csv: str, method: str = "?"):
-    """Compute detection ROC AUC for every attention check of ``dataset``.
+def evaluate_scores(dataset: str, scores, method: str = "?"):
+    """Compute detection ROC AUC for every attention check of ``dataset``,
+    given a per-scored-row anomaly score array (higher = more inattentive).
 
-    Returns a list of dicts: dataset, method, check, n, n_pos, auc.
+    ``scores`` must be aligned to the scoring rows (same order/length as
+    :func:`aligned_labels` / :func:`aligned_battery`). Returns a list of dicts:
+    dataset, method, check, n, n_pos, auc.
     """
-    err_df = pd.read_csv(errors_csv)
-    if "error" not in err_df.columns:
-        raise ValueError(f"{errors_csv}: no 'error' column (cols={list(err_df.columns)[:8]})")
-    scores = err_df["error"].astype(float).values
-
+    scores = np.asarray(scores, dtype=float)
     labels = aligned_labels(dataset)
     if len(scores) != len(labels):
         raise AssertionError(
-            f"{dataset}: errors.csv rows ({len(scores)}) != aligned-label rows "
+            f"{dataset}: score rows ({len(scores)}) != aligned-label rows "
             f"({len(labels)}); scores and labels are not aligned."
         )
 
@@ -303,13 +368,27 @@ def evaluate_detection(dataset: str, errors_csv: str, method: str = "?"):
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
         n_pos = int(y.sum())
-        auc = roc_auc_score(y, scores) if 0 < n_pos < len(y) else float("nan")
+        # NaN scores can't be ranked; drop those rows from this check only.
+        valid = ~np.isnan(scores)
+        yv, sv = y[valid], scores[valid]
+        n_pos_v = int(yv.sum())
+        auc = roc_auc_score(yv, sv) if 0 < n_pos_v < len(yv) else float("nan")
         out.append({
             "dataset": dataset,
             "method": method,
             "check": check["name"],
-            "n": int(len(y)),
-            "n_pos": n_pos,
+            "n": int(valid.sum()),
+            "n_pos": n_pos_v,
             "auc": round(auc, 3) if auc == auc else None,
         })
     return out
+
+
+def evaluate_detection(dataset: str, errors_csv: str, method: str = "?"):
+    """Compute detection ROC AUC for every attention check of ``dataset`` from
+    an ``errors.csv`` produced by the scoring path (uses its ``error`` column).
+    """
+    err_df = pd.read_csv(errors_csv)
+    if "error" not in err_df.columns:
+        raise ValueError(f"{errors_csv}: no 'error' column (cols={list(err_df.columns)[:8]})")
+    return evaluate_scores(dataset, err_df["error"].astype(float).values, method)
