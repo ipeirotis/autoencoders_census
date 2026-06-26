@@ -348,13 +348,44 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
     return relevant
 
 
-def evaluate_scores(dataset: str, scores, method: str = "?"):
-    """Compute detection ROC AUC for every attention check of ``dataset``,
-    given a per-scored-row anomaly score array (higher = more inattentive).
+def _ranking_metrics(scores: np.ndarray, y: np.ndarray) -> dict:
+    """Information-retrieval metrics used in the paper's detection tables, with
+    ``scores`` = anomaly score (higher = more inattentive) and ``y`` in {0,1}.
+    Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined)."""
+    n = len(y)
+    h = int(y.sum())
+    order = np.argsort(-scores, kind="mergesort")  # stable descending
+    y_sorted = y[order]
 
-    ``scores`` must be aligned to the scoring rows (same order/length as
-    :func:`aligned_labels` / :func:`aligned_battery`). Returns a list of dicts:
-    dataset, method, check, n, n_pos, auc.
+    def p_at(k):
+        k = min(k, n)
+        return float(y_sorted[:k].sum()) / k if k > 0 else float("nan")
+
+    if h > 0:
+        disc = 1.0 / np.log2(np.arange(1, h + 1) + 1)
+        dcg = float((y_sorted[:h] * disc).sum())
+        idcg = float(disc.sum())  # ideal: the h positives fill the top-h slots
+        ndcg = dcg / idcg if idcg > 0 else float("nan")
+        rah = p_at(h)
+    else:
+        ndcg = rah = float("nan")
+
+    auc = roc_auc_score(y, scores) if 0 < h < n else float("nan")
+
+    def r(x):
+        return round(x, 3) if x == x else None
+    return {"h": h, "R@h": r(rah), "P@10": r(p_at(10)), "P@50": r(p_at(50)),
+            "P@100": r(p_at(100)), "NDCG@h": r(ndcg), "AUC": r(auc)}
+
+
+def evaluate_scores(dataset: str, scores, method: str = "?"):
+    """Compute the full detection metric set for every attention check of
+    ``dataset``, given a per-scored-row anomaly score array (higher = more
+    inattentive), aligned to the scoring rows (same order/length as
+    :func:`aligned_labels` / :func:`aligned_battery`).
+
+    Returns a list of dicts: dataset, method, check, n, n_pos, h, R@h, P@10,
+    P@50, P@100, NDCG@h, AUC (legacy keys ``auc`` kept as an alias).
     """
     scores = np.asarray(scores, dtype=float)
     labels = aligned_labels(dataset)
@@ -367,19 +398,17 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
     out = []
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
-        n_pos = int(y.sum())
         # NaN scores can't be ranked; drop those rows from this check only.
         valid = ~np.isnan(scores)
         yv, sv = y[valid], scores[valid]
-        n_pos_v = int(yv.sum())
-        auc = roc_auc_score(yv, sv) if 0 < n_pos_v < len(yv) else float("nan")
+        n_pos = int(yv.sum())
+        m = _ranking_metrics(sv, yv) if 0 < n_pos < len(yv) else {
+            "h": n_pos, "R@h": None, "P@10": None, "P@50": None,
+            "P@100": None, "NDCG@h": None, "AUC": None}
         out.append({
-            "dataset": dataset,
-            "method": method,
-            "check": check["name"],
-            "n": int(valid.sum()),
-            "n_pos": n_pos_v,
-            "auc": round(auc, 3) if auc == auc else None,
+            "dataset": dataset, "method": method, "check": check["name"],
+            "n": int(valid.sum()), "n_pos": n_pos, **m,
+            "auc": m["AUC"],  # backward-compatible alias
         })
     return out
 

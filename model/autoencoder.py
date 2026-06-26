@@ -271,22 +271,26 @@ class AutoencoderModel:
 
     def build_autoencoder(self, config):
         learning_rate = config.get("learning_rate", 1e-3)
+        # Percentile Loss threshold (paper methods.tex): keep the lowest-error
+        # ``percentile``% of each batch when computing the loss. 100 = standard
+        # base autoencoder (no trimming); <100 = PL. Configurable so the same
+        # tuned architecture can be trained as both the p=100 base AE and the
+        # p<100 PL AE the paper reports.
+        percentile = config.get("percentile", 80)
 
         autoencoder_input = Input(shape=self.INPUT_SHAPE)
         encoder_output = self.build_encoder(config)(autoencoder_input)
         decoder_output = self.build_decoder(config)(encoder_output)
         autoencoder = Model(autoencoder_input, decoder_output)
-        # percentile_var = tf.Variable(0.6, dtype=tf.float32)
-        # Add to model training
-        # callback = PercentileScheduler(percentile_var, initial=0.7, final=0.8, step=0.001)
         autoencoder.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
             loss=CustomCategoricalCrossentropyAE(
-                attribute_cardinalities=self.attribute_cardinalities#, percentile=percentile_var
+                attribute_cardinalities=self.attribute_cardinalities,
+                percentile=percentile,
             ),
         )
 
-        return autoencoder#, callback
+        return autoencoder
 
     def define_tuner(self, hp_limits):
 
