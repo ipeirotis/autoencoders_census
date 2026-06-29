@@ -16,10 +16,8 @@ import pandas as pd
 
 from utils import define_necessary_elements
 from dataset.loader import DataLoader
-from main import prepare_for_model
 from evaluate.detection import _ranking_metrics, _to_ordinal
 from evaluate import baselines as bl
-from sklearn.decomposition import PCA
 
 METHOD_ROWS = [("AE_p100", "Non-Linear Autoencoder ($p=100$)"),
                ("AE_p85", "Non-Linear Autoencoder ($p=85$)"),
@@ -54,15 +52,12 @@ def sadc_rows():
     out = {}
     for key, path in [("AE_p100", "cache/sadc_2017_100perc_newloss/errors.csv"),
                       ("AE_p85", "cache/sadc_2017_85perc_newloss/errors.csv"),
+                      ("LinearAE", "cache/_lin_sadc_2017/errors.csv"),
                       ("ChowLiu", "cache/_fix9_sadc_2017_cl/errors.csv")]:
         if os.path.exists(path):
             e = pd.read_csv(path)["error"].astype(float).values
             if len(e) == len(y):
                 out[key] = _ranking_metrics(e, y)
-    _, vec, _, _ = prepare_for_model(data, meta.get("variable_types", {}))
-    X = vec.to_numpy(float); k = min(10, X.shape[1] - 1)
-    p = PCA(n_components=k).fit(X)
-    out["LinearAE"] = _ranking_metrics(((X - p.inverse_transform(p.transform(X))) ** 2).mean(1), y)
     return out
 
 

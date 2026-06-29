@@ -1,0 +1,5 @@
+latent_space_dim: 8
+learning_rate: 0.01
+epochs: 100
+batch_size: 64
+test_size: 0.2

@@ -59,16 +59,17 @@ def errors_path(dataset, key):
     return {
         "AE_p100": f"cache/_tuned_{dataset}_ae_p100/errors.csv",
         "AE_p85": f"cache/_tuned_{dataset}_ae_p85/errors.csv",
+        # Linear AE = the TRAINED LinearAutoencoder (model_name=PCA, MSE loss),
+        # NOT sklearn PCA. Retrained with the binning fix via run_linear.sh.
+        "LinearAE": f"cache/_lin_{dataset}/errors.csv",
         "ChowLiu": f"cache/_fix9_{dataset}_cl/errors.csv",
     }.get(key)
 
 
 def rows_for(dataset, key):
-    if key in ("AE_p100", "AE_p85", "ChowLiu"):
+    if key in ("AE_p100", "AE_p85", "LinearAE", "ChowLiu"):
         p = errors_path(dataset, key)
         return evaluate_detection(dataset, p, key) if p and os.path.exists(p) else None
-    if key == "LinearAE":
-        return evaluate_scores(dataset, linear_ae_scores(dataset), key)
     # psychometric baseline
     scores = bl.INDICES[key](aligned_battery(dataset))
     return evaluate_scores(dataset, scores, key) if np.isfinite(scores).any() else None

@@ -265,7 +265,12 @@ CHECKS = {
         {"name": "attention", "cols": ["attention"], "correct": [1], "mode": "neq"},
     ],
     "public_opinion": [
-        {"name": "attention_1", "cols": ["attention_1"], "correct": [1], "mode": "neq"},
+        # mastroianni2022. The attention_1 slider's default is 1; respondents who
+        # LEAVE it at 1 are the flagged (inattentive) group, so positive == 1
+        # (mode "eq"), not != 1. Verified empirically: this polarity reproduces
+        # the paper's ~0.66 AE (the != 1 reading gives 1-0.66=0.32). Confirm
+        # against the Mastroianni & Dana codebook.
+        {"name": "attention_1", "cols": ["attention_1"], "correct": [1], "mode": "eq"},
     ],
     "bot_bot_mturk": [
         {"name": "Q6_15", "cols": ["Q6_15"], "correct": [7], "mode": "neq"},
