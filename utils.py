@@ -662,10 +662,19 @@ def define_necessary_elements(data, drop_columns, rename_columns, interest_colum
         ] + [53, 55, 58, 61, 63, 65, 68, 69, 70, 72, 73, 74, 76, 77]
 
     elif data == "public_opinion":
+        # mastroianni2022. The paper's battery is the current-attitude "_self"
+        # items (49 columns -> ~322 one-hot features, matching the reported
+        # 51 variables / 322 features). A prior config broadened this to
+        # range(21,175), which pulled in historical _1990/_2018 estimates,
+        # 0-100 sliders, and demographics (155 vars / 860 features) -- a drift
+        # from the paper. Restore the _self battery.
         drop_columns = []
         rename_columns = {}
-        interest_columns = [19, 4] + [
-            x for x in range(21, 175)
+        interest_columns = [
+            23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68, 71,
+            74, 77, 80, 83, 86, 89, 92, 95, 98, 101, 104, 107, 110, 113, 116,
+            119, 122, 125, 134, 137, 140, 143, 146, 149, 153, 156, 159, 162,
+            165, 168, 171, 174,
         ]
 
     elif data == "racial_data":
