@@ -3,11 +3,10 @@ DRAFT regeneration of the paper's three detailed per-check detection tables with
 the tuned/fixed numbers (binning fix + per-dataset hyperparameter search). Does
 NOT touch the live tables; writes a standalone .tex draft for review.
 
-Covers 8/9 datasets: the 7 attention-check datasets from experiment_b_full.csv
-plus robinson2014 (SADC composite indicator, computed here). mastroianni2022 is
-omitted (loader uses 156 vars vs the paper's 51 -> not reproducible yet).
+Covers all 9 datasets: the 8 attention-check datasets from experiment_b_full.csv
+plus robinson2014 (SADC composite indicator, computed here).
 
-Run: python generate_detailed_tables_draft.py
+Run from the repo root: python -m experiment_b.generate_detailed_tables_draft
 Out: ../inattentiveness_paper/sections/_regenerated_detailed_tables_draft.tex
 """
 import os
@@ -35,6 +34,7 @@ LAYOUT = [
     ("attention_check", "\\cite{uhalt2020}", [("Attention_Check", None)]),
     ("moral_data", "\\cite{ogrady2019}", [("attention", None)]),
     ("bot_bot_mturk", "\\cite{buchanan2018}", [("Q6_15", None)]),
+    ("public_opinion", "\\cite{mastroianni2022}", [("attention_1", None)]),
     ("mturk_ethics", "\\cite{moss2023}", [("Screener_One", "Attention 1"), ("Screener_Two", "Attention 2"),
         ("union(S1|S2)", "Union"), ("intersection(S1&S2)", "Intersection")]),
     ("racial_data", "\\cite{ivanov2021}", [("attn1", "Attention 1"), ("attn2", "Attention 2"),
