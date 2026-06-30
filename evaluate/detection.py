@@ -359,12 +359,30 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
     return relevant
 
 
-def _ranking_metrics(scores: np.ndarray, y: np.ndarray) -> dict:
+def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = True) -> dict:
     """Information-retrieval metrics used in the paper's detection tables, with
     ``scores`` = anomaly score (higher = more inattentive) and ``y`` in {0,1}.
-    Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined)."""
+    Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined).
+
+    When ``orient`` is True (the default, used for the unsupervised detectors
+    whose reconstruction-error / log-likelihood direction is arbitrary) we orient
+    ``scores`` to the larger of AUC and 1-AUC before computing every metric, since
+    AUC is symmetric and the method's separation ability is what counts. The
+    psychometric baselines pass ``orient=False``: they already carry a designed
+    direction (high = careless), so a sub-0.5 AUC is a genuine failure, not a sign
+    flip, and must not be inflated."""
     n = len(y)
     h = int(y.sum())
+    scores = np.asarray(scores, dtype=float)
+
+    if 0 < h < n:
+        auc = roc_auc_score(y, scores)
+        if orient and auc < 0.5:      # flip the arbitrary anomaly-score direction
+            scores = -scores
+            auc = 1.0 - auc
+    else:
+        auc = float("nan")
+
     order = np.argsort(-scores, kind="mergesort")  # stable descending
     y_sorted = y[order]
 
@@ -380,8 +398,6 @@ def _ranking_metrics(scores: np.ndarray, y: np.ndarray) -> dict:
         rah = p_at(h)
     else:
         ndcg = rah = float("nan")
-
-    auc = roc_auc_score(y, scores) if 0 < h < n else float("nan")
 
     def r(x):
         return round(x, 3) if x == x else None
@@ -406,6 +422,11 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
             f"({len(labels)}); scores and labels are not aligned."
         )
 
+    # Psychometric indices carry a designed orientation (high = careless), so we
+    # do NOT flip a sub-0.5 AUC for them; the unsupervised detectors do get
+    # oriented (their error/likelihood direction is arbitrary).
+    orient = method not in {"longstring", "irv", "person_total_r",
+                            "mahalanobis", "even_odd", "lz"}
     out = []
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
@@ -413,7 +434,7 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
         valid = ~np.isnan(scores)
         yv, sv = y[valid], scores[valid]
         n_pos = int(yv.sum())
-        m = _ranking_metrics(sv, yv) if 0 < n_pos < len(yv) else {
+        m = _ranking_metrics(sv, yv, orient=orient) if 0 < n_pos < len(yv) else {
             "h": n_pos, "R@h": None, "P@10": None, "P@50": None,
             "P@100": None, "NDCG@h": None, "AUC": None}
         out.append({

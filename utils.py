@@ -535,17 +535,11 @@ def define_necessary_elements(data, drop_columns, rename_columns, interest_colum
             370,
             375,
         ] +
-        # [
-        #     x for x in range(73, 103) #cond1
-        # ] +
-        # [
-        #     x for x in range(103, 133) #cond2
-        # ] +
-        # [
-        #     x for x in range(133, 163) #cond3
-        # ]
-        #    +
-        [x for x in range(163, 193)] +  #cond4
+        # pennycook is between-subjects: each respondent answers ONE of four
+        # conditions, so we pool all four condition blocks (73..193); items
+        # outside a respondent's condition are missing. This matches the paper's
+        # full battery (restored from condition-4-only, which had halved it).
+        [x for x in range(73, 193)] +  # all 4 conditions (cond1..cond4)
                             [
             x for x in range(314, 321) #crt
         ] + [

@@ -59,9 +59,10 @@ def errors_path(dataset, key):
     return {
         "AE_p100": f"cache/_tuned_{dataset}_ae_p100/errors.csv",
         "AE_p85": f"cache/_tuned_{dataset}_ae_p85/errors.csv",
-        # Linear AE = the TRAINED LinearAutoencoder (model_name=PCA, MSE loss),
-        # NOT sklearn PCA. Retrained with the binning fix via run_linear.sh.
-        "LinearAE": f"cache/_lin_{dataset}/errors.csv",
+        # Linear AE = the main AutoencoderModel made 0-layer/linear (softmax
+        # output, CE loss), via experiment_b/linear_ae.py -- NOT the MSE
+        # LinearAutoencoder and NOT sklearn PCA.
+        "LinearAE": f"cache/_lin0_{dataset}/errors.csv",
         "ChowLiu": f"cache/_fix9_{dataset}_cl/errors.csv",
     }.get(key)
 

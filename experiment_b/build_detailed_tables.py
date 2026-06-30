@@ -91,7 +91,9 @@ def metrics_for(dataset, key, check):
             med[c] = round(float(np.median(vals)), 2) if vals else None
         return med
     if key == "Lin":
-        return _metrics_from_errors(f"cache/_lin_{dataset}/errors.csv", dataset, check)
+        # 0-layer linear AutoencoderModel (encoder/decoder linear, softmax output),
+        # not the separate MSE LinearAutoencoder. See experiment_b/linear_ae.py.
+        return _metrics_from_errors(f"cache/_lin0_{dataset}/errors.csv", dataset, check)
     if key == "CL":
         return _metrics_from_errors(f"cache/_fix9_{dataset}_cl/errors.csv", dataset, check)
 
