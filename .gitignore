@@ -90,3 +90,9 @@ local_test/
 
 # --- Google Cloud ---
 .gcloudignore.planning/
+
+# --- Experiment-B regeneration outputs (regenerable via experiment_b/*.py) ---
+/recon_grid.csv
+/recompute_stats.txt
+/dataset_summary_corrected.csv
+/experiment_b_detailed_tables.tex

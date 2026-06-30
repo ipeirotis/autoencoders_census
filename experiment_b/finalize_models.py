@@ -41,7 +41,7 @@ def main(dataset):
     best_path = f"cache/_tuned_{dataset}_ae/best_hyperparameters.yaml"
     if not os.path.exists(best_path):
         print(f"[{dataset}] no best_hyperparameters.yaml (run tune_one.py first)")
-        return
+        sys.exit(1)  # fail loudly so run_finalize.sh does not report DONE on a skipped dataset
     best_hp = yaml.safe_load(open(best_path))
 
     dc, rc, ic, adc, arc, aic = define_necessary_elements(dataset, None, None, None)

@@ -343,7 +343,13 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
         if mode == "neq":
             relevant[i] = int(neq[0])
         elif mode == "eq":
-            relevant[i] = int(vals[0] is not None and not neq[0])  # positive == equals the value
+            # positive == answer EQUALS the flagged value (e.g. slider left at the
+            # default). A missing answer (None) is deliberately NOT the flagged
+            # value here, so it is not a positive -- unlike the neq branches where
+            # missing != correct counts as a failure. This matches the paper:
+            # inattentive (alvarez) has no missing filter values, and public_opinion
+            # has 32 blank attention_1 cells that stay attentive, giving h = 976.
+            relevant[i] = int(vals[0] is not None and not neq[0])
         elif mode == "neq_any":
             relevant[i] = int(any(neq))
         elif mode == "neq_all":
