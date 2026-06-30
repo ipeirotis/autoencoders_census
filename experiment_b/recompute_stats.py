@@ -33,19 +33,21 @@ CHAR_PAPER = pd.DataFrame({
 # datasets (pennycook/moss severe) due to narrower interest-column configs.
 CHAR_NOW = pd.DataFrame({
     "Samples":   [14765, 853, 2725, 308, 355, 1038, 2277, 1036, 860],
-    "Variables": [98, 93, 37, 60, 72, 20, 35, 49, 67],
-    "Features":  [619, 363, 173, 337, 325, 135, 112, 222, 310],
-    "AFV":       [6.32, 3.90, 4.68, 5.62, 4.51, 6.75, 3.20, 4.53, 4.63],
+    "Variables": [98, 183, 37, 60, 72, 20, 35, 49, 67],
+    "Features":  [619, 633, 173, 337, 325, 135, 112, 222, 310],
+    "AFV":       [6.32, 3.46, 4.68, 5.62, 4.51, 6.75, 3.20, 4.53, 4.63],
 }, index=KEYS)
 CHAR = CHAR_NOW  # used by the method-specific block; dataset-level reports both
 
 # Corrected detection AUC, union row where multiple checks exist, from the
 # regenerated Tables (AE rows = median over 5 seeds; Linear/CL single run).
+# Corrected: 0-layer linear AE (not MSE class), unsupervised AUC symmetry,
+# pennycook full battery. Union row where multiple checks exist.
 AUC = pd.DataFrame({
-    "AE_p100": [0.71, 0.50, 0.80, 0.64, 0.57, 0.57, 0.69, 0.69, 0.66],
+    "AE_p100": [0.71, 0.51, 0.80, 0.64, 0.57, 0.57, 0.69, 0.69, 0.66],
     "AE_p85":  [0.74, 0.52, 0.78, 0.81, 0.66, 0.70, 0.71, 0.70, 0.67],
-    "Linear":  [0.74, 0.53, 0.77, 0.88, 0.62, 0.79, 0.67, 0.68, 0.66],
-    "ChowLiu": [0.75, 0.49, 0.83, 0.87, 0.77, 0.65, 0.73, 0.68, 0.74],
+    "Linear":  [0.75, 0.51, 0.78, 0.72, 0.53, 0.60, 0.65, 0.70, 0.63],
+    "ChowLiu": [0.75, 0.51, 0.83, 0.87, 0.77, 0.65, 0.73, 0.68, 0.74],
 }, index=KEYS)
 
 
@@ -69,11 +71,18 @@ def _fmt(t):
 
 def main():
     recon = pd.read_csv("recon_grid.csv").set_index("dataset_key").reindex(KEYS)
-    # per-method Lift: AE p100 -> AE_NL, AE p85 -> AE_PL, Linear -> PCA proxy.
+    # Linear reconstruction Lift now comes from the 0-layer linear AE
+    # (experiment_b.linear_ae), keyed by internal name -> citation key.
+    i2c = {"sadc_2017": "robinson2014", "pennycook_1": "pennycook2020", "inattentive": "alvarez2019",
+           "attention_check": "uhalt2020", "moral_data": "ogrady2019", "bot_bot_mturk": "buchanan2018",
+           "mturk_ethics": "moss2023", "public_opinion": "mastroianni2022", "racial_data": "ivanov2021"}
+    ll = pd.read_csv("linear_ae_lift.csv")
+    ll["k"] = ll["dataset_key"].map(i2c)
+    linlift = ll.set_index("k")["Lift"].reindex(KEYS)
     lift = pd.DataFrame({
         "AE_p100": recon["AE_NL"].values,
         "AE_p85":  recon["AE_PL"].values,
-        "Linear":  recon["PCA"].values,
+        "Linear":  linlift.values,
     }, index=KEYS)
     MeanAUC = AUC.mean(axis=1)
     MeanLift = lift.mean(axis=1)
