@@ -359,26 +359,25 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
     return relevant
 
 
-def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = False) -> dict:
+def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = True) -> dict:
     """Information-retrieval metrics used in the paper's detection tables, with
-    ``scores`` = carelessness score (higher = more inattentive) and ``y`` in {0,1}.
+    ``scores`` = anomaly score (higher = more inattentive) and ``y`` in {0,1}.
     Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined).
 
-    ``orient`` is False by default: every detector -- the unsupervised
-    reconstruction-error / log-likelihood scores and the six psychometric indices
-    alike -- carries an a-priori direction (higher = more careless), so we score
-    each in its designed direction and report a sub-0.5 AUC honestly as a genuine
-    failure. We do NOT choose a score's sign from the evaluation labels, which
-    would leak the test outcome and can only inflate a method that happens to
-    point the wrong way. (Pass ``orient=True`` only for a separation-ability
-    supplement, never for the headline detection tables.)"""
+    When ``orient`` is True (the default, used for the unsupervised detectors
+    whose reconstruction-error / log-likelihood direction is arbitrary) we orient
+    ``scores`` to the larger of AUC and 1-AUC before computing every metric, since
+    AUC is symmetric and the method's separation ability is what counts. The
+    psychometric baselines pass ``orient=False``: they already carry a designed
+    direction (high = careless), so a sub-0.5 AUC is a genuine failure, not a sign
+    flip, and must not be inflated."""
     n = len(y)
     h = int(y.sum())
     scores = np.asarray(scores, dtype=float)
 
     if 0 < h < n:
         auc = roc_auc_score(y, scores)
-        if orient and auc < 0.5:      # separation-ability supplement only (off by default)
+        if orient and auc < 0.5:      # flip the arbitrary anomaly-score direction
             scores = -scores
             auc = 1.0 - auc
     else:
@@ -423,13 +422,11 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
             f"({len(labels)}); scores and labels are not aligned."
         )
 
-    # Every method carries an a-priori direction (higher = more careless), so we
-    # score each in its designed direction (orient=False) and report a sub-0.5 AUC
-    # honestly. Choosing a score's sign from the evaluation labels would leak the
-    # test outcome and only ever inflate a wrong-pointing method; this keeps the
-    # unsupervised detectors and the six psychometric baselines on identical,
-    # label-blind footing (and reproduces the paper's designed-direction baselines).
-    orient = False
+    # Psychometric indices carry a designed orientation (high = careless), so we
+    # do NOT flip a sub-0.5 AUC for them; the unsupervised detectors do get
+    # oriented (their error/likelihood direction is arbitrary).
+    orient = method not in {"longstring", "irv", "person_total_r",
+                            "mahalanobis", "even_odd", "lz"}
     out = []
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
