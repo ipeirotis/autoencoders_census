@@ -359,24 +359,26 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
     return relevant
 
 
-def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = True) -> dict:
+def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = False) -> dict:
     """Information-retrieval metrics used in the paper's detection tables, with
     ``scores`` = carelessness score (higher = more inattentive) and ``y`` in {0,1}.
     Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined).
 
-    When ``orient`` is True (the default) we orient ``scores`` to the larger of
-    AUC and 1-AUC before computing every metric. Every detector here -- the
-    unsupervised reconstruction-error / log-likelihood scores and the
-    psychometric indices alike -- produces a continuous carelessness score whose
-    sign is only a labeling convention (either tail may be called the inattentive
-    one), so the method's separation ability, max(AUC, 1-AUC), is what counts."""
+    ``orient`` is False by default: every detector -- the unsupervised
+    reconstruction-error / log-likelihood scores and the six psychometric indices
+    alike -- carries an a-priori direction (higher = more careless), so we score
+    each in its designed direction and report a sub-0.5 AUC honestly as a genuine
+    failure. We do NOT choose a score's sign from the evaluation labels, which
+    would leak the test outcome and can only inflate a method that happens to
+    point the wrong way. (Pass ``orient=True`` only for a separation-ability
+    supplement, never for the headline detection tables.)"""
     n = len(y)
     h = int(y.sum())
     scores = np.asarray(scores, dtype=float)
 
     if 0 < h < n:
         auc = roc_auc_score(y, scores)
-        if orient and auc < 0.5:      # orient to the better-separating direction
+        if orient and auc < 0.5:      # separation-ability supplement only (off by default)
             scores = -scores
             auc = 1.0 - auc
     else:
@@ -421,12 +423,13 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
             f"({len(labels)}); scores and labels are not aligned."
         )
 
-    # Every method emits a continuous carelessness score whose sign is only a
-    # labeling convention, so all methods -- the unsupervised detectors and the
-    # six psychometric indices alike -- are oriented to max(AUC, 1-AUC). Because
-    # the indices are competitors, giving them the better-separating direction is
-    # the conservative choice: it can only raise their measured performance.
-    orient = True
+    # Every method carries an a-priori direction (higher = more careless), so we
+    # score each in its designed direction (orient=False) and report a sub-0.5 AUC
+    # honestly. Choosing a score's sign from the evaluation labels would leak the
+    # test outcome and only ever inflate a wrong-pointing method; this keeps the
+    # unsupervised detectors and the six psychometric baselines on identical,
+    # label-blind footing (and reproduces the paper's designed-direction baselines).
+    orient = False
     out = []
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
