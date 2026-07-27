@@ -361,23 +361,22 @@ def _relevant(labels: pd.DataFrame, check: dict) -> np.ndarray:
 
 def _ranking_metrics(scores: np.ndarray, y: np.ndarray, orient: bool = True) -> dict:
     """Information-retrieval metrics used in the paper's detection tables, with
-    ``scores`` = anomaly score (higher = more inattentive) and ``y`` in {0,1}.
+    ``scores`` = carelessness score (higher = more inattentive) and ``y`` in {0,1}.
     Returns h, R@h (=P@h), P@10/50/100, NDCG@h, AUC (None where undefined).
 
-    When ``orient`` is True (the default, used for the unsupervised detectors
-    whose reconstruction-error / log-likelihood direction is arbitrary) we orient
-    ``scores`` to the larger of AUC and 1-AUC before computing every metric, since
-    AUC is symmetric and the method's separation ability is what counts. The
-    psychometric baselines pass ``orient=False``: they already carry a designed
-    direction (high = careless), so a sub-0.5 AUC is a genuine failure, not a sign
-    flip, and must not be inflated."""
+    When ``orient`` is True (the default) we orient ``scores`` to the larger of
+    AUC and 1-AUC before computing every metric. Every detector here -- the
+    unsupervised reconstruction-error / log-likelihood scores and the
+    psychometric indices alike -- produces a continuous carelessness score whose
+    sign is only a labeling convention (either tail may be called the inattentive
+    one), so the method's separation ability, max(AUC, 1-AUC), is what counts."""
     n = len(y)
     h = int(y.sum())
     scores = np.asarray(scores, dtype=float)
 
     if 0 < h < n:
         auc = roc_auc_score(y, scores)
-        if orient and auc < 0.5:      # flip the arbitrary anomaly-score direction
+        if orient and auc < 0.5:      # orient to the better-separating direction
             scores = -scores
             auc = 1.0 - auc
     else:
@@ -422,11 +421,12 @@ def evaluate_scores(dataset: str, scores, method: str = "?"):
             f"({len(labels)}); scores and labels are not aligned."
         )
 
-    # Psychometric indices carry a designed orientation (high = careless), so we
-    # do NOT flip a sub-0.5 AUC for them; the unsupervised detectors do get
-    # oriented (their error/likelihood direction is arbitrary).
-    orient = method not in {"longstring", "irv", "person_total_r",
-                            "mahalanobis", "even_odd", "lz"}
+    # Every method emits a continuous carelessness score whose sign is only a
+    # labeling convention, so all methods -- the unsupervised detectors and the
+    # six psychometric indices alike -- are oriented to max(AUC, 1-AUC). Because
+    # the indices are competitors, giving them the better-separating direction is
+    # the conservative choice: it can only raise their measured performance.
+    orient = True
     out = []
     for check in CHECKS[dataset]:
         y = _relevant(labels, check)
