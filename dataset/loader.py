@@ -18,6 +18,12 @@ warnings.simplefilter(action='ignore', category=PerformanceWarning)
 # so downstream modules can reference the same default.
 DEFAULT_MAX_UNIQUE_VALUES = 9
 
+# Numeric variables with at least this many distinct values are z-score
+# discretized into the six bins of the paper's Table tab:dicretization; numeric
+# variables with fewer distinct values are kept as categorical AS-IS so the
+# ordinal Likert levels are preserved (paper methods.tex, Data Preprocessing).
+DISCRETIZE_MIN_DISTINCT = 20
+
 
 class DataLoader:
     """
@@ -96,6 +102,12 @@ class DataLoader:
     def load_pennycook_1(self):
         url = "data/Pennycook et al._Study 1.csv"
         df = self.load_original_data(url)
+        # Between-subjects design: keep a SINGLE condition so the modeled
+        # headline battery is fully observed. Condition 1 (cols 73..102) is the
+        # reference framing; pooling all four left ~75% of the battery missing
+        # per respondent and collapsed detection to chance.
+        if "Condition" in df.columns:
+            df = df[pd.to_numeric(df["Condition"], errors="coerce") == 1].reset_index(drop=True)
         df = df.select_dtypes(exclude=["object", "string"])
         df[
             [
@@ -135,7 +147,23 @@ class DataLoader:
             0
         )
 
+        # Optional reaction-time engineered features. These ``Fake1_RT_*`` /
+        # ``Real1_RT_*`` reaction-time columns are NOT part of the battery the
+        # paper actually used (the cached errors.csv battery contains the
+        # ``Fake1_1..15`` / ``Real1_1..12`` *rating* items, never any
+        # ``*_time_diff`` / ``*_clicks`` features). When ``COLUMNS_OF_INTEREST``
+        # selects only the rating/demographic columns the RT columns are absent,
+        # so this block must be skipped rather than ``KeyError`` (that crash is
+        # what broke the whole pennycook train/score path). Only run it when the
+        # source RT columns are present.
         for i in range(1, 16):
+            rt_cols = (
+                [f"Fake1_RT_{j}_{i}" for j in range(1, 5)]
+                + [f"Real1_RT_{j}_{i}" for j in range(1, 5)]
+            )
+            if not all(c in df.columns for c in rt_cols):
+                continue
+
             df[f"Fake1_time_diff_{i}"] = df[f"Fake1_RT_2_{i}"] - df[f"Fake1_RT_1_{i}"]
             df[f"Fake1_submit_diff_{i}"] = df[f"Fake1_RT_3_{i}"] - df[f"Fake1_RT_2_{i}"]
             df[f"Fake1_clicks_{i}"] = df[f"Fake1_RT_4_{i}"]
@@ -144,7 +172,7 @@ class DataLoader:
             df[f"Real1_submit_diff_{i}"] = df[f"Real1_RT_3_{i}"] - df[f"Real1_RT_2_{i}"]
             df[f"Real1_clicks_{i}"] = df[f"Real1_RT_4_{i}"]
 
-            df.drop(columns=[f"Fake1_RT_{j}_{i}" for j in range(1, 5)] + [f"Real1_RT_{j}_{i}" for j in range(1, 5)], inplace=True)
+            df.drop(columns=rt_cols, inplace=True)
 
 
         # convert to integer columns
@@ -560,14 +588,36 @@ class DataLoader:
             if k in project_data.columns: # ensure code doesn't crash if col doesn't exist in current dataset
                 project_data[k] = project_data[k].replace(v)
 
-        # 1. Identify and Bin Numeric Columns
-        # Only treat as numeric if the col is truly numeric
+        # 1. Identify and Bin ONLY high-cardinality numeric columns.
+        # Per the paper's preprocessing (methods.tex, Table tab:dicretization):
+        # a numeric variable with FEWER THAN 20 distinct values is treated as
+        # categorical AS-IS (each response level becomes its own category,
+        # preserving the ordinal Likert structure); only variables with >= 20
+        # distinct values are z-score discretized into the six bins. The old
+        # behavior binned EVERY numeric column, collapsing 5-7 level Likert
+        # items into coarse, non-ordinal z-score bins ("normal"/"zero"/...),
+        # which discarded the within-battery signal and crippled
+        # reconstruction-based detection on coherent instruments.
         numeric_vars = []
         for col in project_data.columns:
             if pd.api.types.is_numeric_dtype(project_data[col]):
-                numeric_vars.append(col)
+                if project_data[col].nunique(dropna=True) >= DISCRETIZE_MIN_DISTINCT:
+                    numeric_vars.append(col)
 
-        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Convert numeric columns into categorical bins
+        project_data = DataLoader.convert_to_categorical(project_data, numeric_vars) # Discretize only continuous columns
+
+        # 1b. Numeric columns NOT discretized above (fewer than
+        # DISCRETIZE_MIN_DISTINCT distinct values) are Likert-style items kept
+        # as-is. Cast them to clean string category labels now (integer levels
+        # -> "1".."k", NaN -> "missing") so each response level becomes its own
+        # one-hot category. Without this they remain Int64/float and the
+        # ``fillna("missing")`` below raises on nullable-integer dtypes.
+        for col in project_data.columns:
+            if pd.api.types.is_numeric_dtype(project_data[col]):
+                project_data[col] = project_data[col].apply(
+                    lambda v: "missing" if pd.isna(v)
+                    else (str(int(v)) if float(v).is_integer() else str(v))
+                )
 
         # 2. Fill NaN in non-numeric columns with the literal string
         # "missing" so that (a) the Rule-of-N count below treats missing as
@@ -626,12 +676,33 @@ class DataLoader:
 
     def find_outlier_data(self, data, outlier_column):
         """
-        Load dataset and extract gold-label columns for evaluation.
+        Load dataset and extract gold-label (attention-check) columns for
+        evaluation, aligned to the same rows the scoring path produces.
 
-        Temporarily disables COLUMNS_OF_INTEREST filtering so that
-        attention-check / screening columns are available even though
-        they are intentionally excluded from the training config.
+        Preferred path: ``evaluate.detection.aligned_labels`` reads the
+        attention-check columns **raw** (never routed through the numeric
+        z-score binning in ``convert_to_categorical``) and reproduces the
+        scoring path's exact row set. This fixes two regressions:
+          * numeric attention-check columns (``moral_data``/``attention``,
+            ``public_opinion``/``attention_1``, ...) were binned to
+            ``<col>_cat`` and disappeared -> ``KeyError`` here;
+          * loaders with ``dropna(inplace=True)`` after column selection
+            (``moral_data``, ``racial_data``) dropped different rows in the
+            label path than in the scoring path, silently misaligning the
+            positional ``concat`` in ``evaluate_on_condition``.
+
+        Datasets not covered by the centralized spec (e.g. the SADC composite
+        path, pennycook) fall back to the legacy reload-without-COLUMNS_OF_
+        INTEREST behaviour.
         """
+        try:
+            # Lazy import to avoid a module-load cycle (detection imports DataLoader).
+            from evaluate.detection import aligned_labels, RAW_CSV
+            if data in RAW_CSV:
+                return aligned_labels(data)[outlier_column]
+        except ImportError:
+            pass
+
         saved = self.COLUMNS_OF_INTEREST
         self.COLUMNS_OF_INTEREST = []
         try:

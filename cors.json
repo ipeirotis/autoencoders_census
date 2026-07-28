@@ -1,6 +1,6 @@
 [
   {
-    "origin": ["http://localhost:8080", "http://localhost:3000"],
+    "origin": ["http://localhost:8080", "http://localhost:3000", "https://api-203111407489.us-central1.run.app", "https://aletheia.stern.nyu.edu"],
     "method": ["GET", "PUT", "POST", "OPTIONS"],
     "responseHeader": ["Content-Type", "x-goog-resumable"],
     "maxAgeSeconds": 3600
