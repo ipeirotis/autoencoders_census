@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils import set_seed
+from utils import set_seed, training_batch_size
 from main import (prepare_for_training, _clean_for_saved_vectorizer,
                   _compute_attr_layout)
 from model.factory import get_model
@@ -42,7 +42,7 @@ PRIMARY = {"pennycook_1": "AC1(screen1)", "inattentive": "filter",
            "racial_data": "attn1"}
 
 
-def ae_battery_scores(bat, best, p=85):
+def ae_battery_scores(bat, best, dataset, p=85):
     """Train the tuned AE (PL p) on the one-hot of the ordinal battery; return
     per-row reconstruction anomaly score aligned to the battery rows."""
     tf.keras.backend.clear_session()  # avoid graph accumulation across datasets
@@ -53,7 +53,7 @@ def ae_battery_scores(bat, best, p=85):
     Xfull = vec.transform(proj).astype("float32")
     ac, aic2, an = _compute_attr_layout(vec, proj.columns)
     cfg = dict(best)
-    cfg.update(epochs=120, batch_size=64, test_size=0.2, percentile=p)
+    cfg.update(epochs=120, batch_size=training_batch_size(dataset), test_size=0.2, percentile=p)
     model, _ = Trainer(get_model("AE", card), cfg).train(
         dataset=X_train, prior="gaussian", X_train=X_train, X_test=X_test)
     err = get_outliers_list(Xfull, model, 1.0, ac, vec, "gaussian",
@@ -75,7 +75,7 @@ def run(ds, rows):
     hp = f"cache/_tuned_{ds}_ae/best_hyperparameters.yaml"
     if os.path.exists(hp):
         best = yaml.safe_load(open(hp))
-    ae_scores = ae_battery_scores(bat, best, p=85)
+    ae_scores = ae_battery_scores(bat, best, ds, p=85)
     ae = {r["check"]: r for r in evaluate_scores(ds, ae_scores, "AE_ord")}
     for chk in ae:
         rows.append({"dataset": ds, "check": chk, "n_items": bat.shape[1],

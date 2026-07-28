@@ -11,7 +11,9 @@ import os
 import sys
 import yaml
 
-from utils import set_seed, save_model, save_to_csv, define_necessary_elements
+import tensorflow as tf
+
+from utils import set_seed, save_model, save_to_csv, define_necessary_elements, training_batch_size
 from dataset.loader import DataLoader
 from main import prepare_for_training, _clean_for_saved_vectorizer, _compute_attr_layout
 from model.factory import get_model
@@ -20,8 +22,9 @@ from evaluate.outliers import get_outliers_list
 
 
 def _train_and_score(dataset, best_hp, percentile, X_train, X_test, card, vec, data):
+    tf.keras.backend.clear_session()  # avoid TF graph/optimizer state accumulation
     cfg = dict(best_hp)
-    cfg.update(epochs=300, batch_size=64, test_size=0.2, percentile=percentile)
+    cfg.update(epochs=300, batch_size=training_batch_size(dataset), test_size=0.2, percentile=percentile)
     model, _ = Trainer(get_model("AE", card), cfg).train(
         dataset=X_train, prior="gaussian", X_train=X_train, X_test=X_test
     )

@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils import set_seed, save_to_csv, define_necessary_elements
+from utils import set_seed, save_to_csv, define_necessary_elements, training_batch_size
 from dataset.loader import DataLoader
 from main import (prepare_for_training, _clean_for_saved_vectorizer,
                   _compute_attr_layout)
@@ -73,7 +73,7 @@ def run(ds, rows):
         latent = yaml.safe_load(open(hp)).get("latent_space_dim", 10)
     cfg = {"encoder_layers": 0, "decoder_layers": 0, "latent_space_dim": latent,
            "latent_activation": "linear", "learning_rate": 1e-3,
-           "epochs": 120, "batch_size": 64, "test_size": 0.2, "percentile": 100}
+           "epochs": 120, "batch_size": training_batch_size(ds), "test_size": 0.2, "percentile": 100}
     model, _ = Trainer(get_model("AE", card), cfg).train(
         dataset=X_train, prior="gaussian", X_train=X_train, X_test=X_test)
 

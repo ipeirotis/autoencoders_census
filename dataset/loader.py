@@ -102,6 +102,12 @@ class DataLoader:
     def load_pennycook_1(self):
         url = "data/Pennycook et al._Study 1.csv"
         df = self.load_original_data(url)
+        # Between-subjects design: keep a SINGLE condition so the modeled
+        # headline battery is fully observed. Condition 1 (cols 73..102) is the
+        # reference framing; pooling all four left ~75% of the battery missing
+        # per respondent and collapsed detection to chance.
+        if "Condition" in df.columns:
+            df = df[pd.to_numeric(df["Condition"], errors="coerce") == 1].reset_index(drop=True)
         df = df.select_dtypes(exclude=["object", "string"])
         df[
             [

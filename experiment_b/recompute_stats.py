@@ -32,10 +32,10 @@ CHAR_PAPER = pd.DataFrame({
 # Actually modeled by the reproducing (modularized) loader; differs for 5
 # datasets (pennycook/moss severe) due to narrower interest-column configs.
 CHAR_NOW = pd.DataFrame({
-    "Samples":   [14765, 853, 2725, 308, 355, 1038, 2277, 1036, 860],
-    "Variables": [98, 183, 37, 60, 72, 20, 35, 49, 67],
-    "Features":  [619, 633, 173, 337, 325, 135, 112, 222, 310],
-    "AFV":       [6.32, 3.46, 4.68, 5.62, 4.51, 6.75, 3.20, 4.53, 4.63],
+    "Samples":   [14765, 212, 2725, 308, 355, 1038, 2277, 1036, 860],
+    "Variables": [98, 92, 37, 60, 72, 20, 35, 49, 67],
+    "Features":  [619, 323, 173, 337, 325, 135, 112, 222, 310],
+    "AFV":       [6.32, 3.51, 4.68, 5.62, 4.51, 6.75, 3.20, 4.53, 4.63],
 }, index=KEYS)
 CHAR = CHAR_NOW  # used by the method-specific block; dataset-level reports both
 
@@ -46,8 +46,8 @@ CHAR = CHAR_NOW  # used by the method-specific block; dataset-level reports both
 AUC = pd.DataFrame({
     "AE_p100": [0.71, 0.51, 0.80, 0.64, 0.57, 0.57, 0.69, 0.69, 0.66],
     "AE_p85":  [0.74, 0.52, 0.78, 0.81, 0.66, 0.70, 0.71, 0.70, 0.67],
-    "Linear":  [0.75, 0.51, 0.78, 0.72, 0.53, 0.60, 0.65, 0.70, 0.63],
-    "ChowLiu": [0.75, 0.51, 0.83, 0.87, 0.77, 0.65, 0.73, 0.68, 0.74],
+    "Linear":  [0.75, 0.62, 0.78, 0.72, 0.53, 0.60, 0.65, 0.70, 0.63],
+    "ChowLiu": [0.75, 0.61, 0.83, 0.87, 0.77, 0.65, 0.73, 0.68, 0.74],
 }, index=KEYS)
 
 

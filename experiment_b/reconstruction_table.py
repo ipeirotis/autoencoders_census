@@ -38,7 +38,7 @@ import tensorflow as tf
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import label_binarize
 
-from utils import set_seed, define_necessary_elements
+from utils import set_seed, define_necessary_elements, training_batch_size
 from dataset.loader import DataLoader
 from main import prepare_for_training, _clean_for_saved_vectorizer
 from model.factory import get_model
@@ -84,7 +84,7 @@ def _cfg(ds, method):
     if os.path.exists(hp):
         best = yaml.safe_load(open(hp))
     latent = best.get("latent_space_dim", 10)
-    common = {"epochs": 120, "batch_size": 64, "test_size": 0.2}
+    common = {"epochs": 120, "batch_size": training_batch_size(ds), "test_size": 0.2}
     if method == "nl100":
         return {**best, **common, "percentile": 100}
     if method == "nl85":

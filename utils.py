@@ -333,6 +333,17 @@ def evaluate_errors(error_data, column, values):
     return metrics
 
 
+def training_batch_size(dataset, default=64):
+    """Batch size for AE training. pennycook_1 (single between-subjects
+    condition, ~170 training rows) is numerically unstable under 64-row
+    mini-batches: a degenerate shuffled batch collapses the per-attribute
+    categorical-crossentropy gradient ("Incompatible shapes [.,K] vs [0]").
+    Returning a batch larger than the sample makes Keras use one full batch,
+    which is both stable and appropriate for so small a survey. All other
+    datasets keep the default mini-batch size."""
+    return 1_000_000 if dataset == "pennycook_1" else default
+
+
 def define_necessary_elements(data, drop_columns, rename_columns, interest_columns):
 
     additional_drop_columns = None
@@ -536,10 +547,13 @@ def define_necessary_elements(data, drop_columns, rename_columns, interest_colum
             375,
         ] +
         # pennycook is between-subjects: each respondent answers ONE of four
-        # conditions, so we pool all four condition blocks (73..193); items
-        # outside a respondent's condition are missing. This matches the paper's
-        # full battery (restored from condition-4-only, which had halved it).
-        [x for x in range(73, 193)] +  # all 4 conditions (cond1..cond4)
+        # framings of the SAME 30-item fake/real headline battery. Pooling all
+        # four blocks (73..193) leaves each respondent ~75% missing on the
+        # battery, which collapses detection to chance. We therefore keep a
+        # SINGLE condition (condition 1 = cols 73..102, Fake1_1..15 + Real1_1..15)
+        # and restrict the sample to its respondents (Condition==1) in
+        # load_pennycook_1, so the modeled battery is fully observed.
+        [x for x in range(73, 103)] +  # condition 1 only (Fake1_1..15, Real1_1..15)
                             [
             x for x in range(314, 321) #crt
         ] + [

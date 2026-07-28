@@ -102,10 +102,14 @@ def _survivor_index(dataset: str) -> pd.Index:
     raw = _read_raw(dataset)
 
     if dataset in ("attention_check", "inattentive", "public_opinion",
-                   "mturk_ethics", "pennycook_1"):
+                   "mturk_ethics"):
         # No row filtering in the loader -> every raw row is scored, in order.
-        # (pennycook_1 only drops/derives columns; it never drops rows.)
         return raw.index
+
+    if dataset == "pennycook_1":
+        # single between-subjects condition (matches load_pennycook_1's
+        # Condition==1 filter); scored rows are the 212 condition-1 respondents.
+        return raw.index[pd.to_numeric(raw["Condition"], errors="coerce") == 1]
 
     interest = _interest_columns(dataset)
 
