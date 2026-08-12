@@ -59,13 +59,14 @@ def _offsets(y, sep=0.02, step=0.02, iters=200):
 def boxplot(dl, metric, outfile):
     data = [dl[dl["Percentile"] == p]["delta"].dropna().values for p in PCTS]
     plt.figure(figsize=(7, 5))
-    plt.boxplot(data, labels=[str(p) for p in PCTS], showmeans=True)
+    plt.boxplot(data, labels=[str(p) for p in PCTS], showmeans=True,
+                medianprops=dict(color="0.2"), meanprops=dict(marker="D", markerfacecolor="0.2", markeredgecolor="0.2"))
     plt.axhline(0.0, linestyle="--", color="gray")
     for i, p in enumerate(PCTS, start=1):
         ys = dl[dl["Percentile"] == p]["delta"].dropna().values
         if len(ys):
             plt.plot(np.full_like(ys, i, dtype=float) + _offsets(ys), ys,
-                     marker="o", linestyle="None", alpha=0.8)
+                     marker="o", linestyle="None", alpha=0.55, color="#4C72B0", markeredgecolor="none")
     plt.xlabel("Percentile threshold $p$"); plt.ylabel(f"$\\Delta${metric} vs $p{{=}}100$")
     plt.grid(True, axis="y", alpha=0.3); plt.tight_layout()
     plt.savefig(outfile, bbox_inches="tight"); plt.close()

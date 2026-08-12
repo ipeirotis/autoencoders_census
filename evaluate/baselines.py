@@ -66,7 +66,7 @@ def longstring(B: pd.DataFrame) -> np.ndarray:
 
 def irv(B: pd.DataFrame) -> np.ndarray:
     # within-person SD; low SD = straight-lining -> negate so high = careless
-    sd = B.std(axis=1, ddof=0, skipna=True).to_numpy(dtype=float)
+    sd = B.std(axis=1, ddof=0, skipna=True).to_numpy(dtype=float).copy()  # pandas 3.0 CoW: writable
     sd[B.notna().sum(axis=1).to_numpy() < 2] = np.nan
     return -sd
 
