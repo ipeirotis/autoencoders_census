@@ -52,6 +52,12 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
+# Some managed environments (e.g. Claude Code on the web) preset
+# CLOUDSDK_AUTH_ACCESS_TOKEN to a placeholder value. gcloud prefers that
+# variable over the activated service account, so every call fails with
+# "401 Invalid Credentials". Clear it before touching gcloud.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -102,6 +108,9 @@ Then add to `.claude/settings.json` (create the file and directories if needed):
 
 ```json
 {
+  "env": {
+    "CLOUDSDK_AUTH_ACCESS_TOKEN": ""
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -118,6 +127,12 @@ Then add to `.claude/settings.json` (create the file and directories if needed):
   }
 }
 ```
+
+The `env` block is the counterpart to the `unset` in the hook. A hook runs in its
+own process, so clearing the variable there only protects the hook's own `gcloud`
+calls — it cannot reach the shells used later in the session. Setting it to an
+empty string in `env` covers those, and gcloud treats an empty value the same as
+an unset one.
 
 If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object. Commit both `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
 
