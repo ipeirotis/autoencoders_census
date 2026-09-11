@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# Some managed environments (e.g. Claude Code on the web) preset
+# CLOUDSDK_AUTH_ACCESS_TOKEN to a placeholder value. gcloud prefers that
+# variable over the activated service account, so every call fails with
+# "401 Invalid Credentials". Clear it before touching gcloud.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+
 # --- Check credential prerequisites before doing anything expensive ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi

@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLOUDSDK_AUTH_ACCESS_TOKEN": ""
+  },
   "hooks": {
     "SessionStart": [
       {
