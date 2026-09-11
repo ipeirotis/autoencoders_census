@@ -134,6 +134,23 @@ calls — it cannot reach the shells used later in the session. Setting it to an
 empty string in `env` covers those, and gcloud treats an empty value the same as
 an unset one.
 
+Note that this clears the variable for the whole project, not just the managed
+environment's placeholder. It does not affect `gcloud auth login` or application
+default credentials, which do not read it — only a deliberately injected access
+token. In an environment that supplies a real one, a user with no
+`.cloud-credentials.<email>.enc` file (or no credentials key) gets neither the
+injected token nor an activated service account, and `gcloud` ends up
+unauthenticated. Such a user can put the token back for themselves in
+`.claude/settings.local.json`, which takes precedence over project settings:
+
+```json
+{
+  "env": {
+    "CLOUDSDK_AUTH_ACCESS_TOKEN": "ya29...."
+  }
+}
+```
+
 If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object. Commit both `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
 
 ## API Base

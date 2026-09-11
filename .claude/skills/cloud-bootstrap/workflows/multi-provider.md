@@ -177,3 +177,23 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   echo "$PROVIDER credentials activated for $USER_EMAIL"
 done
 ```
+
+### Session Environment (GCP)
+
+When the provider list includes GCP, `.claude/settings.json` also needs the
+`CLOUDSDK_AUTH_ACCESS_TOKEN` entry described in `references/gcp.md`:
+
+```json
+{
+  "env": {
+    "CLOUDSDK_AUTH_ACCESS_TOKEN": ""
+  }
+}
+```
+
+The `unset` in the hook above only covers the hook's own process. Converting a
+project that started as AWS- or Azure-only leaves its existing `settings.json`
+without this entry, so shells later in the session would still inherit the
+managed environment's placeholder token and keep getting 401s from `gcloud`.
+Merge the `env` key in alongside the existing `hooks` object rather than
+replacing the file.
