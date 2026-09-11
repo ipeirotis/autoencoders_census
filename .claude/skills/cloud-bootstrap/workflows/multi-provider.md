@@ -65,6 +65,12 @@ When converting to multi-provider, replace the single-provider `cloud-auth.sh` w
 #!/bin/bash
 set -e
 
+# Some managed environments (e.g. Claude Code on the web) preset
+# CLOUDSDK_AUTH_ACCESS_TOKEN to a placeholder value. gcloud prefers that
+# variable over the activated service account, so every call fails with
+# "401 Invalid Credentials". Clear it before touching gcloud.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
@@ -171,3 +177,23 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   echo "$PROVIDER credentials activated for $USER_EMAIL"
 done
 ```
+
+### Session Environment (GCP)
+
+When the provider list includes GCP, `.claude/settings.json` also needs the
+`CLOUDSDK_AUTH_ACCESS_TOKEN` entry described in `references/gcp.md`:
+
+```json
+{
+  "env": {
+    "CLOUDSDK_AUTH_ACCESS_TOKEN": ""
+  }
+}
+```
+
+The `unset` in the hook above only covers the hook's own process. Converting a
+project that started as AWS- or Azure-only leaves its existing `settings.json`
+without this entry, so shells later in the session would still inherit the
+managed environment's placeholder token and keep getting 401s from `gcloud`.
+Merge the `env` key in alongside the existing `hooks` object rather than
+replacing the file.
