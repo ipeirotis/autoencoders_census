@@ -1,0 +1,49 @@
+# Keep the Cloud Build context small: ship Python source + config only.
+# (The worker reads uploaded CSVs from GCS, so no local data/artifacts needed.)
+
+.git/
+.github/
+.claude/
+
+# Python envs / caches
+venv/
+venv_ae/
+venv_ae311/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Secrets / local env
+.env
+.env.*
+*.enc
+**/.env
+
+# Frontend (built and deployed separately as the `api` service)
+frontend/
+
+# Notebooks and exploration
+notebooks/
+
+# Large local data, model artifacts and outputs the worker doesn't need
+cache/
+wandb/
+data/*.csv
+data/*.dta
+data/*.sav
+data/*.dat
+*.png
+*.pdf
+vae/
+vae_artifacts/
+gans/
+sadc_synthetic_bn/
+sadc_synthetic_gan/
+yrbs_synthetic_pipeline/
+group_barplots/
+attention_check/
+attention_check_v2/
+attention_check_v3/
+attention_check_80perc/
+*_80perc/
