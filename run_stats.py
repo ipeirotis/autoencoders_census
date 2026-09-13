@@ -21,10 +21,18 @@ datasets = pd.DataFrame({
         "Robinson-Cimpian (2014)", "Pennycook et al. (2020)", "Alvarez et al. (2019)", "Uhalt (2020)",
         "O’Grady et al. (2019)", "Buchanan & Scofield (2018)", "Moss et al. (2023)", "Mastroianni & Dana (2022)", "Ivanov et al. (2021)"
     ],
-    "Samples": [14765, 853, 2725, 308, 355, 1038, 2277, 1036, 860],
-    "Variables": [98, 188, 39, 60, 72, 23, 51, 51, 67],
-    "Features": [619, 708, 196, 337, 322, 159, 332, 322, 310],
-    "AFV": [6.32, 3.75, 5.03, 5.62, 4.47, 6.91, 6.51, 6.31, 4.63],
+    # Corrected Table 1 characteristics (match dataset_summary_corrected.csv / the paper's
+    # tab:data_stats). Previously these were stale (pennycook Samples=853/Variables=188/AFV=3.75,
+    # etc.), which silently drove the appendix correlation table off the paper's own Table 1.
+    # NOTE: the per-method recon_rows/det_rows below are single-run illustrative values; the paper's
+    # correlation tables (tab:dataset_correlations, tab:method_correlations) are regenerated from
+    # dataset_summary_corrected.csv (dataset level) and the PUBLISHED five-seed-median detection-grid
+    # AUCs + reconstruction_table.csv (per method), NOT from this script's hardcoded rows. Likewise
+    # experiment_b_full.csv stores single-run AUCs, whereas the paper reports five-seed medians.
+    "Samples": [14765, 212, 2725, 308, 355, 1038, 2277, 1036, 860],
+    "Variables": [98, 92, 37, 60, 72, 20, 35, 49, 67],
+    "Features": [619, 323, 173, 337, 325, 135, 112, 222, 310],
+    "AFV": [6.32, 3.51, 4.68, 5.62, 4.51, 6.75, 3.20, 4.53, 4.63],
 })
 
 # ----------------------------
